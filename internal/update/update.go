@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,33 @@ import (
 	"strings"
 	"time"
 )
+
+// newTransport builds an HTTP transport with generous dial/TLS timeouts so
+// slow or unstable networks (e.g. GitHub from mainland China) can connect.
+func newTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   60 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   30 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
+// httpClient returns a client with the given total timeout, reusing an injected
+// transport (used by tests) when present.
+func (c *Checker) httpClient(timeout time.Duration) *http.Client {
+	if c.Client != nil && c.Client.Transport != nil {
+		return &http.Client{Timeout: timeout, Transport: c.Client.Transport}
+	}
+	return &http.Client{Timeout: timeout, Transport: newTransport()}
+}
 
 type Checker struct {
 	ManifestURL    string
@@ -43,10 +71,7 @@ func (c *Checker) Check() (*Manifest, error) {
 	if len(c.PublicKey) == 0 {
 		return nil, errors.New("更新公钥未配置")
 	}
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
+	client := c.httpClient(30 * time.Second)
 	resp, err := client.Get(c.ManifestURL)
 	if err != nil {
 		return nil, err
@@ -82,26 +107,21 @@ func (c *Checker) Check() (*Manifest, error) {
 // saved path. Large downloads can be flaky, so it retries a few times.
 func (c *Checker) Download(m *Manifest, dir string, progress func(done, total int64)) (string, error) {
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= 5; attempt++ {
 		path, err := c.downloadOnce(m, dir, progress)
 		if err == nil {
 			return path, nil
 		}
 		lastErr = err
-		if attempt < 3 {
-			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		if attempt < 5 {
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
 		}
 	}
-	return "", lastErr
+	return "", fmt.Errorf("下载失败（已重试 5 次，可能是网络无法连接更新服务器）：%w", lastErr)
 }
 
 func (c *Checker) downloadOnce(m *Manifest, dir string, progress func(done, total int64)) (string, error) {
-	// Use a dedicated client with a long timeout: update packages are large and
-	// the manifest-check client's short timeout is unsuitable for them.
-	client := &http.Client{Timeout: 30 * time.Minute}
-	if c.Client != nil && c.Client.Transport != nil {
-		client.Transport = c.Client.Transport
-	}
+	client := c.httpClient(30 * time.Minute)
 	resp, err := client.Get(m.URL)
 	if err != nil {
 		return "", err

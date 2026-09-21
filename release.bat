@@ -20,6 +20,11 @@ if "%NOTES_FILE%"=="" set "NOTES_FILE=release-notes.txt"
 set "TAG=v%VERSION%"
 set "ASSET_BASE=https://github.com/%REPO%/releases/download/%TAG%"
 
+rem 更新包下载地址的加速前缀（国内访问 GitHub 慢/不稳时使用）。
+rem 留空则直接用 GitHub 原始地址；也可用环境变量 MIRROR 覆盖。
+if not defined MIRROR set "MIRROR=https://ghfast.top/"
+set "PKG_URL=%MIRROR%%ASSET_BASE%/RFERP-%VERSION%.zip"
+
 echo ================================
 echo   Release RFERP %VERSION%
 echo ================================
@@ -65,7 +70,7 @@ if errorlevel 1 (
 )
 
 echo [5/7] Sign manifest ...
-go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%ASSET_BASE%/RFERP-%VERSION%.zip" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json"
+go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%PKG_URL%" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json"
 if errorlevel 1 (
     echo   Signing failed.
     pause

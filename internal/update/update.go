@@ -33,7 +33,7 @@ func NewChecker(manifestURL, currentVersion string) (*Checker, error) {
 		ManifestURL:    manifestURL,
 		CurrentVersion: currentVersion,
 		PublicKey:      pub,
-		Client:         &http.Client{Timeout: 15 * time.Second},
+		Client:         &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -78,10 +78,29 @@ func (c *Checker) Check() (*Manifest, error) {
 	return &m, nil
 }
 
+// Download fetches the update package, verifies its SHA-256 and returns the
+// saved path. Large downloads can be flaky, so it retries a few times.
 func (c *Checker) Download(m *Manifest, dir string, progress func(done, total int64)) (string, error) {
-	client := c.Client
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Minute}
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		path, err := c.downloadOnce(m, dir, progress)
+		if err == nil {
+			return path, nil
+		}
+		lastErr = err
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+	}
+	return "", lastErr
+}
+
+func (c *Checker) downloadOnce(m *Manifest, dir string, progress func(done, total int64)) (string, error) {
+	// Use a dedicated client with a long timeout: update packages are large and
+	// the manifest-check client's short timeout is unsuitable for them.
+	client := &http.Client{Timeout: 30 * time.Minute}
+	if c.Client != nil && c.Client.Transport != nil {
+		client.Transport = c.Client.Transport
 	}
 	resp, err := client.Get(m.URL)
 	if err != nil {

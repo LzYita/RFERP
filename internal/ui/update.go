@@ -51,13 +51,28 @@ func downloadAndApply(w fyne.Window, checker *update.Checker, m *update.Manifest
 	bar := widget.NewProgressBar()
 	label := widget.NewLabel("正在下载更新，请勿关闭程序...")
 	label.Wrapping = fyne.TextWrapWord
+	label.Alignment = fyne.TextAlignCenter
+
 	d := dialog.NewCustomWithoutButtons("正在更新", container.NewVBox(label, bar), w)
+	d.Resize(fyne.NewSize(580, 180))
 	d.Show()
 
 	go func() {
+		start := time.Now()
 		zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
 			if total > 0 {
 				bar.SetValue(float64(done) / float64(total))
+			}
+			secs := time.Since(start).Seconds()
+			speed := int64(0)
+			if secs > 0.5 {
+				speed = int64(float64(done) / secs)
+			}
+			if total > 0 {
+				label.SetText(fmt.Sprintf("正在下载更新（%s / %s，%s/s），请勿关闭程序...",
+					humanSize(done), humanSize(total), humanSize(speed)))
+			} else {
+				label.SetText(fmt.Sprintf("正在下载更新（已下载 %s），请勿关闭程序...", humanSize(done)))
 			}
 		})
 		if err != nil {
@@ -74,4 +89,15 @@ func downloadAndApply(w fyne.Window, checker *update.Checker, m *update.Manifest
 		}
 		os.Exit(0)
 	}()
+}
+
+func humanSize(n int64) string {
+	if n < 0 {
+		n = 0
+	}
+	const mb = 1024 * 1024
+	if n >= mb {
+		return fmt.Sprintf("%.1f MB", float64(n)/mb)
+	}
+	return fmt.Sprintf("%.0f KB", float64(n)/1024)
 }

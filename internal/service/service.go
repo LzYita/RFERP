@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -1018,60 +1019,102 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 // ---- 备份与导出 ----
 
+type mysqlSessionChecks struct {
+	ForeignKeyChecks int `db:"foreign_key_checks"`
+	UniqueChecks     int `db:"unique_checks"`
+}
+
+func withDisabledChecks(conn *repository.Conn, operation func(*repository.Tx) error) (retErr error) {
+	var previous mysqlSessionChecks
+	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
+		return fmt.Errorf("read MySQL session checks: %w", err)
+	}
+
+	defer func() {
+		var restoreErrs []error
+		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore FOREIGN_KEY_CHECKS: %w", err))
+		}
+		if _, err := conn.Exec(fmt.Sprintf("SET UNIQUE_CHECKS = %d", previous.UniqueChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
+		}
+		if len(restoreErrs) > 0 {
+			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
+		}
+	}()
+
+	if _, err := conn.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable FOREIGN_KEY_CHECKS: %w", err)
+	}
+	if _, err := conn.Exec("SET UNIQUE_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable UNIQUE_CHECKS: %w", err)
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin database operation: %w", err)
+	}
+	if err := operation(tx); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit database operation: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read file: %w", err)
 	}
 
-	// disable checks for smooth import
-	s.repo.Exec("SET FOREIGN_KEY_CHECKS = 0")
-	s.repo.Exec("SET UNIQUE_CHECKS = 0")
-	defer func() {
-		s.repo.Exec("SET FOREIGN_KEY_CHECKS = 1")
-		s.repo.Exec("SET UNIQUE_CHECKS = 1")
-	}()
-
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
 	lines := strings.Split(content, "\n")
 
-	var buf strings.Builder
-	inInsert := false
-
-	execInsert := func(sql string) bool {
-		if _, e := s.repo.Exec(sql); e != nil {
-			failed++
-			return false
-		}
-		success++
-		return true
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-			continue
-		}
-		if !inInsert {
-			if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
-				buf.Reset()
+	err = s.repo.WithConn(func(conn *repository.Conn) error {
+		return withDisabledChecks(conn, func(tx *repository.Tx) error {
+			var buf strings.Builder
+			inInsert := false
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+					continue
+				}
+				if !inInsert {
+					if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+						buf.Reset()
+						buf.WriteString(line)
+						if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+							if _, err := tx.Exec(buf.String()); err != nil {
+								failed++
+								return fmt.Errorf("restore INSERT failed: %w", err)
+							}
+							success++
+						} else {
+							inInsert = true
+						}
+					}
+					continue
+				}
+				buf.WriteString("\n")
 				buf.WriteString(line)
-				if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
-					execInsert(buf.String())
-				} else {
-					inInsert = true
+				if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+					if _, err := tx.Exec(buf.String()); err != nil {
+						failed++
+						return fmt.Errorf("restore INSERT failed: %w", err)
+					}
+					success++
+					inInsert = false
 				}
 			}
-			continue
-		}
-		buf.WriteString("\n")
-		buf.WriteString(line)
-		if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
-			execInsert(buf.String())
-			inInsert = false
-		}
-	}
-	return success, failed, nil
+			return nil
+		})
+	})
+	return success, failed, err
 }
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
@@ -1485,22 +1528,25 @@ func bomConsume(planQty int, item model.BOMItem) float64 {
 
 func (s *Service) ClearDatabase() error {
 	stmts := []string{
-		"SET FOREIGN_KEY_CHECKS = 0",
 		"DELETE FROM batch_skip_parts",
 		"DELETE FROM batch_trace",
+		"DELETE FROM batch_consumptions",
 		"DELETE FROM bom_items",
 		"DELETE FROM product_batches",
 		"DELETE FROM parts",
 		"DELETE FROM products",
 		"DELETE FROM audit_log",
-		"SET FOREIGN_KEY_CHECKS = 1",
 	}
-	for _, stmt := range stmts {
-		if _, err := s.repo.Exec(stmt); err != nil {
-			return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
-		}
-	}
-	return nil
+	return s.repo.WithConn(func(conn *repository.Conn) error {
+		return withDisabledChecks(conn, func(tx *repository.Tx) error {
+			for _, stmt := range stmts {
+				if _, err := tx.Exec(stmt); err != nil {
+					return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
+				}
+			}
+			return nil
+		})
+	})
 }
 
 func (s *Service) ValidateBOM(productID int64) (bool, error) {

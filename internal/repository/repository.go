@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -21,8 +22,45 @@ type Tx struct {
 	tx *sqlx.Tx
 }
 
+// Conn is a checked-out database connection. All operations through Conn use
+// the same physical MySQL session until Repository.WithConn returns.
+type Conn struct {
+	conn *sqlx.Conn
+}
+
 func New(db *sqlx.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// WithConn checks out one physical connection for fn and returns it to the
+// pool afterwards. This is required for MySQL session variables such as
+// FOREIGN_KEY_CHECKS and UNIQUE_CHECKS.
+func (r *Repository) WithConn(fn func(*Conn) error) error {
+	if fn == nil {
+		return fmt.Errorf("connection callback cannot be nil")
+	}
+	conn, err := r.db.Connx(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return fn(&Conn{conn: conn})
+}
+
+func (c *Conn) Exec(query string, args ...any) (sql.Result, error) {
+	return c.conn.ExecContext(context.Background(), query, args...)
+}
+
+func (c *Conn) Get(dest any, query string, args ...any) error {
+	return c.conn.GetContext(context.Background(), dest, query, args...)
+}
+
+func (c *Conn) Begin() (*Tx, error) {
+	tx, err := c.conn.BeginTxx(context.Background(), nil)
+	if err != nil {
+		return nil, err
+	}
+	return &Tx{tx: tx}, nil
 }
 
 // WithTx runs fn in a transaction and commits only when fn succeeds. Callers
@@ -44,6 +82,18 @@ func (r *Repository) WithTx(fn func(*Tx) error) error {
 		return fmt.Errorf("commit batch transaction: %w", err)
 	}
 	return nil
+}
+
+func (t *Tx) Exec(query string, args ...any) (sql.Result, error) {
+	return t.tx.Exec(query, args...)
+}
+
+func (t *Tx) Commit() error {
+	return t.tx.Commit()
+}
+
+func (t *Tx) Rollback() error {
+	return t.tx.Rollback()
 }
 
 // ---- 产品 ----

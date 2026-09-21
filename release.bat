@@ -1,9 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
+call tools-env.bat || exit /b 1
+
 set "REPO=LzYita/RFERP"
-set "GH=D:\GitHub CLI\gh.exe"
 set "KEY=%USERPROFILE%\.rferp\update-signing.key"
-set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 set "VERSION=%~1"
 if "%VERSION%"=="" set /p "VERSION=Version (e.g. 1.2.3): "
@@ -18,11 +19,6 @@ if "%NOTES_FILE%"=="" set "NOTES_FILE=release-notes.txt"
 
 set "TAG=v%VERSION%"
 set "ASSET_BASE=https://github.com/%REPO%/releases/download/%TAG%"
-
-set "PATH=D:\Go\bin;D:\TDM-GCC\bin;%PATH%"
-set "CGO_ENABLED=1"
-set "CC=D:\TDM-GCC\bin\gcc.exe"
-cd /d D:\opencode\sql_project
 
 echo ================================
 echo   Release RFERP %VERSION%
@@ -77,8 +73,13 @@ if errorlevel 1 (
 )
 
 echo [6/7] Build installer ...
+if not defined ISCC (
+    echo   ISCC not found. Install Inno Setup 6 or set ISCC.
+    pause
+    exit /b 1
+)
 if not exist "!ISCC!" (
-    echo   ISCC not found: !ISCC!
+    echo   ISCC not found at "!ISCC!".
     pause
     exit /b 1
 )
@@ -90,19 +91,24 @@ if errorlevel 1 (
 )
 
 echo [7/7] Upload to GitHub Release ...
-"%GH%" auth status >nul 2>nul
+if not defined GH (
+    echo   gh not found in PATH. Install GitHub CLI or set GH.
+    pause
+    exit /b 1
+)
+"!GH!" auth status >nul 2>nul
 if errorlevel 1 (
     echo   gh not logged in. Run: gh auth login
     pause
     exit /b 1
 )
-"%GH%" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
+"!GH!" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
 if errorlevel 1 (
     echo   Release create failed.
     pause
     exit /b 1
 )
-"%GH%" release edit %TAG% --draft=false --latest
+"!GH!" release edit %TAG% --draft=false --latest
 if errorlevel 1 (
     echo   Release publish failed.
     pause

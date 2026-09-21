@@ -70,7 +70,8 @@ build.bat
 ```
 产物：`RFERP.exe`
 
-> `build.bat` / `build-installer.bat` / `release.bat` 中的工具路径（Go、GCC、Inno Setup）按本机实际位置调整。
+> 脚本通过系统 PATH 查找 `go` / `gcc` / `gh` / `ISCC`，并相对脚本自身目录运行，可在任意路径执行。
+> 如需覆盖，可设置环境变量：`GOROOT`、`GCC_DIR`、`GH`、`ISCC`。
 
 ### 构建安装包
 ```bat

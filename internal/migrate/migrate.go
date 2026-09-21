@@ -35,6 +35,8 @@ var migrations = []migration{
 	{3, "bom_replaceable_use_mode", applyBOMReplaceableUseMode},
 	{4, "products_drop_code_index", applyProductsDropCodeIndex},
 	{5, "batch_skip_parts", applyBatchSkipParts},
+	{6, "parts_supplier", applyPartsSupplier},
+	{7, "batches_customer", applyBatchesCustomer},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -224,6 +226,24 @@ func applyBatchSkipParts(db *sqlx.DB) error {
 	return err
 }
 
+func applyPartsSupplier(db *sqlx.DB) error {
+	ok, err := columnExists(db, "parts", "supplier")
+	if err != nil || ok {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE parts ADD COLUMN supplier VARCHAR(200) COMMENT '供应商'`)
+	return err
+}
+
+func applyBatchesCustomer(db *sqlx.DB) error {
+	ok, err := columnExists(db, "product_batches", "customer")
+	if err != nil || ok {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE product_batches ADD COLUMN customer VARCHAR(200) COMMENT '客户'`)
+	return err
+}
+
 var baseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -249,7 +269,8 @@ var baseSchema = []string{
 		version     INT          NOT NULL DEFAULT 1,
 		created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-		operator    VARCHAR(50)
+		operator    VARCHAR(50),
+		supplier    VARCHAR(200)          COMMENT '供应商'
 	) COMMENT '零件/物料档案'`,
 	`CREATE TABLE IF NOT EXISTS bom_items (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -277,6 +298,7 @@ var baseSchema = []string{
 		created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		operator        VARCHAR(50),
+		customer        VARCHAR(200)          COMMENT '客户',
 		FOREIGN KEY (product_id) REFERENCES products(id)
 	) COMMENT '生产批次'`,
 	`CREATE TABLE IF NOT EXISTS batch_trace (

@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
 	"app/internal/model"
 	"app/internal/service"
 )
@@ -41,20 +42,21 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 	})
 	s.filterSel.PlaceHolder = "全部"
 
-	topBar := container.NewBorder(nil, nil, nil,
-		container.NewHBox(
-			widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh),
+	btns := []fyne.CanvasObject{widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh)}
+	if auth.CanWrite(auth.ModuleParts) {
+		btns = append(btns,
 			withImportance(widget.NewButtonWithIcon("新增", theme.ContentAddIcon(), s.add), widget.HighImportance),
 			widget.NewButtonWithIcon("编辑", theme.DocumentCreateIcon(), s.edit),
 			widget.NewButton("入库", s.stockIn),
 			widget.NewButtonWithIcon("盘点", theme.InfoIcon(), s.adjustStock),
-			widget.NewButtonWithIcon("预警列表", theme.WarningIcon(), s.showWarnList),
-			withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.delete), widget.DangerImportance),
-			widget.NewSeparator(),
-			widget.NewLabel("分类:"),
-			s.filterSel,
-		),
-	)
+		)
+	}
+	btns = append(btns, widget.NewButtonWithIcon("预警列表", theme.WarningIcon(), s.showWarnList))
+	if auth.CanWrite(auth.ModuleParts) {
+		btns = append(btns, withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.delete), widget.DangerImportance))
+	}
+	btns = append(btns, widget.NewSeparator(), widget.NewLabel("分类:"), s.filterSel)
+	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...))
 
 	s.label = widget.NewLabel("共 0 条记录")
 
@@ -294,7 +296,7 @@ func (s *PartScreen) add() {
 		if !ok {
 			return
 		}
-		op := "admin"
+		op := auth.OperatorName()
 		qty := 0.0
 		_, _ = fmt.Sscanf(stock.Text, "%f", &qty)
 		warn := 0.0
@@ -356,7 +358,7 @@ func (s *PartScreen) edit() {
 		if !ok {
 			return
 		}
-		op := "admin"
+		op := auth.OperatorName()
 		warn := 0.0
 		_, _ = fmt.Sscanf(warnQty.Text, "%f", &warn)
 		sup := supplier.Text
@@ -395,7 +397,7 @@ func (s *PartScreen) delete() {
 		if !ok {
 			return
 		}
-		if err := s.svc.DeletePart(p.ID, "admin"); err != nil {
+		if err := s.svc.DeletePart(p.ID, auth.OperatorName()); err != nil {
 			showError(s.window, "删除失败", err)
 			return
 		}
@@ -427,7 +429,7 @@ func (s *PartScreen) stockIn() {
 			dialog.ShowInformation("提示", "数量必须大于0", s.window)
 			return
 		}
-		if err := s.svc.StockIn(p.ID, v, "admin"); err != nil {
+		if err := s.svc.StockIn(p.ID, v, auth.OperatorName()); err != nil {
 			showError(s.window, "入库失败", err)
 			return
 		}
@@ -459,7 +461,7 @@ func (s *PartScreen) adjustStock() {
 			dialog.ShowInformation("提示", "数量不能为负", s.window)
 			return
 		}
-		if err := s.svc.AdjustStock(p.ID, v, "admin"); err != nil {
+		if err := s.svc.AdjustStock(p.ID, v, auth.OperatorName()); err != nil {
 			showError(s.window, "盘点失败", err)
 			return
 		}

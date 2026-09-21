@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
 	"app/internal/model"
 	"app/internal/service"
 )
@@ -31,17 +32,18 @@ func NewBatchScreen(svc *service.Service, w fyne.Window) *BatchScreen {
 }
 
 func (s *BatchScreen) Build() fyne.CanvasObject {
-	topBar := container.NewBorder(nil, nil, nil,
-		container.NewHBox(
-			widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh),
+	btns := []fyne.CanvasObject{widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh)}
+	if auth.CanWrite(auth.ModuleBatch) {
+		btns = append(btns,
 			withImportance(widget.NewButtonWithIcon("新建批次", theme.ContentAddIcon(), s.createBatch), widget.HighImportance),
 			widget.NewButtonWithIcon("开始生产", theme.NavigateNextIcon(), func() { s.setStatus(1) }),
 			widget.NewButtonWithIcon("完成生产", theme.ConfirmIcon(), func() { s.setStatus(2) }),
 			widget.NewButtonWithIcon("记录投料", theme.UploadIcon(), s.recordTrace),
 			widget.NewButtonWithIcon("跳过零件", theme.ContentAddIcon(), s.specialConsume),
 			withImportance(widget.NewButtonWithIcon("撤销", theme.DeleteIcon(), s.revokeBatch), widget.DangerImportance),
-		),
-	)
+		)
+	}
+	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...))
 
 	s.label = widget.NewLabel("共 0 批")
 
@@ -190,7 +192,7 @@ func (s *BatchScreen) setStatus(status int) {
 		if !ok {
 			return
 		}
-		if err := s.svc.UpdateBatchStatus(b.ID, status, "admin"); err != nil {
+		if err := s.svc.UpdateBatchStatus(b.ID, status, auth.OperatorName()); err != nil {
 			showError(s.window, "操作失败", err)
 			return
 		}
@@ -329,7 +331,7 @@ func (s *BatchScreen) createBatch() {
 		}
 		qty := 0
 		_, _ = fmt.Sscanf(planQty.Text, "%d", &qty)
-		op := "admin"
+		op := auth.OperatorName()
 		c := customer.Text
 		b := &model.ProductBatch{
 			BatchNo:   batchNo.Text,
@@ -454,7 +456,7 @@ func (s *BatchScreen) recordTrace() {
 			if !ok {
 				return
 			}
-			op := "admin"
+			op := auth.OperatorName()
 			saved := 0
 			for i, bi := range bomItems {
 				r := rows[i]
@@ -508,7 +510,7 @@ func (s *BatchScreen) revokeBatch() {
 		if !ok {
 			return
 		}
-		if err := s.svc.RevokeBatch(b.ID, "admin"); err != nil {
+		if err := s.svc.RevokeBatch(b.ID, auth.OperatorName()); err != nil {
 			showError(s.window, "撤销失败", err)
 			return
 		}

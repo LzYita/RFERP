@@ -7,12 +7,14 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
 	"app/internal/service"
 )
 
 type App struct {
 	svc       *service.Service
 	window    fyne.Window
+	onLogout  func()
 	dashboard *DashboardScreen
 	stats     *StatsScreen
 	product   *ProductScreen
@@ -21,33 +23,29 @@ type App struct {
 	batch     *BatchScreen
 	audit     *AuditScreen
 	backup    *BackupScreen
+	users     *UsersScreen
 
+	navItems []navItem
 	navBtns  []*widget.Button
 	content  *fyne.Container
-	pages    []fyne.CanvasObject
+	pages    []pageDef
 	selected int
 }
 
 type navItem struct {
-	label string
-	icon  fyne.Resource
+	module string
+	label  string
+	icon   fyne.Resource
 }
 
-func navItems() []navItem {
-	return []navItem{
-		{"工作台", theme.HomeIcon()},
-		{"统计分析", theme.MediaPlayIcon()},
-		{"产品管理", theme.ComputerIcon()},
-		{"零件管理", theme.StorageIcon()},
-		{"BOM管理", theme.ListIcon()},
-		{"批次追溯", theme.HistoryIcon()},
-		{"操作记录", theme.InfoIcon()},
-		{"备份导出", theme.DownloadIcon()},
-	}
+type pageDef struct {
+	item    navItem
+	page    fyne.CanvasObject
+	refresh func()
 }
 
-func NewApp(svc *service.Service, w fyne.Window) *App {
-	a := &App{svc: svc, window: w, selected: 0}
+func NewApp(svc *service.Service, w fyne.Window, onLogout func()) *App {
+	a := &App{svc: svc, window: w, selected: 0, onLogout: onLogout}
 	a.dashboard = NewDashboardScreen(svc, w)
 	a.stats = NewStatsScreen(svc, w)
 	a.product = NewProductScreen(svc, w)
@@ -56,11 +54,11 @@ func NewApp(svc *service.Service, w fyne.Window) *App {
 	a.batch = NewBatchScreen(svc, w)
 	a.audit = NewAuditScreen(svc, w)
 	a.backup = NewBackupScreen(svc, w)
+	a.users = NewUsersScreen(svc, w)
 	return a
 }
 
 func (a *App) buildSidebar() fyne.CanvasObject {
-	// 顶部品牌区
 	brandBg := canvas.NewRectangle(clrPrimary)
 	brandBg.SetMinSize(fyne.NewSize(0, 72))
 
@@ -77,11 +75,10 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 	brandBox = container.NewPadded(brandBox)
 	brandContainer := container.NewStack(brandBg, container.NewCenter(brandBox))
 
-	items := navItems()
-	btns := make([]fyne.CanvasObject, 0, len(items)+2)
+	btns := make([]fyne.CanvasObject, 0, len(a.navItems)+2)
 	btns = append(btns, brandContainer)
 
-	for i, item := range items {
+	for i, item := range a.navItems {
 		idx := i
 		btn := widget.NewButtonWithIcon(item.label, item.icon, func() { a.Select(idx) })
 		btn.Importance = widget.MediumImportance
@@ -90,14 +87,31 @@ func (a *App) buildSidebar() fyne.CanvasObject {
 		btns = append(btns, btn)
 	}
 
-	sep := canvas.NewRectangle(clrBorder)
-	sep.SetMinSize(fyne.NewSize(0, 1))
-
 	navBox := container.NewVBox(btns...)
 	navBox = container.NewPadded(navBox)
 
-	sidebar := container.NewBorder(nil, nil, nil, nil, navBox)
-	return sidebar
+	footer := a.buildSidebarFooter()
+	return container.NewBorder(nil, footer, nil, nil, navBox)
+}
+
+func (a *App) buildSidebarFooter() fyne.CanvasObject {
+	name := auth.OperatorName()
+	role := auth.CurrentRole().Label()
+
+	nameLbl := widget.NewLabelWithStyle(name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	roleLbl := widget.NewLabel(role + " · " + auth.Current().Username)
+
+	logoutBtn := widget.NewButtonWithIcon("退出登录", theme.LogoutIcon(), func() {
+		auth.Logout()
+		if a.onLogout != nil {
+			a.onLogout()
+		}
+	})
+	logoutBtn.Importance = widget.LowImportance
+
+	info := container.NewVBox(nameLbl, roleLbl)
+	box := container.NewVBox(widget.NewSeparator(), container.NewPadded(info), container.NewPadded(logoutBtn))
+	return box
 }
 
 func (a *App) Select(idx int) {
@@ -106,7 +120,7 @@ func (a *App) Select(idx int) {
 	}
 	a.selected = idx
 	if a.content != nil {
-		a.content.Objects = []fyne.CanvasObject{a.pages[idx]}
+		a.content.Objects = []fyne.CanvasObject{a.pages[idx].page}
 		a.content.Refresh()
 	}
 	for i, b := range a.navBtns {
@@ -117,39 +131,40 @@ func (a *App) Select(idx int) {
 		}
 		b.Refresh()
 	}
-	switch idx {
-	case 0:
-		a.dashboard.Refresh()
-	case 1:
-		a.stats.Refresh()
-	case 2:
-		a.product.Refresh()
-	case 3:
-		a.part.Refresh()
-	case 4:
-		a.bom.Refresh()
-	case 5:
-		a.batch.Refresh()
-	case 6:
-		a.audit.Refresh()
+	if a.pages[idx].refresh != nil {
+		a.pages[idx].refresh()
 	}
 }
 
 func (a *App) BuildUI() fyne.CanvasObject {
-	a.pages = []fyne.CanvasObject{
-		a.dashboard.Build(),
-		a.stats.Build(),
-		a.product.Build(),
-		a.part.Build(),
-		a.bom.Build(),
-		a.batch.Build(),
-		a.audit.Build(),
-		a.backup.Build(),
+	defs := []pageDef{
+		{navItem{auth.ModuleDashboard, "工作台", theme.HomeIcon()}, a.dashboard.Build(), a.dashboard.Refresh},
+		{navItem{auth.ModuleStats, "统计分析", theme.MediaPlayIcon()}, a.stats.Build(), a.stats.Refresh},
+		{navItem{auth.ModuleProducts, "产品管理", theme.ComputerIcon()}, a.product.Build(), a.product.Refresh},
+		{navItem{auth.ModuleParts, "零件管理", theme.StorageIcon()}, a.part.Build(), a.part.Refresh},
+		{navItem{auth.ModuleBOM, "BOM管理", theme.ListIcon()}, a.bom.Build(), a.bom.Refresh},
+		{navItem{auth.ModuleBatch, "批次追溯", theme.HistoryIcon()}, a.batch.Build(), a.batch.Refresh},
+		{navItem{auth.ModuleAudit, "操作记录", theme.InfoIcon()}, a.audit.Build(), a.audit.Refresh},
+		{navItem{auth.ModuleBackup, "备份导出", theme.DownloadIcon()}, a.backup.Build(), nil},
+		{navItem{auth.ModuleUsers, "用户管理", theme.AccountIcon()}, a.users.Build(), a.users.Refresh},
 	}
 
-	a.content = container.NewMax(a.pages[0])
+	a.navItems = nil
+	a.pages = nil
+	for _, d := range defs {
+		if auth.CanRead(d.item.module) {
+			a.navItems = append(a.navItems, d.item)
+			a.pages = append(a.pages, d)
+		}
+	}
 
-	// 侧栏底色
+	if len(a.pages) == 0 {
+		empty := container.NewCenter(widget.NewLabel("当前账号没有可访问的模块，请联系管理员。"))
+		a.content = container.NewMax(empty)
+	} else {
+		a.content = container.NewMax(a.pages[0].page)
+	}
+
 	sideBg := canvas.NewRectangle(clrSurface)
 	sideBg.SetMinSize(fyne.NewSize(210, 0))
 	sidebar := container.NewStack(sideBg, a.buildSidebar())
@@ -158,11 +173,12 @@ func (a *App) BuildUI() fyne.CanvasObject {
 	divider.SetMinSize(fyne.NewSize(1, 0))
 
 	sideBar := container.NewBorder(nil, nil, nil, nil, sidebar)
+	layout := container.NewBorder(nil, nil, container.NewHBox(sideBar, divider), nil, a.content)
 
-	layout3 := container.NewBorder(nil, nil, container.NewHBox(sideBar, divider), nil, a.content)
-
-	a.Select(0)
-	return layout3
+	if len(a.pages) > 0 {
+		a.Select(0)
+	}
+	return layout
 }
 
 func (a *App) RefreshAll() {

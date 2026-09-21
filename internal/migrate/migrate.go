@@ -37,6 +37,7 @@ var migrations = []migration{
 	{5, "batch_skip_parts", applyBatchSkipParts},
 	{6, "parts_supplier", applyPartsSupplier},
 	{7, "batches_customer", applyBatchesCustomer},
+	{8, "users", applyUsers},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -241,6 +242,21 @@ func applyBatchesCustomer(db *sqlx.DB) error {
 		return err
 	}
 	_, err = db.Exec(`ALTER TABLE product_batches ADD COLUMN customer VARCHAR(200) COMMENT '客户'`)
+	return err
+}
+
+func applyUsers(db *sqlx.DB) error {
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS users (
+		id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+		username      VARCHAR(64)  NOT NULL UNIQUE COMMENT '登录名',
+		password_hash VARCHAR(255) NOT NULL COMMENT '密码哈希',
+		display_name  VARCHAR(100)          COMMENT '显示名',
+		role          VARCHAR(20)  NOT NULL DEFAULT 'viewer' COMMENT 'admin/warehouse/production/viewer',
+		status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1启用 0停用',
+		last_login_at DATETIME     NULL,
+		created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+	) COMMENT '用户账号'`)
 	return err
 }
 

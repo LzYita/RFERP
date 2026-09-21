@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
 	"app/internal/model"
 	"app/internal/service"
 )
@@ -101,10 +102,11 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 	s.delBtn = withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.removePart), widget.DangerImportance)
 	s.addBtn.Disable()
 	s.delBtn.Disable()
-	btnRow := container.NewHBox(
-		widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh),
-		s.addBtn, s.delBtn,
-	)
+	btns := []fyne.CanvasObject{widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh)}
+	if auth.CanWrite(auth.ModuleBOM) {
+		btns = append(btns, s.addBtn, s.delBtn)
+	}
+	btnRow := container.NewHBox(btns...)
 	topBar := container.NewBorder(nil, nil,
 		widget.NewLabel("选择产品: "), nil,
 		container.NewVBox(selRow, btnRow),
@@ -237,8 +239,10 @@ func (s *BOMScreen) onProductChanged() {
 		if s.table != nil {
 			s.table.Refresh()
 		}
-		s.addBtn.Disable()
-		s.delBtn.Disable()
+		if auth.CanWrite(auth.ModuleBOM) {
+			s.addBtn.Disable()
+			s.delBtn.Disable()
+		}
 		return
 	}
 	for _, p := range s.products {
@@ -252,8 +256,10 @@ func (s *BOMScreen) onProductChanged() {
 				continue
 			}
 			s.loadBOM(p.ID)
-			s.addBtn.Enable()
-			s.delBtn.Enable()
+			if auth.CanWrite(auth.ModuleBOM) {
+				s.addBtn.Enable()
+				s.delBtn.Enable()
+			}
 			return
 		}
 	}
@@ -375,7 +381,7 @@ func (s *BOMScreen) addPart() {
 		l := 0.0
 		_, _ = fmt.Sscanf(qty.Text, "%f", &q)
 		_, _ = fmt.Sscanf(loss.Text, "%f", &l)
-		op := "admin"
+		op := auth.OperatorName()
 		r := remark.Text
 		rep := 0
 		if replaceable.Checked {
@@ -425,7 +431,7 @@ func (s *BOMScreen) removePart() {
 		if !ok {
 			return
 		}
-		if err := s.svc.RemoveBOMItem(b.ID, "admin"); err != nil {
+		if err := s.svc.RemoveBOMItem(b.ID, auth.OperatorName()); err != nil {
 			showError(s.window, "删除失败", err)
 			return
 		}

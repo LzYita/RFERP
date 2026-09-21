@@ -411,3 +411,79 @@ func (r *Repository) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 	}
 	return out, nil
 }
+
+// ---- 用户 ----
+
+func (r *Repository) CountUsers() (int, error) {
+	var n int
+	err := r.db.Get(&n, `SELECT COUNT(*) FROM users`)
+	return n, err
+}
+
+func (r *Repository) CountActiveAdmins() (int, error) {
+	var n int
+	err := r.db.Get(&n, `SELECT COUNT(*) FROM users WHERE role='admin' AND status=1`)
+	return n, err
+}
+
+func (r *Repository) GetUserByUsername(username string) (*model.User, error) {
+	var u model.User
+	err := r.db.Get(&u, `SELECT * FROM users WHERE username=?`, username)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repository) GetUserByID(id int64) (*model.User, error) {
+	var u model.User
+	err := r.db.Get(&u, `SELECT * FROM users WHERE id=?`, id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *Repository) ListUsers() ([]model.User, error) {
+	var list []model.User
+	err := r.db.Select(&list, `SELECT * FROM users ORDER BY id`)
+	return list, err
+}
+
+func (r *Repository) CreateUser(u *model.User) (int64, error) {
+	res, err := r.db.Exec(
+		`INSERT INTO users (username,password_hash,display_name,role,status) VALUES (?,?,?,?,?)`,
+		u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Status)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (r *Repository) UpdateUser(u *model.User) error {
+	_, err := r.db.Exec(
+		`UPDATE users SET display_name=?, role=?, status=? WHERE id=?`,
+		u.DisplayName, u.Role, u.Status, u.ID)
+	return err
+}
+
+func (r *Repository) UpdateUserPassword(id int64, hash string) error {
+	_, err := r.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, id)
+	return err
+}
+
+func (r *Repository) DeleteUser(id int64) error {
+	_, err := r.db.Exec(`DELETE FROM users WHERE id=?`, id)
+	return err
+}
+
+func (r *Repository) TouchUserLogin(id int64) error {
+	_, err := r.db.Exec(`UPDATE users SET last_login_at=NOW() WHERE id=?`, id)
+	return err
+}

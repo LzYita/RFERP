@@ -8,18 +8,22 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/jmoiron/sqlx"
 
 	"app/internal/config"
 	"app/internal/dbsetup"
 	"app/internal/mysqlfind"
+	"app/internal/nativefiledialog"
+	"app/internal/paths"
 )
 
 const mysqlDownloadURL = "https://dev.mysql.com/downloads/installer/"
 
 func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sqlx.DB)) {
 	w := a.NewWindow("RFERP 首次配置")
+	w.SetIcon(AppLogo())
 	w.Resize(fyne.NewSize(540, 600))
 	w.CenterOnScreen()
 
@@ -42,6 +46,13 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 	pass.SetText(base.DB.Password)
 	dbname := widget.NewEntry()
 	dbname.SetText(defaultDB(base))
+	dataDir := widget.NewEntry()
+	dataDir.SetText(defaultDataDir(base))
+	dataDirBrowse := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		if dir, ok := nativefiledialog.PickFolder("请选择数据目录"); ok && dir != "" {
+			dataDir.SetText(dir)
+		}
+	})
 	dedicated := widget.NewCheck("使用 root 连接时，自动创建专用账号（推荐）", nil)
 	dedicated.SetChecked(true)
 
@@ -73,6 +84,9 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 		}
 		if dumpPath != "" {
 			cfg.MysqldumpPath = dumpPath
+		}
+		if d := strings.TrimSpace(dataDir.Text); d != "" {
+			cfg.DataDir = d
 		}
 		return &cfg, nil
 	}
@@ -188,6 +202,7 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 		widget.NewFormItem("用户名", user),
 		widget.NewFormItem("密码", pass),
 		widget.NewFormItem("数据库", dbname),
+		widget.NewFormItem("数据目录", container.NewBorder(nil, nil, nil, dataDirBrowse, dataDir)),
 	)
 
 	content := container.NewPadded(container.NewVBox(
@@ -244,4 +259,11 @@ func defaultDB(base *config.Config) string {
 		return base.DB.DBName
 	}
 	return "appliancedb"
+}
+
+func defaultDataDir(base *config.Config) string {
+	if base.DataDir != "" {
+		return base.DataDir
+	}
+	return paths.DataDir()
 }

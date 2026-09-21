@@ -86,11 +86,6 @@ func Load() *Config {
 	if cfg.MySQLService == "" {
 		cfg.MySQLService = "MySQL80"
 	}
-	if cfg.DataDir == "" {
-		if _, err := os.Stat(`D:\仓库数据`); err == nil {
-			cfg.DataDir = `D:\仓库数据`
-		}
-	}
 	if cfg.UpdateURL == "" {
 		cfg.UpdateURL = DefaultUpdateURL
 	}

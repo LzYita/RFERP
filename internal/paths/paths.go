@@ -19,9 +19,9 @@ func DataDir() string {
 		return v
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, "仓库数据")
+		return filepath.Join(home, "RFERP")
 	}
-	return "仓库数据"
+	return "RFERP"
 }
 
 func BackupDir() string {

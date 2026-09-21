@@ -89,3 +89,15 @@ type AuditLog struct {
 	Operator  *string         `db:"operator" json:"operator,omitempty"`
 	CreatedAt time.Time       `db:"created_at" json:"created_at"`
 }
+
+type User struct {
+	ID           int64      `db:"id" json:"id"`
+	Username     string     `db:"username" json:"username"`
+	PasswordHash string     `db:"password_hash" json:"-"`
+	DisplayName  *string    `db:"display_name" json:"display_name,omitempty"`
+	Role         string     `db:"role" json:"role"`
+	Status       int        `db:"status" json:"status"`
+	LastLoginAt  *time.Time `db:"last_login_at" json:"last_login_at,omitempty"`
+	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time  `db:"updated_at" json:"updated_at"`
+}

@@ -17,12 +17,14 @@ import (
 	"app/internal/config"
 	"app/internal/logging"
 	"app/internal/migrate"
+	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/repository"
 	"app/internal/service"
 	"app/internal/singleinstance"
 	"app/internal/ui"
 	"app/internal/update"
+	"app/internal/winappid"
 	"app/internal/winmsg"
 )
 
@@ -85,6 +87,8 @@ func isLocalHost(host string) bool {
 }
 
 func main() {
+	winappid.Set("LzYita.RFERP")
+
 	if ok, err := singleinstance.Acquire("RFERP.SingleInstance"); err == nil && !ok {
 		winmsg.Info("RFERP", "RFERP 已在运行，请勿重复启动。")
 		return
@@ -110,17 +114,18 @@ func main() {
 		log.Printf("database connection failed: %v", err)
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
-			launchMain(a, newCfg, newDB)
+			enterApp(a, newCfg, newDB)
 		})
 		a.Run()
 		return
 	}
 
-	launchMain(a, cfg, db)
+	enterApp(a, cfg, db)
 	a.Run()
 }
 
-func launchMain(a fyne.App, cfg *config.Config, db *sqlx.DB) {
+// enterApp 运行数据库迁移，然后进入登录流程（或自动登录）。
+func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
@@ -136,15 +141,34 @@ func launchMain(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	if len(res.Applied) > 0 {
 		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
 	}
-	repo := repository.New(db)
-	svc := service.New(repo, cfg.DB.DSN, cfg.MysqldumpPath)
 
+	svc := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+
+	if u, ok := ui.TryAutoLogin(svc); ok {
+		log.Printf("auto login: %s", u.Username)
+		launchMain(a, cfg, svc)
+		return
+	}
+	ui.ShowLogin(a, svc, func(u *model.User) {
+		log.Printf("login: %s (%s)", u.Username, u.Role)
+		launchMain(a, cfg, svc)
+	})
+}
+
+func launchMain(a fyne.App, cfg *config.Config, svc *service.Service) {
 	w := a.NewWindow("RFERP-仁风仓库管理系统 v" + version)
+	w.SetIcon(ui.AppLogo())
 	w.Resize(fyne.NewSize(1360, 860))
 	w.CenterOnScreen()
 	w.SetPadded(true)
 
-	appUI := ui.NewApp(svc, w)
+	appUI := ui.NewApp(svc, w, func() {
+		w.Close()
+		ui.ShowLogin(a, svc, func(u *model.User) {
+			log.Printf("login: %s (%s)", u.Username, u.Role)
+			launchMain(a, cfg, svc)
+		})
+	})
 	w.SetContent(appUI.BuildUI())
 	w.Show()
 

@@ -11,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"app/internal/auth"
+	"app/internal/config"
 	"app/internal/dbbackup"
 	"app/internal/model"
+	"app/internal/paths"
 	"app/internal/repository"
 )
 
@@ -20,13 +23,38 @@ type Service struct {
 	repo          *repository.Repository
 	dsn           string
 	mysqldumpPath string
+	cfg           *config.Config
 }
 
-func New(repo *repository.Repository, dsn string, mysqldumpPath string) *Service {
+func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *config.Config) *Service {
 	if mysqldumpPath == "" {
 		mysqldumpPath = "mysqldump"
 	}
-	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath}
+	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
+}
+
+// DataDir 返回当前数据（备份/导出）目录。
+func (s *Service) DataDir() string {
+	return paths.DataDir()
+}
+
+// SetDataDir 修改数据目录：创建目录、持久化到配置、并更新运行时路径。
+func (s *Service) SetDataDir(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("目录不能为空")
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+	if s.cfg != nil {
+		s.cfg.DataDir = dir
+		if err := s.cfg.Save(); err != nil {
+			return fmt.Errorf("保存配置失败: %w", err)
+		}
+	}
+	paths.SetDataDir(dir)
+	return nil
 }
 
 // ---- 辅助: 审计日志 ----
@@ -874,6 +902,10 @@ func tableLabel(v string) string {
 		return "BOM"
 	case "product_batches":
 		return "批次"
+	case "batch_trace":
+		return "批次追溯"
+	case "batch_skip_parts":
+		return "跳过零件"
 	default:
 		return v
 	}
@@ -919,6 +951,15 @@ func auditSummary(l model.AuditLog) string {
 		os, _ := d["old_stock"].(float64)
 		ns, _ := d["new_stock"].(float64)
 		return fmt.Sprintf("盘点 %.0f → %.0f", os, ns)
+	}
+	if t == "batch_trace" && a == "INSERT" && l.NewData != nil {
+		d := *l.NewData
+		pbn, _ := d["part_batch_no"].(string)
+		q, _ := d["used_qty"].(float64)
+		if pbn != "" {
+			return fmt.Sprintf("记录投料 %s，用量 %.0f", pbn, q)
+		}
+		return fmt.Sprintf("记录投料，用量 %.0f", q)
 	}
 	if a == "INSERT" && l.NewData != nil {
 		d := *l.NewData
@@ -1237,4 +1278,143 @@ func (s *Service) ValidateBOM(productID int64) (bool, error) {
 		return false, err
 	}
 	return len(items) > 0, nil
+}
+
+// ---- 用户与登录 ----
+
+func (s *Service) UserCount() (int, error) {
+	return s.repo.CountUsers()
+}
+
+func (s *Service) Login(username, password string) (*model.User, error) {
+	u, err := s.repo.GetUserByUsername(strings.TrimSpace(username))
+	if err != nil {
+		return nil, err
+	}
+	if u == nil || !auth.VerifyPassword(password, u.PasswordHash) {
+		return nil, fmt.Errorf("用户名或密码错误")
+	}
+	if u.Status != 1 {
+		return nil, fmt.Errorf("账号已停用，请联系管理员")
+	}
+	_ = s.repo.TouchUserLogin(u.ID)
+	return u, nil
+}
+
+func (s *Service) CreateInitialAdmin(username, password, displayName string) (*model.User, error) {
+	n, err := s.repo.CountUsers()
+	if err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		return nil, fmt.Errorf("已存在用户，无法创建初始管理员")
+	}
+	return s.CreateUser(username, password, displayName, string(auth.RoleAdmin))
+}
+
+func (s *Service) CreateUser(username, password, displayName, role string) (*model.User, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, fmt.Errorf("用户名不能为空")
+	}
+	if err := auth.ValidatePassword(password); err != nil {
+		return nil, err
+	}
+	if role == "" {
+		role = string(auth.RoleViewer)
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	u := &model.User{
+		Username:     username,
+		PasswordHash: hash,
+		DisplayName:  strPtrOrNil(displayName),
+		Role:         role,
+		Status:       1,
+	}
+	id, err := s.repo.CreateUser(u)
+	if err != nil {
+		return nil, err
+	}
+	u.ID = id
+	return u, nil
+}
+
+func (s *Service) ListUsers() ([]model.User, error) {
+	return s.repo.ListUsers()
+}
+
+func (s *Service) UpdateUser(id int64, displayName, role string, status int) error {
+	u, err := s.repo.GetUserByID(id)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return fmt.Errorf("用户不存在")
+	}
+	if u.Role == string(auth.RoleAdmin) && u.Status == 1 && (role != string(auth.RoleAdmin) || status != 1) {
+		n, err := s.repo.CountActiveAdmins()
+		if err != nil {
+			return err
+		}
+		if n <= 1 {
+			return fmt.Errorf("至少需保留一个启用状态的管理员")
+		}
+	}
+	u.DisplayName = strPtrOrNil(displayName)
+	u.Role = role
+	u.Status = status
+	return s.repo.UpdateUser(u)
+}
+
+func (s *Service) ResetPassword(id int64, password string) error {
+	if err := auth.ValidatePassword(password); err != nil {
+		return err
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	return s.repo.UpdateUserPassword(id, hash)
+}
+
+func (s *Service) ChangePassword(id int64, oldPw, newPw string) error {
+	u, err := s.repo.GetUserByID(id)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return fmt.Errorf("用户不存在")
+	}
+	if !auth.VerifyPassword(oldPw, u.PasswordHash) {
+		return fmt.Errorf("原密码错误")
+	}
+	return s.ResetPassword(id, newPw)
+}
+
+func (s *Service) DeleteUser(id int64) error {
+	u, err := s.repo.GetUserByID(id)
+	if err != nil {
+		return err
+	}
+	if u != nil && u.Role == string(auth.RoleAdmin) && u.Status == 1 {
+		n, err := s.repo.CountActiveAdmins()
+		if err != nil {
+			return err
+		}
+		if n <= 1 {
+			return fmt.Errorf("至少需保留一个启用状态的管理员")
+		}
+	}
+	return s.repo.DeleteUser(id)
+}
+
+func strPtrOrNil(v string) *string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return &v
 }

@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
 	"app/internal/model"
 	"app/internal/service"
 )
@@ -27,14 +28,15 @@ func NewProductScreen(svc *service.Service, w fyne.Window) *ProductScreen {
 }
 
 func (s *ProductScreen) Build() fyne.CanvasObject {
-	topBar := container.NewBorder(nil, nil, nil,
-		container.NewHBox(
-			widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh),
+	btns := []fyne.CanvasObject{widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), s.Refresh)}
+	if auth.CanWrite(auth.ModuleProducts) {
+		btns = append(btns,
 			withImportance(widget.NewButtonWithIcon("新增", theme.ContentAddIcon(), s.add), widget.HighImportance),
 			widget.NewButtonWithIcon("编辑", theme.DocumentCreateIcon(), s.edit),
 			withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.delete), widget.DangerImportance),
-		),
-	)
+		)
+	}
+	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...))
 
 	s.label = widget.NewLabel("共 0 条记录")
 
@@ -146,7 +148,7 @@ func (s *ProductScreen) add() {
 		if !ok {
 			return
 		}
-		op := "admin"
+		op := auth.OperatorName()
 		p := &model.Product{
 			Code:     code.Text,
 			Name:     name.Text,
@@ -197,7 +199,7 @@ func (s *ProductScreen) edit() {
 		if !ok {
 			return
 		}
-		op := "admin"
+		op := auth.OperatorName()
 		st := 1
 		up := &model.Product{
 			ID:       p.ID,
@@ -231,7 +233,7 @@ func (s *ProductScreen) delete() {
 		if !ok {
 			return
 		}
-		if err := s.svc.DeleteProduct(p.ID, "admin"); err != nil {
+		if err := s.svc.DeleteProduct(p.ID, auth.OperatorName()); err != nil {
 			showError(s.window, "删除失败", err)
 			return
 		}

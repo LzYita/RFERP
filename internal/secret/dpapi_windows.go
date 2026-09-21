@@ -41,6 +41,9 @@ func (b dataBlob) bytes() []byte {
 
 // Protect encrypts data with Windows DPAPI, bound to the current user.
 func Protect(plain []byte) ([]byte, error) {
+	if len(plain) == 0 {
+		return []byte{}, nil
+	}
 	in := newBlob(plain)
 	var out dataBlob
 	ret, _, err := procProtect.Call(
@@ -61,6 +64,9 @@ func Protect(plain []byte) ([]byte, error) {
 
 // Unprotect decrypts data previously produced by Protect on the same user/machine.
 func Unprotect(cipher []byte) ([]byte, error) {
+	if len(cipher) == 0 {
+		return []byte{}, nil
+	}
 	in := newBlob(cipher)
 	var out dataBlob
 	ret, _, err := procUnprotect.Call(

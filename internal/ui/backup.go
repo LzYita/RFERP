@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"app/internal/auth"
+	"app/internal/nativefiledialog"
 	"app/internal/paths"
 	"app/internal/service"
 )
@@ -28,6 +31,11 @@ type BackupScreen struct {
 	endDate      *widget.Entry
 	clearConfirm *widget.Entry
 	importPath   *widget.Entry
+
+	dataDirLabel *widget.Label
+	backupHint   *widget.Label
+	auditHint    *widget.Label
+	allHint      *widget.Label
 }
 
 func NewBackupScreen(svc *service.Service, w fyne.Window) *BackupScreen {
@@ -44,6 +52,32 @@ func makePathEntry(initial string) *widget.Entry {
 func (s *BackupScreen) Build() fyne.CanvasObject {
 	title := widget.NewLabelWithStyle("数据库备份与导出", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
+	// ---- 数据目录 ----
+	s.dataDirLabel = widget.NewLabel(s.svc.DataDir())
+	s.dataDirLabel.Wrapping = fyne.TextWrapWord
+
+	dirTitle := widget.NewLabelWithStyle("数据目录", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	dirDesc := widget.NewLabel("备份与导出文件的存放位置：")
+	dirDesc.Wrapping = fyne.TextWrapWord
+
+	pathBg := canvas.NewRectangle(clrHeader)
+	pathBg.StrokeColor = clrBorder
+	pathBg.StrokeWidth = 1
+	pathBg.CornerRadius = 6
+	pathCard := container.NewStack(pathBg, container.NewPadded(s.dataDirLabel))
+
+	dirBox := container.NewVBox(
+		container.NewHBox(widget.NewIcon(theme.FolderIcon()), dirTitle),
+		dirDesc,
+	)
+	if auth.CanWrite(auth.ModuleBackup) {
+		changeDirBtn := widget.NewButtonWithIcon("更改数据目录", theme.FolderOpenIcon(), s.doChangeDataDir)
+		changeDirBtn.Importance = widget.HighImportance
+		dirBox.Add(container.NewBorder(nil, nil, nil, changeDirBtn, pathCard))
+	} else {
+		dirBox.Add(pathCard)
+	}
+
 	// ---- 一键备份 ----
 	backupPath := s.backupPath
 	if backupPath == nil {
@@ -54,9 +88,11 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 	backupBtn := widget.NewButtonWithIcon("一键备份 (mysqldump)", theme.DownloadIcon(), s.doBackup)
 	backupBtn.Importance = widget.HighImportance
 
+	s.backupHint = widget.NewLabel(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir()))
+	s.backupHint.Wrapping = fyne.TextWrapWord
 	backupBox := container.NewVBox(
 		widget.NewLabelWithStyle("一 键 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir())),
+		s.backupHint,
 		backupBtn,
 		container.NewBorder(nil, nil, widget.NewLabelWithStyle("备份文件:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, backupPath),
 	)
@@ -119,9 +155,11 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 		clearBtn,
 	)
 
+	s.auditHint = widget.NewLabel(fmt.Sprintf("按日期范围导出操作记录（CSV），可用 Excel 打开，保存到 %s", filepath.Join(paths.ExportDir(), "audit_log")))
+	s.auditHint.Wrapping = fyne.TextWrapWord
 	auditBox := container.NewVBox(
 		widget.NewLabelWithStyle("审计日志导出 (按日期)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(fmt.Sprintf("按日期范围导出操作记录（CSV），可用 Excel 打开，保存到 %s", filepath.Join(paths.ExportDir(), "audit_log"))),
+		s.auditHint,
 		dateRow,
 		auditBtn,
 		container.NewBorder(nil, nil, widget.NewLabelWithStyle("导出文件:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, auditPath),
@@ -137,26 +175,25 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 	allBtn := widget.NewButtonWithIcon("导出全部数据CSV", theme.StorageIcon(), s.doExportAll)
 	allBtn.Importance = widget.MediumImportance
 
+	s.allHint = widget.NewLabel(fmt.Sprintf("将所有表(产品/零件/BOM/批次/追溯/日志)导出为单独 CSV 文件，保存到 %s", filepath.Join(paths.ExportDir(), "all_data")))
+	s.allHint.Wrapping = fyne.TextWrapWord
 	allBox := container.NewVBox(
 		widget.NewLabelWithStyle("全部数据导出 (CSV)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(fmt.Sprintf("将所有表(产品/零件/BOM/批次/追溯/日志)导出为单独 CSV 文件，保存到 %s", filepath.Join(paths.ExportDir(), "all_data"))),
+		s.allHint,
 		allBtn,
 		container.NewBorder(nil, nil, widget.NewLabelWithStyle("导出目录:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, allDataPath),
 	)
 
-	content := container.NewVBox(
-		title,
-		widget.NewSeparator(),
-		backupBox,
-		widget.NewSeparator(),
-		importBox,
-		widget.NewSeparator(),
-		clearBox,
-		widget.NewSeparator(),
-		auditBox,
-		widget.NewSeparator(),
-		allBox,
-	)
+	items := []fyne.CanvasObject{title, widget.NewSeparator(), dirBox, widget.NewSeparator()}
+	if auth.CanWrite(auth.ModuleBackup) {
+		items = append(items,
+			backupBox, widget.NewSeparator(),
+			importBox, widget.NewSeparator(),
+			clearBox, widget.NewSeparator(),
+		)
+	}
+	items = append(items, auditBox, widget.NewSeparator(), allBox)
+	content := container.NewVBox(items...)
 
 	return container.NewScroll(content)
 }
@@ -178,6 +215,34 @@ func (s *BackupScreen) doClear() {
 		s.clearConfirm.SetText("")
 		dialog.ShowInformation("清空完成", "所有表中的数据已被清空", s.window)
 	}, s.window).Show()
+}
+
+func (s *BackupScreen) doChangeDataDir() {
+	dir, ok := nativefiledialog.PickFolder("请选择数据目录")
+	if !ok || dir == "" {
+		return
+	}
+	if err := s.svc.SetDataDir(dir); err != nil {
+		showError(s.window, "修改数据目录失败", err)
+		return
+	}
+	s.refreshPaths()
+	dialog.ShowInformation("已修改", "数据目录已更改为：\n"+s.svc.DataDir(), s.window)
+}
+
+func (s *BackupScreen) refreshPaths() {
+	if s.dataDirLabel != nil {
+		s.dataDirLabel.SetText(s.svc.DataDir())
+	}
+	if s.backupHint != nil {
+		s.backupHint.SetText(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir()))
+	}
+	if s.auditHint != nil {
+		s.auditHint.SetText(fmt.Sprintf("按日期范围导出操作记录（CSV），可用 Excel 打开，保存到 %s", filepath.Join(paths.ExportDir(), "audit_log")))
+	}
+	if s.allHint != nil {
+		s.allHint.SetText(fmt.Sprintf("将所有表(产品/零件/BOM/批次/追溯/日志)导出为单独 CSV 文件，保存到 %s", filepath.Join(paths.ExportDir(), "all_data")))
+	}
 }
 
 func (s *BackupScreen) getBackupDir() string {

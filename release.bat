@@ -13,6 +13,9 @@ if "%VERSION%"=="" (
     exit /b 1
 )
 
+set "NOTES_FILE=%~2"
+if "%NOTES_FILE%"=="" set "NOTES_FILE=release-notes.txt"
+
 set "TAG=v%VERSION%"
 set "ASSET_BASE=https://github.com/%REPO%/releases/download/%TAG%"
 
@@ -25,14 +28,28 @@ echo ================================
 echo   Release RFERP %VERSION%
 echo ================================
 
-echo [1/6] Check signing key ...
+echo [1/7] Check signing key ...
 if not exist "%KEY%" (
     echo   Missing private key: %KEY%
     pause
     exit /b 1
 )
 
-echo [2/6] Build RFERP.exe ...
+echo [2/7] Release notes ...
+if not exist "!NOTES_FILE!" (
+    > "!NOTES_FILE!" echo RFERP %VERSION%
+    >> "!NOTES_FILE!" echo.
+    >> "!NOTES_FILE!" echo - 
+    echo   Created !NOTES_FILE!. Please edit it, then run release.bat again.
+    start "" notepad "!NOTES_FILE!"
+    pause
+    exit /b 1
+)
+echo   ---- release notes ----
+type "!NOTES_FILE!"
+echo   -----------------------
+
+echo [3/7] Build RFERP.exe ...
 go build -ldflags="-linkmode=internal -H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
 if errorlevel 1 (
     echo   Build failed.
@@ -41,7 +58,7 @@ if errorlevel 1 (
 )
 if exist rcedit-x64.exe if exist picture\app.ico rcedit-x64.exe RFERP.exe --set-icon picture\app.ico >nul
 
-echo [3/6] Package update zip ...
+echo [4/7] Package update zip ...
 if not exist dist mkdir dist
 if exist "dist\RFERP-%VERSION%.zip" del "dist\RFERP-%VERSION%.zip"
 powershell -NoProfile -Command "Compress-Archive -Path 'RFERP.exe' -DestinationPath 'dist\RFERP-%VERSION%.zip' -Force"
@@ -51,15 +68,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [4/6] Sign manifest ...
-go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%ASSET_BASE%/RFERP-%VERSION%.zip" -version "%VERSION%" -notes "RFERP %VERSION%" -out "dist\releases.json"
+echo [5/7] Sign manifest ...
+go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%ASSET_BASE%/RFERP-%VERSION%.zip" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json"
 if errorlevel 1 (
     echo   Signing failed.
     pause
     exit /b 1
 )
 
-echo [5/6] Build installer ...
+echo [6/7] Build installer ...
 if not exist "!ISCC!" (
     echo   ISCC not found: !ISCC!
     pause
@@ -72,14 +89,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [6/6] Upload to GitHub Release ...
+echo [7/7] Upload to GitHub Release ...
 "%GH%" auth status >nul 2>nul
 if errorlevel 1 (
     echo   gh not logged in. Run: gh auth login
     pause
     exit /b 1
 )
-"%GH%" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes "RFERP %VERSION%" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
+"%GH%" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
 if errorlevel 1 (
     echo   Release create failed.
     pause

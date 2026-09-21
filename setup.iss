@@ -40,6 +40,7 @@ WizardStyle=modern
 ; SignedUninstaller=yes
 
 [Languages]
+Name: "chinesesimplified"; MessagesFile: "lang\ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

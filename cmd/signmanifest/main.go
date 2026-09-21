@@ -22,6 +22,7 @@ func main() {
 	url := flag.String("url", "", "更新包下载地址")
 	version := flag.String("version", "", "版本号，如 1.2.3")
 	notes := flag.String("notes", "", "更新说明")
+	notesFile := flag.String("notes-file", "", "更新说明文件（优先于 -notes）")
 	minVer := flag.String("min", "", "最低可升级版本（可选）")
 	channel := flag.String("channel", "stable", "更新通道")
 	out := flag.String("out", "releases.json", "输出清单文件")
@@ -36,6 +37,16 @@ func main() {
 	if err != nil {
 		fmt.Println("读取私钥失败:", err)
 		os.Exit(1)
+	}
+
+	notesText := *notes
+	if *notesFile != "" {
+		b, err := os.ReadFile(*notesFile)
+		if err != nil {
+			fmt.Println("读取更新说明文件失败:", err)
+			os.Exit(1)
+		}
+		notesText = strings.TrimRight(string(b), "\r\n \t")
 	}
 
 	fi, err := os.Stat(*zipPath)
@@ -64,7 +75,7 @@ func main() {
 		URL:         *url,
 		Size:        fi.Size(),
 		SHA256:      sum,
-		Notes:       *notes,
+		Notes:       notesText,
 		PublishedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := m.Sign(priv); err != nil {

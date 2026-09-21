@@ -1,0 +1,159 @@
+package main
+
+import (
+	"log"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
+
+	"app/internal/config"
+	"app/internal/logging"
+	"app/internal/migrate"
+	"app/internal/paths"
+	"app/internal/repository"
+	"app/internal/service"
+	"app/internal/singleinstance"
+	"app/internal/ui"
+	"app/internal/update"
+	"app/internal/winmsg"
+)
+
+var version = "dev"
+
+func init() {
+	// TTC 字体 Fyne 可能不兼容，优先用 TTF
+	fonts := []string{
+		"C:\\Windows\\Fonts\\simhei.ttf",
+		"C:\\Windows\\Fonts\\msyh.ttc",
+		"C:\\Windows\\Fonts\\simsun.ttc",
+	}
+	for _, f := range fonts {
+		if _, err := os.Stat(f); err == nil {
+			os.Setenv("FYNE_FONT", f)
+			break
+		}
+	}
+}
+
+func ensureMySQL(host, port, service string) {
+	if !isLocalHost(host) {
+		return
+	}
+	addr := net.JoinHostPort(host, port)
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err == nil {
+		conn.Close()
+		return
+	}
+	log.Printf("MySQL 未运行，尝试启动服务 %s...", service)
+	cmd := exec.Command("cmd", "/c", "net", "start", service)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("启动 MySQL 服务失败: %v\n%s", err, string(out))
+		// 第二次尝试用 sc start
+		cmd2 := exec.Command("cmd", "/c", "sc", "start", service)
+		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
+			log.Printf("sc start 也失败: %v\n%s", err2, string(out2))
+		}
+	}
+	// 等待 MySQL 就绪
+	for i := 0; i < 30; i++ {
+		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			log.Println("MySQL 已就绪")
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	log.Println("等待 MySQL 超时，将尝试连接...")
+}
+
+func isLocalHost(host string) bool {
+	switch host {
+	case "", "127.0.0.1", "localhost", "::1":
+		return true
+	}
+	return false
+}
+
+func main() {
+	if ok, err := singleinstance.Acquire("RFERP.SingleInstance"); err == nil && !ok {
+		winmsg.Info("RFERP", "RFERP 已在运行，请勿重复启动。")
+		return
+	}
+
+	cfg := config.Load()
+	paths.SetDataDir(cfg.DataDir)
+	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
+		log.Printf("init log file failed: %v", err)
+	}
+	log.Printf("RFERP %s starting", version)
+
+	a := app.New()
+	a.Settings().SetTheme(ui.NewTheme())
+	a.SetIcon(ui.AppLogo())
+
+	if cfg.Loaded() {
+		ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
+	}
+
+	db, err := sqlx.Connect("mysql", cfg.DB.DSN)
+	if err != nil {
+		log.Printf("database connection failed: %v", err)
+		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
+			paths.SetDataDir(newCfg.DataDir)
+			launchMain(a, newCfg, newDB)
+		})
+		a.Run()
+		return
+	}
+
+	launchMain(a, cfg, db)
+	a.Run()
+}
+
+func launchMain(a fyne.App, cfg *config.Config, db *sqlx.DB) {
+	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
+	res, err := migrate.Run(db, migrate.Options{
+		DSN:           cfg.DB.DSN,
+		MysqldumpPath: cfg.MysqldumpPath,
+		BackupDir:     paths.BackupDir(),
+	})
+	if err != nil {
+		log.Printf("migration failed: %v", err)
+		winmsg.Error("RFERP 数据库升级失败",
+			err.Error()+"\n\n升级前的备份（如有）已保留，请检查后重试。")
+		return
+	}
+	if len(res.Applied) > 0 {
+		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
+	}
+	repo := repository.New(db)
+	svc := service.New(repo, cfg.DB.DSN, cfg.MysqldumpPath)
+
+	w := a.NewWindow("RFERP-仁风仓库管理系统 v" + version)
+	w.Resize(fyne.NewSize(1360, 860))
+	w.CenterOnScreen()
+	w.SetPadded(true)
+
+	appUI := ui.NewApp(svc, w)
+	w.SetContent(appUI.BuildUI())
+	w.Show()
+
+	update.CleanupOld()
+	updateURL := cfg.UpdateURL
+	if v := os.Getenv("RFERP_UPDATE_URL"); v != "" {
+		updateURL = v
+	}
+	if cfg.AutoUpdate && updateURL != "" {
+		ui.StartUpdateCheck(w, updateURL, version)
+	}
+}

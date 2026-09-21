@@ -1,0 +1,1240 @@
+package service
+
+import (
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"app/internal/dbbackup"
+	"app/internal/model"
+	"app/internal/repository"
+)
+
+type Service struct {
+	repo          *repository.Repository
+	dsn           string
+	mysqldumpPath string
+}
+
+func New(repo *repository.Repository, dsn string, mysqldumpPath string) *Service {
+	if mysqldumpPath == "" {
+		mysqldumpPath = "mysqldump"
+	}
+	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath}
+}
+
+// ---- 辅助: 审计日志 ----
+
+type auditEntry struct {
+	TableName string
+	RecordID  int64
+	Action    string
+	OldData   any
+	NewData   any
+	Operator  string
+}
+
+func (s *Service) writeAudit(e auditEntry) {
+	oldJSON, _ := toJSON(e.OldData)
+	newJSON, _ := toJSON(e.NewData)
+	_ = s.repo.CreateAuditLog(&model.AuditLog{
+		TableName: e.TableName,
+		RecordID:  e.RecordID,
+		Action:    e.Action,
+		OldData:   oldJSON,
+		NewData:   newJSON,
+		Operator:  &e.Operator,
+	})
+}
+
+func toJSON(v any) (*map[string]any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// ---- 产品 ----
+
+func (s *Service) CreateProduct(p *model.Product) (*model.Product, error) {
+	now := time.Now()
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	p.Version = 1
+	id, err := s.repo.CreateProduct(p)
+	if err != nil {
+		return nil, fmt.Errorf("create product: %w", err)
+	}
+	p.ID = id
+	s.writeAudit(auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
+	return p, nil
+}
+
+func (s *Service) GetProduct(id int64) (*model.Product, error) {
+	return s.repo.GetProduct(id)
+}
+
+func (s *Service) ListProducts() ([]model.Product, error) {
+	return s.repo.ListProducts()
+}
+
+func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
+	old, err := s.repo.GetProduct(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if old == nil {
+		return nil, fmt.Errorf("product not found")
+	}
+	affected, err := s.repo.UpdateProduct(p)
+	if err != nil {
+		return nil, fmt.Errorf("update product: %w", err)
+	}
+	if affected == 0 {
+		return nil, fmt.Errorf("product version conflict, please refresh and retry")
+	}
+	p.Version = old.Version + 1
+	s.writeAudit(auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
+	return p, nil
+}
+
+func (s *Service) DeleteProduct(id int64, operator string) error {
+	old, err := s.repo.GetProduct(id)
+	if err != nil {
+		return err
+	}
+	if old == nil {
+		return fmt.Errorf("product not found")
+	}
+	if err := s.repo.DeleteProduct(id); err != nil {
+		return err
+	}
+	s.writeAudit(auditEntry{"products", id, "DELETE", old, nil, operator})
+	return nil
+}
+
+// ---- 零件 ----
+
+func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
+	id, err := s.repo.CreatePart(p)
+	if err != nil {
+		return nil, fmt.Errorf("create part: %w", err)
+	}
+	p.ID = id
+	s.writeAudit(auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
+	return p, nil
+}
+
+func (s *Service) GetPart(id int64) (*model.Part, error) {
+	return s.repo.GetPart(id)
+}
+
+func (s *Service) ListParts() ([]model.Part, error) {
+	return s.repo.ListParts()
+}
+
+func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
+	old, err := s.repo.GetPart(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if old == nil {
+		return nil, fmt.Errorf("part not found")
+	}
+	affected, err := s.repo.UpdatePart(p)
+	if err != nil {
+		return nil, fmt.Errorf("update part: %w", err)
+	}
+	if affected == 0 {
+		return nil, fmt.Errorf("part version conflict, please refresh and retry")
+	}
+	p.Version = old.Version + 1
+	s.writeAudit(auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
+	return p, nil
+}
+
+func (s *Service) DeletePart(id int64, operator string) error {
+	old, err := s.repo.GetPart(id)
+	if err != nil {
+		return err
+	}
+	if old == nil {
+		return fmt.Errorf("part not found")
+	}
+	if err := s.repo.DeletePart(id); err != nil {
+		return err
+	}
+	s.writeAudit(auditEntry{"parts", id, "DELETE", old, nil, operator})
+	return nil
+}
+
+func (s *Service) StockIn(partID int64, qty float64, operator string) error {
+	old, err := s.repo.GetPart(partID)
+	if err != nil {
+		return fmt.Errorf("get part: %w", err)
+	}
+	if old == nil {
+		return fmt.Errorf("part not found")
+	}
+	newStock := old.StockQty + qty
+	if err := s.repo.UpdatePartStock(partID, newStock); err != nil {
+		return fmt.Errorf("update stock: %w", err)
+	}
+	s.writeAudit(auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
+		"old_stock": old.StockQty,
+		"in_qty":    qty,
+		"new_stock": newStock,
+	}, operator})
+	return nil
+}
+
+func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
+	old, err := s.repo.GetPart(partID)
+	if err != nil {
+		return fmt.Errorf("get part: %w", err)
+	}
+	if old == nil {
+		return fmt.Errorf("part not found")
+	}
+	if err := s.repo.UpdatePartStock(partID, newQty); err != nil {
+		return fmt.Errorf("adjust stock: %w", err)
+	}
+	s.writeAudit(auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
+		"old_stock": old.StockQty,
+		"new_stock": newQty,
+		"diff":      newQty - old.StockQty,
+	}, operator})
+	return nil
+}
+
+// ---- BOM ----
+
+func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
+	// 校验产品和零件存在
+	prod, err := s.repo.GetProduct(b.ProductID)
+	if err != nil {
+		return nil, err
+	}
+	if prod == nil {
+		return nil, fmt.Errorf("product not found")
+	}
+	part, err := s.repo.GetPart(b.PartID)
+	if err != nil {
+		return nil, err
+	}
+	if part == nil {
+		return nil, fmt.Errorf("part not found")
+	}
+	id, err := s.repo.CreateBOMItem(b)
+	if err != nil {
+		return nil, fmt.Errorf("create bom: %w", err)
+	}
+	b.ID = id
+	s.writeAudit(auditEntry{"bom_items", id, "INSERT", nil, b, *b.Operator})
+	return b, nil
+}
+
+func (s *Service) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
+	return s.repo.GetBOMByProduct(productID)
+}
+
+func (s *Service) RemoveBOMItem(id int64, operator string) error {
+	// 先查询
+	_ = operator
+	if err := s.repo.DeleteBOMItem(id); err != nil {
+		return err
+	}
+	s.writeAudit(auditEntry{"bom_items", id, "DELETE", nil, nil, operator})
+	return nil
+}
+
+// ---- 批次 ----
+
+func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error) {
+	prod, err := s.repo.GetProduct(b.ProductID)
+	if err != nil {
+		return nil, err
+	}
+	if prod == nil {
+		return nil, fmt.Errorf("product not found")
+	}
+	id, err := s.repo.CreateBatch(b)
+	if err != nil {
+		return nil, fmt.Errorf("create batch: %w", err)
+	}
+	b.ID = id
+	auditData := map[string]any{
+		"batch_no":     b.BatchNo,
+		"product_id":   b.ProductID,
+		"product_code": prod.Code,
+		"product_name": prod.Name,
+		"plan_qty":     b.PlanQty,
+		"customer":     b.Customer,
+	}
+	s.writeAudit(auditEntry{"product_batches", id, "INSERT", nil, auditData, *b.Operator})
+	return b, nil
+}
+
+func (s *Service) ListBatches() ([]model.ProductBatch, error) {
+	return s.repo.ListBatches()
+}
+
+func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error {
+	batch, err := s.repo.GetBatch(id)
+	if err != nil {
+		return fmt.Errorf("get batch: %w", err)
+	}
+	if batch == nil {
+		return fmt.Errorf("batch not found")
+	}
+	if batch.Status == 4 {
+		return fmt.Errorf("已撤销的批次不能更改状态")
+	}
+	// 完成生产 → 自动按BOM扣减库存
+	if status == 2 && batch.Status != 2 {
+		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+		if err != nil {
+			return fmt.Errorf("get bom: %w", err)
+		}
+		skipParts, _ := s.repo.GetSkippedParts(id)
+		skipMap := make(map[int64]bool)
+		for _, pid := range skipParts {
+			skipMap[pid] = true
+		}
+		for _, item := range bom {
+			if skipMap[item.PartID] {
+				continue
+			}
+			part, err := s.repo.GetPart(item.PartID)
+			if err != nil {
+				return fmt.Errorf("get part %d: %w", item.PartID, err)
+			}
+			if part == nil {
+				continue
+			}
+			deduct := bomConsume(batch.PlanQty, item)
+			newStock := part.StockQty - deduct
+			if newStock < 0 {
+				newStock = 0
+			}
+			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
+				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+			}
+			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
+				"old_stock": part.StockQty,
+				"deduct":    deduct,
+				"new_stock": newStock,
+				"batch_id":  id,
+			}, operator})
+		}
+		// 更新完成数
+		_ = s.repo.UpdateBatchProduced(id, batch.PlanQty)
+	}
+	affected, err := s.repo.UpdateBatchStatus(id, status, operator)
+	if err != nil {
+		return fmt.Errorf("update batch status: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("batch not found")
+	}
+	// 查产品信息用于审计日志
+	prod, _ := s.repo.GetProduct(batch.ProductID)
+	oldMap := map[string]any{
+		"batch_no":     batch.BatchNo,
+		"product_id":   batch.ProductID,
+		"product_code": "",
+		"product_name": "",
+		"plan_qty":     batch.PlanQty,
+		"status":       batch.Status,
+		"customer":     nullStrSvc(batch.Customer),
+	}
+	if prod != nil {
+		oldMap["product_code"] = prod.Code
+		oldMap["product_name"] = prod.Name
+	}
+	s.writeAudit(auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator})
+	return nil
+}
+
+func (s *Service) RevokeBatch(id int64, operator string) error {
+	batch, err := s.repo.GetBatch(id)
+	if err != nil {
+		return fmt.Errorf("get batch: %w", err)
+	}
+	if batch == nil {
+		return fmt.Errorf("batch not found")
+	}
+
+	// 已完成批次：回退库存（跳过被跳过的零件）
+	if batch.Status == 2 {
+		skipParts, _ := s.repo.GetSkippedParts(id)
+		skipMap := make(map[int64]bool)
+		for _, pid := range skipParts {
+			skipMap[pid] = true
+		}
+		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+		if err != nil {
+			return fmt.Errorf("get bom: %w", err)
+		}
+		for _, item := range bom {
+			if skipMap[item.PartID] {
+				continue
+			}
+			part, err := s.repo.GetPart(item.PartID)
+			if err != nil {
+				return fmt.Errorf("get part %d: %w", item.PartID, err)
+			}
+			if part == nil {
+				continue
+			}
+			deduct := bomConsume(batch.PlanQty, item)
+			newStock := part.StockQty + deduct
+			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
+				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+			}
+			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_ADJUST", part, map[string]any{
+				"old_stock": part.StockQty,
+				"new_stock": newStock,
+				"diff":      deduct,
+				"batch_id":  id,
+				"remark":    "批次撤销回退",
+			}, operator})
+		}
+	}
+
+	s.writeAudit(auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
+		"batch_no":     batch.BatchNo,
+		"product_id":   batch.ProductID,
+		"plan_qty":     batch.PlanQty,
+		"produced_qty": batch.ProducedQty,
+		"status":       batch.Status,
+		"customer":     batch.Customer,
+		"operator":     operator,
+	}, operator})
+	_, err = s.repo.UpdateBatchStatus(id, 4, operator)
+	return err
+}
+
+func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
+	return s.repo.GetSkippedParts(batchID)
+}
+
+// ---- 统计 ----
+
+// StockDailyPoint 某天的进出库汇总
+type StockDailyPoint struct {
+	Date string  // MM-DD
+	In   float64 // 入库量
+	Out  float64 // 出库量
+}
+
+// PartStockStat 单个零件近期的进出库统计
+type PartStockStat struct {
+	Code string
+	Name string
+	In   float64
+	Out  float64
+}
+
+// SupplierStockStat 供应商入库统计（入库主要针对零件）
+type SupplierStockStat struct {
+	Name string
+	In   float64
+}
+
+// CustomerStockStat 客户出库统计（出库关联客户，产品按批次）
+type CustomerStockStat struct {
+	Name string
+	Out  float64
+}
+
+// ProductStockStat 产品出库统计
+type ProductStockStat struct {
+	Code string
+	Name string
+	Out  float64
+}
+
+// StockStats 近期进出库统计结果
+type StockStats struct {
+	Days            []StockDailyPoint
+	TopIn           []PartStockStat     // 零件入库量前10
+	TopOut          []PartStockStat     // 零件出库量前10
+	TopSuppliers    []SupplierStockStat // 供应商入库前10
+	TopCustomers    []CustomerStockStat // 客户出库前10
+	TopProducts     []ProductStockStat  // 产品出库前10
+	TotalIn         float64
+	TotalOut        float64
+	ProductOutTotal float64
+}
+
+// GetStockStats 统计近 days 天的进出库规律
+func (s *Service) GetStockStats(days int) (*StockStats, error) {
+	if days <= 0 {
+		days = 30
+	}
+	end := time.Now()
+	start := end.AddDate(0, 0, -days)
+
+	logs, err := s.repo.ListStockLogsByDate(start, end, []string{"STOCK_IN", "STOCK_DEDUCT", "STOCK_ADJUST"})
+	if err != nil {
+		return nil, err
+	}
+
+	st := &StockStats{}
+	dailyMap := make(map[string]*StockDailyPoint)
+	partMap := make(map[string]*PartStockStat)
+	supplierMap := make(map[string]*SupplierStockStat)
+	customerMap := make(map[string]*CustomerStockStat)
+	productMap := make(map[string]*ProductStockStat)
+
+	key := func(code, name string) string { return code + "|" + name }
+
+	// 出库关联批次，用于把零件消耗映射到客户/产品
+	batchIDSet := make(map[int64]bool)
+	for _, l := range logs {
+		if l.Action == "STOCK_DEDUCT" && l.NewData != nil {
+			if bid, ok := (*l.NewData)["batch_id"].(float64); ok && bid > 0 {
+				batchIDSet[int64(bid)] = true
+			}
+		}
+	}
+	batchMap := make(map[int64]model.ProductBatch)
+	if len(batchIDSet) > 0 {
+		batches, _ := s.repo.ListBatches()
+		for _, b := range batches {
+			if batchIDSet[b.ID] {
+				batchMap[b.ID] = b
+			}
+		}
+	}
+
+	for _, l := range logs {
+		day := l.CreatedAt.Format("01-02")
+		dp, ok := dailyMap[day]
+		if !ok {
+			dp = &StockDailyPoint{Date: day}
+			dailyMap[day] = dp
+		}
+
+		// 零件信息在 old_data（STOCK_IN/DEDUCT 记录的是 part 对象）
+		var code, name string
+		var supplier string
+		if l.OldData != nil {
+			code, _ = (*l.OldData)["code"].(string)
+			name, _ = (*l.OldData)["name"].(string)
+			supplier, _ = (*l.OldData)["supplier"].(string)
+		}
+
+		var inQty, outQty float64
+		switch l.Action {
+		case "STOCK_IN":
+			if l.NewData != nil {
+				inQty = numVal((*l.NewData)["in_qty"])
+			}
+			dp.In += inQty
+			st.TotalIn += inQty
+			// 供应商入库（入库主要针对零件）
+			if supplier != "" {
+				sp, ok := supplierMap[supplier]
+				if !ok {
+					sp = &SupplierStockStat{Name: supplier}
+					supplierMap[supplier] = sp
+				}
+				sp.In += inQty
+			}
+		case "STOCK_DEDUCT":
+			if l.NewData != nil {
+				outQty = numVal((*l.NewData)["deduct"])
+			}
+			dp.Out += outQty
+			st.TotalOut += outQty
+			// 零件出库 → 映射到客户与产品（通过批次）
+			if l.NewData != nil {
+				bid := int64(numVal((*l.NewData)["batch_id"]))
+				if b, ok := batchMap[bid]; ok {
+					cust := ""
+					if b.Customer != nil {
+						cust = *b.Customer
+					}
+					if cust != "" {
+						cp, ok := customerMap[cust]
+						if !ok {
+							cp = &CustomerStockStat{Name: cust}
+							customerMap[cust] = cp
+						}
+						cp.Out += outQty
+					}
+					pcode := ""
+					pname := ""
+					if b.ProductCode != nil {
+						pcode = *b.ProductCode
+					}
+					if b.ProductName != nil {
+						pname = *b.ProductName
+					}
+					if pcode != "" || pname != "" {
+						pp, ok := productMap[key(pcode, pname)]
+						if !ok {
+							pp = &ProductStockStat{Code: pcode, Name: pname}
+							productMap[key(pcode, pname)] = pp
+						}
+						pp.Out += outQty
+						st.ProductOutTotal += outQty
+					}
+				}
+			}
+		case "STOCK_ADJUST":
+			// 盘点调整：diff>0 视为入库，diff<0 视为出库
+			if l.NewData != nil {
+				diff := numVal((*l.NewData)["diff"])
+				if diff > 0 {
+					dp.In += diff
+					st.TotalIn += diff
+				} else {
+					outQty = -diff
+					dp.Out += outQty
+					st.TotalOut += outQty
+				}
+			}
+		}
+
+		if code == "" && name == "" {
+			continue
+		}
+		p, ok := partMap[key(code, name)]
+		if !ok {
+			p = &PartStockStat{Code: code, Name: name}
+			partMap[key(code, name)] = p
+		}
+		if inQty > 0 {
+			p.In += inQty
+		}
+		if outQty > 0 {
+			p.Out += outQty
+		}
+	}
+
+	// 补齐缺失日期（升序）
+	for i := 0; i < days; i++ {
+		d := start.AddDate(0, 0, i+1).Format("01-02")
+		if _, ok := dailyMap[d]; !ok {
+			dailyMap[d] = &StockDailyPoint{Date: d}
+		}
+	}
+	for _, dp := range dailyMap {
+		st.Days = append(st.Days, *dp)
+	}
+	sort.Slice(st.Days, func(i, j int) bool { return st.Days[i].Date < st.Days[j].Date })
+
+	// 零件排行
+	var ins, outs []PartStockStat
+	for _, p := range partMap {
+		if p.In > 0 {
+			ins = append(ins, *p)
+		}
+		if p.Out > 0 {
+			outs = append(outs, *p)
+		}
+	}
+	sort.Slice(ins, func(i, j int) bool { return ins[i].In > ins[j].In })
+	sort.Slice(outs, func(i, j int) bool { return outs[i].Out > outs[j].Out })
+	if len(ins) > 10 {
+		ins = ins[:10]
+	}
+	if len(outs) > 10 {
+		outs = outs[:10]
+	}
+	st.TopIn = ins
+	st.TopOut = outs
+
+	// 供应商排行
+	var supps []SupplierStockStat
+	for _, sp := range supplierMap {
+		supps = append(supps, *sp)
+	}
+	sort.Slice(supps, func(i, j int) bool { return supps[i].In > supps[j].In })
+	if len(supps) > 10 {
+		supps = supps[:10]
+	}
+	st.TopSuppliers = supps
+
+	// 客户排行
+	var custs []CustomerStockStat
+	for _, cp := range customerMap {
+		custs = append(custs, *cp)
+	}
+	sort.Slice(custs, func(i, j int) bool { return custs[i].Out > custs[j].Out })
+	if len(custs) > 10 {
+		custs = custs[:10]
+	}
+	st.TopCustomers = custs
+
+	// 产品排行
+	var prods []ProductStockStat
+	for _, pp := range productMap {
+		prods = append(prods, *pp)
+	}
+	sort.Slice(prods, func(i, j int) bool { return prods[i].Out > prods[j].Out })
+	if len(prods) > 10 {
+		prods = prods[:10]
+	}
+	st.TopProducts = prods
+
+	return st, nil
+}
+
+func numVal(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case string:
+		f := 0.0
+		_, _ = fmt.Sscanf(n, "%f", &f)
+		return f
+	default:
+		return 0
+	}
+}
+
+func (s *Service) AddSkipPart(batchID, partID int64) error {
+	return s.repo.AddSkipPart(batchID, partID)
+}
+
+func (s *Service) RemoveSkipPart(batchID, partID int64) error {
+	return s.repo.RemoveSkipPart(batchID, partID)
+}
+
+// ---- 追溯 ----
+
+func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
+	id, err := s.repo.CreateTrace(t)
+	if err != nil {
+		return nil, fmt.Errorf("create trace: %w", err)
+	}
+	t.ID = id
+	return t, nil
+}
+
+func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
+	return s.repo.GetTraceByBatch(batchID)
+}
+
+func (s *Service) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
+	return nil, fmt.Errorf("not implemented yet")
+}
+
+func (s *Service) TraceByPart(partCode string) ([]model.BatchTrace, error) {
+	// 查某零件被哪些批次使用过 — "反向追溯"
+	return nil, fmt.Errorf("not implemented yet")
+}
+
+// ---- 审计 ----
+
+func (s *Service) GetAuditLogs(tableName string, recordID int64) ([]model.AuditLog, error) {
+	return s.repo.ListAuditLogs(tableName, recordID)
+}
+
+func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
+	return s.repo.ListRecentAuditLogs(limit)
+}
+
+// ---- 备份与导出 ----
+
+func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read file: %w", err)
+	}
+
+	// disable checks for smooth import
+	s.repo.Exec("SET FOREIGN_KEY_CHECKS = 0")
+	s.repo.Exec("SET UNIQUE_CHECKS = 0")
+	defer func() {
+		s.repo.Exec("SET FOREIGN_KEY_CHECKS = 1")
+		s.repo.Exec("SET UNIQUE_CHECKS = 1")
+	}()
+
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+
+	var buf strings.Builder
+	inInsert := false
+
+	execInsert := func(sql string) bool {
+		if _, e := s.repo.Exec(sql); e != nil {
+			failed++
+			return false
+		}
+		success++
+		return true
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		if !inInsert {
+			if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+				buf.Reset()
+				buf.WriteString(line)
+				if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
+					execInsert(buf.String())
+				} else {
+					inInsert = true
+				}
+			}
+			continue
+		}
+		buf.WriteString("\n")
+		buf.WriteString(line)
+		if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
+			execInsert(buf.String())
+			inInsert = false
+		}
+	}
+	return success, failed, nil
+}
+
+func (s *Service) BackupDatabase(saveDir string) (string, error) {
+	return dbbackup.Backup(s.dsn, s.mysqldumpPath, saveDir)
+}
+
+func statusText(v int) string {
+	if v == 1 {
+		return "启用"
+	}
+	return "停用"
+}
+
+func batchStatusText(v int) string {
+	switch v {
+	case 0:
+		return "待生产"
+	case 1:
+		return "生产中"
+	case 2:
+		return "已完成"
+	case 3:
+		return "已暂停"
+	case 4:
+		return "已撤销"
+	default:
+		return fmt.Sprintf("%d", v)
+	}
+}
+
+func actionText(v string) string {
+	switch v {
+	case "INSERT":
+		return "新增"
+	case "UPDATE":
+		return "修改"
+	case "DELETE":
+		return "删除"
+	case "STOCK_IN":
+		return "入库"
+	case "STOCK_DEDUCT":
+		return "出库"
+	case "STOCK_ADJUST":
+		return "盘点"
+	case "UPDATE_STATUS":
+		return "状态变更"
+	default:
+		return v
+	}
+}
+
+func tableLabel(v string) string {
+	switch v {
+	case "products":
+		return "产品"
+	case "parts":
+		return "零件"
+	case "bom_items":
+		return "BOM"
+	case "product_batches":
+		return "批次"
+	default:
+		return v
+	}
+}
+
+func auditSummary(l model.AuditLog) string {
+	t := l.TableName
+	a := l.Action
+	if t == "product_batches" && a == "UPDATE_STATUS" {
+		var batchNo string
+		var status int
+		if l.OldData != nil {
+			batchNo, _ = (*l.OldData)["batch_no"].(string)
+		}
+		if l.NewData != nil {
+			s, _ := (*l.NewData)["status"].(float64)
+			status = int(s)
+		}
+		return fmt.Sprintf("批次 %s → %s", batchNo, batchStatusText(status))
+	}
+	if t == "product_batches" && a == "INSERT" && l.NewData != nil {
+		d := *l.NewData
+		bn, _ := d["batch_no"].(string)
+		pn, _ := d["product_name"].(string)
+		pq, _ := d["plan_qty"].(float64)
+		return fmt.Sprintf("新建批次 %s [%s] 计划%.0f", bn, pn, pq)
+	}
+	if a == "STOCK_IN" && l.NewData != nil {
+		d := *l.NewData
+		q, _ := d["in_qty"].(float64)
+		ns, _ := d["new_stock"].(float64)
+		return fmt.Sprintf("入库 %.0f，当前 %.0f", q, ns)
+	}
+	if a == "STOCK_DEDUCT" && l.NewData != nil {
+		d := *l.NewData
+		q, _ := d["deduct"].(float64)
+		os, _ := d["old_stock"].(float64)
+		ns, _ := d["new_stock"].(float64)
+		return fmt.Sprintf("生产消耗 %.0f，%.0f→%.0f", q, os, ns)
+	}
+	if a == "STOCK_ADJUST" && l.NewData != nil {
+		d := *l.NewData
+		os, _ := d["old_stock"].(float64)
+		ns, _ := d["new_stock"].(float64)
+		return fmt.Sprintf("盘点 %.0f → %.0f", os, ns)
+	}
+	if a == "INSERT" && l.NewData != nil {
+		d := *l.NewData
+		if n, ok := d["name"].(string); ok {
+			return fmt.Sprintf("新增 %s", n)
+		}
+		if c, ok := d["code"].(string); ok {
+			return fmt.Sprintf("新增 %s", c)
+		}
+	}
+	if a == "DELETE" && l.OldData != nil {
+		d := *l.OldData
+		if n, ok := d["name"].(string); ok {
+			return fmt.Sprintf("删除 %s", n)
+		}
+		if c, ok := d["code"].(string); ok {
+			return fmt.Sprintf("删除 %s", c)
+		}
+	}
+	if a == "UPDATE" && l.NewData != nil {
+		if n, ok := (*l.NewData)["name"].(string); ok {
+			return fmt.Sprintf("修改 %s", n)
+		}
+	}
+	if l.NewData != nil {
+		for _, k := range []string{"code", "name", "batch_no"} {
+			if v, ok := (*l.NewData)[k].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	if l.OldData != nil {
+		for _, k := range []string{"code", "name", "batch_no"} {
+			if v, ok := (*l.OldData)[k].(string); ok && v != "" {
+				return v
+			}
+		}
+	}
+	return tableLabel(t) + "操作"
+}
+
+func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
+	endDate = endDate.Add(24 * time.Hour)
+	logs, err := s.repo.ListAuditLogsByDate(startDate, endDate)
+	if err != nil {
+		return 0, fmt.Errorf("query audit logs: %w", err)
+	}
+	f, err := os.Create(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("create csv file: %w", err)
+	}
+	defer f.Close()
+	f.Write([]byte{0xEF, 0xBB, 0xBF})
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	w.Write([]string{"时间", "操作", "对象", "内容摘要", "操作人"})
+	for _, log := range logs {
+		op := ""
+		if log.Operator != nil {
+			op = *log.Operator
+		}
+		w.Write([]string{
+			log.CreatedAt.Format("2006-01-02 15:04:05"),
+			actionText(log.Action),
+			tableLabel(log.TableName),
+			auditSummary(log),
+			op,
+		})
+	}
+	return len(logs), nil
+}
+
+func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, error) {
+	now := time.Now().Format("20060102_150405")
+	subDir := filepath.Join(saveDir, now)
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		return nil, "", fmt.Errorf("create export dir: %w", err)
+	}
+	files := make(map[string]string)
+
+	writeCSV := func(name string, header []string, rows [][]string) (string, error) {
+		p := filepath.Join(subDir, name)
+		f, err := os.Create(p)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		f.Write([]byte{0xEF, 0xBB, 0xBF})
+		w := csv.NewWriter(f)
+		defer w.Flush()
+		w.Write(header)
+		for _, r := range rows {
+			w.Write(r)
+		}
+		return p, nil
+	}
+
+	// build lookup maps
+	products, _ := s.repo.ListProducts()
+	prodMap := make(map[int64]model.Product)
+	for _, p := range products {
+		prodMap[p.ID] = p
+	}
+	parts, _ := s.repo.ListParts()
+	partMap := make(map[int64]model.Part)
+	for _, p := range parts {
+		partMap[p.ID] = p
+	}
+	batches, _ := s.repo.ListBatches()
+	batchMap := make(map[int64]model.ProductBatch)
+	for _, b := range batches {
+		batchMap[b.ID] = b
+	}
+
+	// products
+	var prodRows [][]string
+	for _, p := range products {
+		st := "启用"
+		if p.Status != 1 {
+			st = "停用"
+		}
+		prodRows = append(prodRows, []string{
+			p.Code, p.Name, nullStrSvc(p.Spec),
+			p.Unit, st, nullStrSvc(p.Operator),
+			p.CreatedAt.Format("2006-01-02"),
+		})
+	}
+	if p, err := writeCSV("products.csv",
+		[]string{"编码", "名称", "规格", "单位", "状态", "操作人", "创建日期"},
+		prodRows); err == nil {
+		files["products"] = p
+	}
+
+	// parts
+	var partRows [][]string
+	for _, p := range parts {
+		st := "启用"
+		if p.Status != 1 {
+			st = "停用"
+		}
+		warn := ""
+		if p.WarnQty > 0 {
+			warn = fmt.Sprintf("%.2f", p.WarnQty)
+		}
+		partRows = append(partRows, []string{
+			p.Code, p.Name, nullStrSvc(p.Spec),
+			nullStrSvc(p.PartType), fmt.Sprintf("%.2f", p.StockQty), warn, st,
+			nullStrSvc(p.Supplier), nullStrSvc(p.Operator),
+		})
+	}
+	if p, err := writeCSV("parts.csv",
+		[]string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "操作人"},
+		partRows); err == nil {
+		files["parts"] = p
+	}
+
+	// bom_items
+	boms, _ := s.repo.ListAllBOMItems()
+	var bomRows [][]string
+	for _, b := range boms {
+		p := prodMap[b.ProductID]
+		part := partMap[b.PartID]
+		rep := "否"
+		if b.Replaceable == 1 {
+			rep = "是"
+		}
+		mode := "每台用N个"
+		qtyText := fmt.Sprintf("%.2f", b.Quantity)
+		if b.UseMode == 1 {
+			mode = "每M台用1个"
+			qtyText = fmt.Sprintf("%.0f台", b.Quantity)
+		}
+		bomRows = append(bomRows, []string{
+			p.Code, p.Name,
+			part.Code, part.Name,
+			mode, qtyText,
+			fmt.Sprintf("%.1f", b.LossRate),
+			rep, nullStrSvc(b.Remark),
+		})
+	}
+	if p, err := writeCSV("bom_items.csv",
+		[]string{"产品编码", "产品名称", "零件编码", "零件名称", "用量模式", "用量", "损耗率(%)", "可替换", "备注"},
+		bomRows); err == nil {
+		files["bom_items"] = p
+	}
+
+	// batches
+	var batchRows [][]string
+	for _, b := range batches {
+		batchRows = append(batchRows, []string{
+			b.BatchNo,
+			nullStrSvc(b.ProductCode), nullStrSvc(b.ProductName),
+			fmt.Sprintf("%d", b.PlanQty), fmt.Sprintf("%d", b.ProducedQty),
+			batchStatusText(b.Status),
+			nullStrSvc(b.Customer), nullStrSvc(b.Operator),
+		})
+	}
+	if p, err := writeCSV("product_batches.csv",
+		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人"},
+		batchRows); err == nil {
+		files["product_batches"] = p
+	}
+
+	// batch_trace
+	traces, _ := s.repo.ListAllBatchTraces()
+	var traceRows [][]string
+	for _, t := range traces {
+		b := batchMap[t.BatchID]
+		part := partMap[t.PartID]
+		traceRows = append(traceRows, []string{
+			b.BatchNo,
+			part.Code, part.Name,
+			nullStrSvc(t.PartBatchNo),
+			fmt.Sprintf("%.2f", t.UsedQty),
+			nullStrSvc(t.Supplier), nullStrSvc(t.Operator),
+		})
+	}
+	if p, err := writeCSV("batch_trace.csv",
+		[]string{"批次号", "零件编码", "零件名称", "零件批次号", "使用数量", "供应商", "操作人"},
+		traceRows); err == nil {
+		files["batch_trace"] = p
+	}
+
+	// batch_skip_parts
+	skipRows, _ := s.repo.GetAllSkippedParts()
+	var skipCSVRows [][]string
+	for _, sr := range skipRows {
+		b := batchMap[sr.BatchID]
+		part := partMap[sr.PartID]
+		skipCSVRows = append(skipCSVRows, []string{
+			b.BatchNo, part.Code, part.Name,
+		})
+	}
+	if p, err := writeCSV("batch_skip_parts.csv",
+		[]string{"批次号", "零件编码", "零件名称"},
+		skipCSVRows); err == nil {
+		files["batch_skip_parts"] = p
+	}
+
+	// audit_log (all)
+	logs, _ := s.repo.ListRecentAuditLogs(100000)
+	var logRows [][]string
+	for _, l := range logs {
+		op := ""
+		if l.Operator != nil {
+			op = *l.Operator
+		}
+		logRows = append(logRows, []string{
+			l.CreatedAt.Format("2006-01-02 15:04:05"),
+			actionText(l.Action),
+			tableLabel(l.TableName),
+			auditSummary(l),
+			op,
+		})
+	}
+	if p, err := writeCSV("audit_log.csv",
+		[]string{"时间", "操作", "对象", "内容摘要", "操作人"},
+		logRows); err == nil {
+		files["audit_log"] = p
+	}
+
+	return files, subDir, nil
+}
+
+func nullStrSvc(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// bomConsume 计算指定产品数量下某BOM项的零件消耗量
+// use_mode: 0=每台产品用N个零件 -> 台数*N*(1+损耗率%)
+// use_mode: 1=每M台产品用1个零件(如包装箱) -> ceil(台数/M)，再按损耗率上浮后向上取整
+func bomConsume(planQty int, item model.BOMItem) float64 {
+	base := float64(planQty) * item.Quantity
+	if item.UseMode == 1 {
+		m := item.Quantity
+		if m <= 0 {
+			m = 1
+		}
+		base = math.Ceil(float64(planQty) / m)
+	}
+	consume := base * (1 + item.LossRate/100)
+	if item.UseMode == 1 {
+		consume = math.Ceil(consume)
+	}
+	return consume
+}
+
+// ---- 验证BOM完整性 ----
+
+func (s *Service) ClearDatabase() error {
+	stmts := []string{
+		"SET FOREIGN_KEY_CHECKS = 0",
+		"DELETE FROM batch_skip_parts",
+		"DELETE FROM batch_trace",
+		"DELETE FROM bom_items",
+		"DELETE FROM product_batches",
+		"DELETE FROM parts",
+		"DELETE FROM products",
+		"DELETE FROM audit_log",
+		"SET FOREIGN_KEY_CHECKS = 1",
+	}
+	for _, stmt := range stmts {
+		if _, err := s.repo.Exec(stmt); err != nil {
+			return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) ValidateBOM(productID int64) (bool, error) {
+	items, err := s.repo.GetBOMByProduct(productID)
+	if err != nil {
+		return false, err
+	}
+	return len(items) > 0, nil
+}

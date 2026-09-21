@@ -1,0 +1,325 @@
+package ui
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+
+	"app/internal/paths"
+	"app/internal/service"
+)
+
+type BackupScreen struct {
+	svc          *service.Service
+	window       fyne.Window
+	backupPath   *widget.Entry
+	auditPath    *widget.Entry
+	allDataPath  *widget.Entry
+	startDate    *widget.Entry
+	endDate      *widget.Entry
+	clearConfirm *widget.Entry
+	importPath   *widget.Entry
+}
+
+func NewBackupScreen(svc *service.Service, w fyne.Window) *BackupScreen {
+	return &BackupScreen{svc: svc, window: w}
+}
+
+func makePathEntry(initial string) *widget.Entry {
+	e := widget.NewEntry()
+	e.SetText(initial)
+	e.Disable()
+	return e
+}
+
+func (s *BackupScreen) Build() fyne.CanvasObject {
+	title := widget.NewLabelWithStyle("数据库备份与导出", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+
+	// ---- 一键备份 ----
+	backupPath := s.backupPath
+	if backupPath == nil {
+		backupPath = makePathEntry("尚未备份")
+		s.backupPath = backupPath
+	}
+
+	backupBtn := widget.NewButtonWithIcon("一键备份 (mysqldump)", theme.DownloadIcon(), s.doBackup)
+	backupBtn.Importance = widget.HighImportance
+
+	backupBox := container.NewVBox(
+		widget.NewLabelWithStyle("一 键 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir())),
+		backupBtn,
+		container.NewBorder(nil, nil, widget.NewLabelWithStyle("备份文件:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, backupPath),
+	)
+
+	// ---- 导入备份 ----
+	importPath := s.importPath
+	if importPath == nil {
+		importPath = widget.NewEntry()
+		importPath.SetPlaceHolder("请选择或粘贴 .sql 备份文件路径")
+		s.importPath = importPath
+	}
+	browseBtn := widget.NewButtonWithIcon("浏览", theme.FolderOpenIcon(), s.doBrowse)
+	importBtn := widget.NewButtonWithIcon("开始导入", theme.UploadIcon(), s.doImport)
+	importBtn.Importance = widget.WarningImportance
+
+	importBox := container.NewVBox(
+		widget.NewLabelWithStyle("导 入 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("从备份的 SQL 文件中提取 INSERT 语句追加导入（不会覆盖已有数据）"),
+		container.NewBorder(nil, nil, nil, browseBtn, importPath),
+		importBtn,
+	)
+
+	// ---- 审计日志CSV ----
+	s.startDate = widget.NewEntry()
+	s.startDate.SetPlaceHolder("YYYY-MM-DD")
+	s.startDate.SetText(time.Now().Format("2006-01-02"))
+
+	s.endDate = widget.NewEntry()
+	s.endDate.SetPlaceHolder("YYYY-MM-DD")
+	s.endDate.SetText(time.Now().Format("2006-01-02"))
+
+	auditPath := s.auditPath
+	if auditPath == nil {
+		auditPath = makePathEntry("尚未导出")
+		s.auditPath = auditPath
+	}
+
+	auditBtn := widget.NewButtonWithIcon("导出审计日志CSV", theme.DocumentIcon(), s.doExportAudit)
+	auditBtn.Importance = widget.MediumImportance
+
+	dateRow := container.NewGridWithColumns(2,
+		container.NewBorder(nil, nil, widget.NewLabel("开始: "), nil, s.startDate),
+		container.NewBorder(nil, nil, widget.NewLabel("结束: "), nil, s.endDate),
+	)
+
+	// ---- 清空数据库 ----
+	clearConfirm := s.clearConfirm
+	if clearConfirm == nil {
+		clearConfirm = widget.NewEntry()
+		clearConfirm.SetPlaceHolder("请在输入框输入 drop 确认清空")
+		s.clearConfirm = clearConfirm
+	}
+	clearBtn := widget.NewButtonWithIcon("清空数据库（危险操作）", theme.DeleteIcon(), s.doClear)
+	clearBtn.Importance = widget.DangerImportance
+
+	clearBox := container.NewVBox(
+		widget.NewLabelWithStyle("清 空 数 据 库", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("警告：此操作将删除所有表中的全部数据（保留表结构），不可恢复！"),
+		container.NewBorder(nil, nil, widget.NewLabel("输入 drop 确认: "), nil, clearConfirm),
+		clearBtn,
+	)
+
+	auditBox := container.NewVBox(
+		widget.NewLabelWithStyle("审计日志导出 (按日期)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(fmt.Sprintf("按日期范围导出操作记录（CSV），可用 Excel 打开，保存到 %s", filepath.Join(paths.ExportDir(), "audit_log"))),
+		dateRow,
+		auditBtn,
+		container.NewBorder(nil, nil, widget.NewLabelWithStyle("导出文件:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, auditPath),
+	)
+
+	// ---- 全部数据CSV ----
+	allDataPath := s.allDataPath
+	if allDataPath == nil {
+		allDataPath = makePathEntry("尚未导出")
+		s.allDataPath = allDataPath
+	}
+
+	allBtn := widget.NewButtonWithIcon("导出全部数据CSV", theme.StorageIcon(), s.doExportAll)
+	allBtn.Importance = widget.MediumImportance
+
+	allBox := container.NewVBox(
+		widget.NewLabelWithStyle("全部数据导出 (CSV)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(fmt.Sprintf("将所有表(产品/零件/BOM/批次/追溯/日志)导出为单独 CSV 文件，保存到 %s", filepath.Join(paths.ExportDir(), "all_data"))),
+		allBtn,
+		container.NewBorder(nil, nil, widget.NewLabelWithStyle("导出目录:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), nil, allDataPath),
+	)
+
+	content := container.NewVBox(
+		title,
+		widget.NewSeparator(),
+		backupBox,
+		widget.NewSeparator(),
+		importBox,
+		widget.NewSeparator(),
+		clearBox,
+		widget.NewSeparator(),
+		auditBox,
+		widget.NewSeparator(),
+		allBox,
+	)
+
+	return container.NewScroll(content)
+}
+
+func (s *BackupScreen) doClear() {
+	typed := s.clearConfirm.Text
+	if typed != "drop" {
+		dialog.NewInformation("确认失败", "请在输入框中准确输入 drop 以确认清空操作", s.window)
+		return
+	}
+	dialog.NewConfirm("最终警告", "确定要清空数据库所有数据吗？此操作不可恢复！", func(ok bool) {
+		if !ok {
+			return
+		}
+		if err := s.svc.ClearDatabase(); err != nil {
+			showError(s.window, "清空失败", err)
+			return
+		}
+		s.clearConfirm.SetText("")
+		dialog.NewInformation("清空完成", "所有表中的数据已被清空", s.window)
+	}, s.window).Show()
+}
+
+func (s *BackupScreen) getBackupDir() string {
+	return paths.BackupDir()
+}
+
+func (s *BackupScreen) getExportDir() string {
+	return paths.ExportDir()
+}
+
+func (s *BackupScreen) getAuditExportDir() string {
+	return filepath.Join(s.getExportDir(), "audit_log")
+}
+
+func (s *BackupScreen) getAllDataExportDir() string {
+	return filepath.Join(s.getExportDir(), "all_data")
+}
+
+func (s *BackupScreen) doBackup() {
+	dir := s.getBackupDir()
+	path, err := s.svc.BackupDatabase(dir)
+	if err != nil {
+		showError(s.window, "备份失败", err)
+		return
+	}
+	s.backupPath.SetText(path)
+	dialog.NewInformation("备份完成",
+		fmt.Sprintf("数据库备份成功！\n保存路径：\n%s", path), s.window)
+}
+
+func (s *BackupScreen) doBrowse() {
+	backupDir := s.getBackupDir()
+	var files []string
+	filepath.Walk(backupDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(strings.ToLower(info.Name()), ".sql") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if len(files) == 0 {
+		dialog.NewInformation("提示", fmt.Sprintf("在 %s 下未找到 .sql 备份文件", backupDir), s.window)
+		return
+	}
+	sort.Strings(files)
+	var names []string
+	for _, f := range files {
+		rel, _ := filepath.Rel(backupDir, f)
+		names = append(names, rel)
+	}
+	list := widget.NewList(
+		func() int { return len(names) },
+		func() fyne.CanvasObject { return widget.NewLabel("xxxxxxxx.sql") },
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			o.(*widget.Label).SetText(names[i])
+		},
+	)
+	list.OnSelected = func(id widget.ListItemID) {
+		s.importPath.SetText(files[id])
+		dialog.ShowInformation("已选择", fmt.Sprintf("已选择文件：\n%s", files[id]), s.window)
+	}
+	pop := dialog.NewCustom("选择备份文件 - "+backupDir, "关闭", list, s.window)
+	pop.Resize(fyne.NewSize(600, 400))
+	pop.Show()
+}
+
+func (s *BackupScreen) doImport() {
+	filePath := s.importPath.Text
+	if filePath == "" {
+		dialog.NewInformation("提示", "请先选择或输入备份文件路径", s.window)
+		return
+	}
+	if _, err := os.Stat(filePath); err != nil {
+		dialog.NewInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
+		return
+	}
+	dialog.NewConfirm("确认导入",
+		fmt.Sprintf("即将从以下文件追加导入数据（仅执行 INSERT 语句）：\n%s", filePath),
+		func(confirm bool) {
+			if !confirm {
+				return
+			}
+			success, failed, err := s.svc.RestoreDatabase(filePath)
+			if err != nil {
+				showError(s.window, "导入失败", err)
+				return
+			}
+			msg := fmt.Sprintf("成功导入 %d 条记录", success)
+			if failed > 0 {
+				msg += fmt.Sprintf("，%d 条跳过（可能已存在）", failed)
+			}
+			msg += fmt.Sprintf("\n文件：%s", filePath)
+			dialog.NewInformation("导入完成", msg, s.window)
+		}, s.window).Show()
+}
+
+func (s *BackupScreen) doExportAudit() {
+	start, err := time.Parse("2006-01-02", s.startDate.Text)
+	if err != nil {
+		dialog.NewInformation("提示", "开始日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
+		return
+	}
+	end, err := time.Parse("2006-01-02", s.endDate.Text)
+	if err != nil {
+		dialog.NewInformation("提示", "结束日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
+		return
+	}
+	if end.Before(start) {
+		dialog.NewInformation("提示", "结束日期不能早于开始日期", s.window)
+		return
+	}
+	dir := filepath.Join(s.getAuditExportDir(), time.Now().Format("20060102_150405"))
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		showError(s.window, "创建目录失败", err)
+		return
+	}
+	filePath := filepath.Join(dir, fmt.Sprintf("audit_log_%s_%s.csv",
+		start.Format("20060102"), end.Format("20060102")))
+
+	count, err := s.svc.ExportAuditLogCSV(start, end, filePath)
+	if err != nil {
+		showError(s.window, "导出失败", err)
+		return
+	}
+	s.auditPath.SetText(filePath)
+	dialog.NewInformation("导出完成",
+		fmt.Sprintf("共导出 %d 条审计日志\n保存路径：\n%s", count, filePath), s.window)
+}
+
+func (s *BackupScreen) doExportAll() {
+	dir := s.getAllDataExportDir()
+	files, subDir, err := s.svc.ExportAllDataCSV(dir)
+	if err != nil {
+		showError(s.window, "导出失败", err)
+		return
+	}
+	msg := fmt.Sprintf("导出完成！已保存到：\n%s\n\n文件列表：", subDir)
+	for name, path := range files {
+		msg += fmt.Sprintf("\n%s → %s", name, path)
+	}
+	s.allDataPath.SetText(subDir)
+	dialog.NewInformation("导出完成", msg, s.window)
+}

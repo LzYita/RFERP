@@ -1,0 +1,19 @@
+# 本地配置与凭据（含加密后的数据库口令，机器相关）
+config.json
+config.json.bak
+config.json.tmp
+
+# 构建产物
+*.exe
+!rcedit-x64.exe
+dist/
+
+# 运行数据、备份与导出
+仓库数据/
+*.log
+
+# 更新签名密钥（私钥务必保密）
+*.key
+
+# 临时文件
+*.tmp

@@ -1,0 +1,137 @@
+package ui
+
+import (
+	"image/color"
+	"math"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+
+	"app/internal/model"
+)
+
+var (
+	selColor    color.Color = clrSelected
+	warnColor   color.Color = clrWarnBg
+	zebraColor  color.Color = clrZebra
+	headerColor color.Color = clrHeader
+	transparent color.Color = color.Transparent
+)
+
+func makeCellTmpl() fyne.CanvasObject {
+	bg := canvas.NewRectangle(transparent)
+	label := widget.NewLabel("X")
+	return container.NewStack(bg, label)
+}
+
+// updateCell 统一居中显示，badge=true 时加粗并带强调底色
+func updateCell(cellObj fyne.CanvasObject, text string, bold bool, bgColor color.Color) {
+	updateCellEx(cellObj, text, bold, bgColor, false)
+}
+
+func updateCellEx(cellObj fyne.CanvasObject, text string, bold bool, bgColor color.Color, badge bool) {
+	s := cellObj.(*fyne.Container)
+	bg := s.Objects[0].(*canvas.Rectangle)
+	lbl := s.Objects[1].(*widget.Label)
+	bg.FillColor = bgColor
+	bg.Refresh()
+	lbl.SetText(text)
+	lbl.Alignment = fyne.TextAlignCenter
+	if badge || bold {
+		lbl.TextStyle = fyne.TextStyle{Bold: true}
+	} else {
+		lbl.TextStyle = fyne.TextStyle{}
+	}
+}
+
+// statusBadge 根据状态返回 (背景色, 前景色)
+func productStatusStyle(status int) (color.Color, color.Color) {
+	if status == 1 {
+		return badgeSuccessBg, badgeSuccessFg
+	}
+	return badgeGrayBg, badgeGrayFg
+}
+
+func productStatusText(status int) string {
+	if status == 1 {
+		return "启用"
+	}
+	return "停用"
+}
+
+func partStatusStyle(lowStock bool, status int) (color.Color, color.Color, string) {
+	if lowStock {
+		return badgeErrorBg, badgeErrorFg, "库存紧张"
+	}
+	if status == 1 {
+		return badgeSuccessBg, badgeSuccessFg, "启用"
+	}
+	return badgeGrayBg, badgeGrayFg, "停用"
+}
+
+func batchStatusStyle(status int) (color.Color, color.Color, string) {
+	switch status {
+	case 0:
+		return badgeGrayBg, badgeGrayFg, "待生产"
+	case 1:
+		return badgeBlueBg, badgeBlueFg, "生产中"
+	case 2:
+		return badgeSuccessBg, badgeSuccessFg, "已完成"
+	case 3:
+		return badgeWarnBg, badgeWarnFg, "已暂停"
+	case 4:
+		return badgeErrorBg, badgeErrorFg, "已撤销"
+	}
+	return badgeGrayBg, badgeGrayFg, "未知"
+}
+
+func actionStyle(action string) (color.Color, color.Color) {
+	switch action {
+	case "DELETE", "REVOKE":
+		return badgeErrorBg, badgeErrorFg
+	case "INSERT", "STOCK_IN":
+		return badgeSuccessBg, badgeSuccessFg
+	case "UPDATE", "UPDATE_STATUS", "STOCK_ADJUST":
+		return badgeBlueBg, badgeBlueFg
+	case "STOCK_DEDUCT":
+		return badgeWarnBg, badgeWarnFg
+	}
+	return badgeGrayBg, badgeGrayFg
+}
+
+// 判断数据行是否显示斑马纹背景（表头不算）
+func dataRowBG(row int, sel bool) color.Color {
+	if sel {
+		return selColor
+	}
+	if row%2 == 0 {
+		return zebraColor
+	}
+	return transparent
+}
+
+func withImportance(b *widget.Button, imp widget.Importance) *widget.Button {
+	b.Importance = imp
+	return b
+}
+
+// bomConsumeQty 计算指定产品数量下某BOM项的零件消耗量
+// use_mode: 0=每台产品用N个零件 -> 台数*N*(1+损耗率%)
+// use_mode: 1=每M台产品用1个零件(包装箱) -> ceil(台数/M)，再按损耗率上浮后向上取整
+func bomConsumeQty(planQty int, b model.BOMItem) float64 {
+	base := float64(planQty) * b.Quantity
+	if b.UseMode == 1 {
+		m := b.Quantity
+		if m <= 0 {
+			m = 1
+		}
+		base = math.Ceil(float64(planQty) / m)
+	}
+	consume := base * (1 + b.LossRate/100)
+	if b.UseMode == 1 {
+		consume = math.Ceil(consume)
+	}
+	return consume
+}

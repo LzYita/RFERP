@@ -60,12 +60,12 @@ if errorlevel 1 (
 )
 
 echo [5/6] Build installer ...
-if not exist "%ISCC%" (
-    echo   ISCC not found: %ISCC%
+if not exist "!ISCC!" (
+    echo   ISCC not found: !ISCC!
     pause
     exit /b 1
 )
-"%ISCC%" /DMyAppVersion=%VERSION% setup.iss >nul
+"!ISCC!" /DMyAppVersion=%VERSION% setup.iss >nul
 if errorlevel 1 (
     echo   Installer build failed.
     pause

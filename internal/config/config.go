@@ -16,6 +16,9 @@ import (
 	"app/internal/secret"
 )
 
+// DefaultUpdateURL is used when config.json does not specify updateUrl.
+const DefaultUpdateURL = "https://github.com/LzYita/RFERP/releases/latest/download/releases.json"
+
 type Config struct {
 	DB            DBConfig
 	Srv           ServerConfig
@@ -87,6 +90,9 @@ func Load() *Config {
 		if _, err := os.Stat(`D:\仓库数据`); err == nil {
 			cfg.DataDir = `D:\仓库数据`
 		}
+	}
+	if cfg.UpdateURL == "" {
+		cfg.UpdateURL = DefaultUpdateURL
 	}
 	cfg.Srv.Addr = os.Getenv("SRV_ADDR")
 	if cfg.Srv.Addr == "" {

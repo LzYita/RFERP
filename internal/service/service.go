@@ -117,17 +117,26 @@ type auditEntry struct {
 	Operator  string
 }
 
-func (s *Service) writeAudit(e auditEntry) {
-	oldJSON, _ := toJSON(e.OldData)
-	newJSON, _ := toJSON(e.NewData)
-	_ = s.repo.CreateAuditLog(&model.AuditLog{
+func (s *Service) writeAudit(e auditEntry) error {
+	oldJSON, err := toJSON(e.OldData)
+	if err != nil {
+		return fmt.Errorf("marshal audit old data: %w", err)
+	}
+	newJSON, err := toJSON(e.NewData)
+	if err != nil {
+		return fmt.Errorf("marshal audit new data: %w", err)
+	}
+	if err := s.repo.CreateAuditLog(&model.AuditLog{
 		TableName: e.TableName,
 		RecordID:  e.RecordID,
 		Action:    e.Action,
 		OldData:   oldJSON,
 		NewData:   newJSON,
 		Operator:  &e.Operator,
-	})
+	}); err != nil {
+		return fmt.Errorf("write audit %s/%d: %w", e.TableName, e.RecordID, err)
+	}
+	return nil
 }
 
 func (s *Service) writeAuditTx(tx *repository.Tx, e auditEntry) error {
@@ -170,16 +179,24 @@ func toJSON(v any) (*map[string]any, error) {
 // ---- 产品 ----
 
 func (s *Service) CreateProduct(p *model.Product) (*model.Product, error) {
+	if p == nil {
+		return nil, fmt.Errorf("产品不能为空")
+	}
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	p.Version = 1
-	id, err := s.repo.CreateProduct(p)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		id, err := tx.CreateProduct(p)
+		if err != nil {
+			return fmt.Errorf("create product: %w", err)
+		}
+		p.ID = id
+		return s.writeAuditTx(tx, auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create product: %w", err)
+		return nil, err
 	}
-	p.ID = id
-	s.writeAudit(auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
 	return p, nil
 }
 
@@ -192,38 +209,47 @@ func (s *Service) ListProducts() ([]model.Product, error) {
 }
 
 func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
-	old, err := s.repo.GetProduct(p.ID)
+	if p == nil {
+		return nil, fmt.Errorf("产品不能为空")
+	}
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetProductForUpdate(p.ID)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("product not found")
+		}
+		affected, err := tx.UpdateProduct(p)
+		if err != nil {
+			return fmt.Errorf("update product: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("product version conflict, please refresh and retry")
+		}
+		p.Version = old.Version + 1
+		return s.writeAuditTx(tx, auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if old == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	affected, err := s.repo.UpdateProduct(p)
-	if err != nil {
-		return nil, fmt.Errorf("update product: %w", err)
-	}
-	if affected == 0 {
-		return nil, fmt.Errorf("product version conflict, please refresh and retry")
-	}
-	p.Version = old.Version + 1
-	s.writeAudit(auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
 	return p, nil
 }
 
 func (s *Service) DeleteProduct(id int64, operator string) error {
-	old, err := s.repo.GetProduct(id)
-	if err != nil {
-		return err
-	}
-	if old == nil {
-		return fmt.Errorf("product not found")
-	}
-	if err := s.repo.DeleteProduct(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"products", id, "DELETE", old, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetProductForUpdate(id)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("product not found")
+		}
+		if err := tx.DeleteProduct(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"products", id, "DELETE", old, nil, operator})
+	})
 }
 
 // ---- 零件 ----
@@ -232,12 +258,17 @@ func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
 	if err := validatePartQuantities(p); err != nil {
 		return nil, err
 	}
-	id, err := s.repo.CreatePart(p)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		id, err := tx.CreatePart(p)
+		if err != nil {
+			return fmt.Errorf("create part: %w", err)
+		}
+		p.ID = id
+		return s.writeAuditTx(tx, auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create part: %w", err)
+		return nil, err
 	}
-	p.ID = id
-	s.writeAudit(auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
 	return p, nil
 }
 
@@ -253,38 +284,44 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 	if err := validatePartQuantities(p); err != nil {
 		return nil, err
 	}
-	old, err := s.repo.GetPart(p.ID)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(p.ID)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		affected, err := tx.UpdatePart(p)
+		if err != nil {
+			return fmt.Errorf("update part: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("part version conflict, please refresh and retry")
+		}
+		p.Version = old.Version + 1
+		return s.writeAuditTx(tx, auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if old == nil {
-		return nil, fmt.Errorf("part not found")
-	}
-	affected, err := s.repo.UpdatePart(p)
-	if err != nil {
-		return nil, fmt.Errorf("update part: %w", err)
-	}
-	if affected == 0 {
-		return nil, fmt.Errorf("part version conflict, please refresh and retry")
-	}
-	p.Version = old.Version + 1
-	s.writeAudit(auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
 	return p, nil
 }
 
 func (s *Service) DeletePart(id int64, operator string) error {
-	old, err := s.repo.GetPart(id)
-	if err != nil {
-		return err
-	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	if err := s.repo.DeletePart(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"parts", id, "DELETE", old, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(id)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		if err := tx.DeletePart(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", id, "DELETE", old, nil, operator})
+	})
 }
 
 func (s *Service) StockIn(partID int64, qty float64, operator string) error {
@@ -340,27 +377,32 @@ func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 	if err := validateBOMItem(b); err != nil {
 		return nil, err
 	}
-	// 校验产品和零件存在
-	prod, err := s.repo.GetProduct(b.ProductID)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		// 校验产品和零件存在，并锁定零件避免并发删除。
+		prod, err := tx.GetProduct(b.ProductID)
+		if err != nil {
+			return err
+		}
+		if prod == nil {
+			return fmt.Errorf("product not found")
+		}
+		part, err := tx.GetPartForUpdate(b.PartID)
+		if err != nil {
+			return err
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
+		id, err := tx.CreateBOMItem(b)
+		if err != nil {
+			return fmt.Errorf("create bom: %w", err)
+		}
+		b.ID = id
+		return s.writeAuditTx(tx, auditEntry{"bom_items", id, "INSERT", nil, b, *b.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if prod == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	part, err := s.repo.GetPart(b.PartID)
-	if err != nil {
-		return nil, err
-	}
-	if part == nil {
-		return nil, fmt.Errorf("part not found")
-	}
-	id, err := s.repo.CreateBOMItem(b)
-	if err != nil {
-		return nil, fmt.Errorf("create bom: %w", err)
-	}
-	b.ID = id
-	s.writeAudit(auditEntry{"bom_items", id, "INSERT", nil, b, *b.Operator})
 	return b, nil
 }
 
@@ -369,13 +411,12 @@ func (s *Service) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 }
 
 func (s *Service) RemoveBOMItem(id int64, operator string) error {
-	// 先查询
-	_ = operator
-	if err := s.repo.DeleteBOMItem(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"bom_items", id, "DELETE", nil, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		if err := tx.DeleteBOMItem(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"bom_items", id, "DELETE", nil, nil, operator})
+	})
 }
 
 // ---- 批次 ----
@@ -387,27 +428,32 @@ func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error
 	if err := validatePlanQty(b.PlanQty); err != nil {
 		return nil, err
 	}
-	prod, err := s.repo.GetProduct(b.ProductID)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		prod, err := tx.GetProduct(b.ProductID)
+		if err != nil {
+			return err
+		}
+		if prod == nil {
+			return fmt.Errorf("product not found")
+		}
+		id, err := tx.CreateBatch(b)
+		if err != nil {
+			return fmt.Errorf("create batch: %w", err)
+		}
+		b.ID = id
+		auditData := map[string]any{
+			"batch_no":     b.BatchNo,
+			"product_id":   b.ProductID,
+			"product_code": prod.Code,
+			"product_name": prod.Name,
+			"plan_qty":     b.PlanQty,
+			"customer":     b.Customer,
+		}
+		return s.writeAuditTx(tx, auditEntry{"product_batches", id, "INSERT", nil, auditData, *b.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if prod == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	id, err := s.repo.CreateBatch(b)
-	if err != nil {
-		return nil, fmt.Errorf("create batch: %w", err)
-	}
-	b.ID = id
-	auditData := map[string]any{
-		"batch_no":     b.BatchNo,
-		"product_id":   b.ProductID,
-		"product_code": prod.Code,
-		"product_name": prod.Name,
-		"plan_qty":     b.PlanQty,
-		"customer":     b.Customer,
-	}
-	s.writeAudit(auditEntry{"product_batches", id, "INSERT", nil, auditData, *b.Operator})
 	return b, nil
 }
 

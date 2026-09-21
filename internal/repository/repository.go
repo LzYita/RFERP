@@ -305,6 +305,17 @@ func (t *Tx) GetBatchForUpdate(id int64) (*model.ProductBatch, error) {
 	return &b, nil
 }
 
+func (t *Tx) CreateBatch(b *model.ProductBatch) (int64, error) {
+	res, err := t.tx.Exec(
+		`INSERT INTO product_batches (batch_no,product_id,plan_qty,status,operator,customer) VALUES (?,?,?,?,?,?)`,
+		b.BatchNo, b.ProductID, b.PlanQty, b.Status, b.Operator, b.Customer,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 func (t *Tx) GetProduct(id int64) (*model.Product, error) {
 	var p model.Product
 	err := t.tx.Get(&p, `SELECT * FROM products WHERE id=?`, id)
@@ -317,6 +328,72 @@ func (t *Tx) GetProduct(id int64) (*model.Product, error) {
 	return &p, nil
 }
 
+func (t *Tx) GetProductForUpdate(id int64) (*model.Product, error) {
+	var p model.Product
+	err := t.tx.Get(&p, `SELECT * FROM products WHERE id=? FOR UPDATE`, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (t *Tx) CreateProduct(p *model.Product) (int64, error) {
+	res, err := t.tx.Exec(
+		`INSERT INTO products (code,name,spec,unit,status,operator) VALUES (?,?,?,?,?,?)`,
+		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (t *Tx) UpdateProduct(p *model.Product) (int64, error) {
+	res, err := t.tx.Exec(
+		`UPDATE products SET code=?,name=?,spec=?,unit=?,status=?,operator=?, version=version+1 WHERE id=? AND version=?`,
+		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (t *Tx) DeleteProduct(id int64) error {
+	_, err := t.tx.Exec(`DELETE FROM products WHERE id=?`, id)
+	return err
+}
+
+func (t *Tx) CreatePart(p *model.Part) (int64, error) {
+	res, err := t.tx.Exec(
+		`INSERT INTO parts (code,name,spec,unit,part_type,stock_qty,warn_qty,status,operator,supplier) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (t *Tx) UpdatePart(p *model.Part) (int64, error) {
+	res, err := t.tx.Exec(
+		`UPDATE parts SET code=?,name=?,spec=?,unit=?,part_type=?,stock_qty=?,warn_qty=?,status=?,operator=?,supplier=?, version=version+1 WHERE id=? AND version=?`,
+		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (t *Tx) DeletePart(id int64) error {
+	_, err := t.tx.Exec(`DELETE FROM parts WHERE id=?`, id)
+	return err
+}
+
 func (t *Tx) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 	var list []model.BOMItem
 	err := t.tx.Select(&list, `
@@ -326,6 +403,22 @@ func (t *Tx) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 		WHERE b.product_id = ?
 		ORDER BY b.part_id, b.id`, productID)
 	return list, err
+}
+
+func (t *Tx) CreateBOMItem(b *model.BOMItem) (int64, error) {
+	res, err := t.tx.Exec(
+		`INSERT INTO bom_items (product_id,part_id,quantity,loss_rate,remark,operator,replaceable,use_mode) VALUES (?,?,?,?,?,?,?,?)`,
+		b.ProductID, b.PartID, b.Quantity, b.LossRate, b.Remark, b.Operator, b.Replaceable, b.UseMode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (t *Tx) DeleteBOMItem(id int64) error {
+	_, err := t.tx.Exec(`DELETE FROM bom_items WHERE id=?`, id)
+	return err
 }
 
 func (t *Tx) GetSkippedParts(batchID int64) ([]int64, error) {

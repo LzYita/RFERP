@@ -89,7 +89,12 @@ func isLocalHost(host string) bool {
 func main() {
 	winappid.Set("LzYita.RFERP")
 
-	if ok, err := singleinstance.Acquire("RFERP.SingleInstance"); err == nil && !ok {
+	// 更新后重启时，旧进程可能仍在退出中，稍等它释放单实例锁。
+	var lockWait time.Duration
+	if os.Getenv("RFERP_UPDATE_RESTART") == "1" {
+		lockWait = 20 * time.Second
+	}
+	if ok, err := singleinstance.Acquire("RFERP.SingleInstance", lockWait); err == nil && !ok {
 		winmsg.Info("RFERP", "RFERP 已在运行，请勿重复启动。")
 		return
 	}

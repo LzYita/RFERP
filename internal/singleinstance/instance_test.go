@@ -6,14 +6,14 @@ import "testing"
 
 func TestAcquireSecondFails(t *testing.T) {
 	name := "RFERP.Test.SingleInstance"
-	ok, err := Acquire(name)
+	ok, err := Acquire(name, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !ok {
 		t.Fatal("first acquire should succeed")
 	}
-	ok2, err := Acquire(name)
+	ok2, err := Acquire(name, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

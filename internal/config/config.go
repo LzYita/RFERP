@@ -17,7 +17,9 @@ import (
 )
 
 // DefaultUpdateURL is used when config.json does not specify updateUrl.
-const DefaultUpdateURL = "https://github.com/LzYita/RFERP/releases/latest/download/releases.json"
+// It goes through a GitHub accelerator; update.DefaultFallbackURL is tried if
+// the accelerator is unreachable.
+const DefaultUpdateURL = "https://ghfast.top/https://github.com/LzYita/RFERP/releases/latest/download/releases.json"
 
 type Config struct {
 	DB            DBConfig

@@ -2,6 +2,8 @@
 
 package singleinstance
 
-func Acquire(name string) (bool, error) {
+import "time"
+
+func Acquire(name string, wait time.Duration) (bool, error) {
 	return true, nil
 }

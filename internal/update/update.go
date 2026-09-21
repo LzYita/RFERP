@@ -47,10 +47,15 @@ func (c *Checker) httpClient(timeout time.Duration) *http.Client {
 
 type Checker struct {
 	ManifestURL    string
+	FallbackURL    string
 	CurrentVersion string
 	PublicKey      ed25519.PublicKey
 	Client         *http.Client
 }
+
+// DefaultFallbackURL is the direct GitHub manifest URL, used when the
+// configured (accelerated) manifest URL is unreachable.
+const DefaultFallbackURL = "https://github.com/LzYita/RFERP/releases/latest/download/releases.json"
 
 func NewChecker(manifestURL, currentVersion string) (*Checker, error) {
 	pub, err := PublicKey()
@@ -59,6 +64,7 @@ func NewChecker(manifestURL, currentVersion string) (*Checker, error) {
 	}
 	return &Checker{
 		ManifestURL:    manifestURL,
+		FallbackURL:    DefaultFallbackURL,
 		CurrentVersion: currentVersion,
 		PublicKey:      pub,
 		Client:         &http.Client{Timeout: 30 * time.Second},
@@ -68,11 +74,27 @@ func NewChecker(manifestURL, currentVersion string) (*Checker, error) {
 // Check returns a manifest when a newer, signed version is available; nil when
 // there is nothing to do.
 func (c *Checker) Check() (*Manifest, error) {
+	urls := []string{c.ManifestURL}
+	if c.FallbackURL != "" && c.FallbackURL != c.ManifestURL {
+		urls = append(urls, c.FallbackURL)
+	}
+	var lastErr error
+	for _, u := range urls {
+		m, err := c.checkURL(u)
+		if err == nil {
+			return m, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func (c *Checker) checkURL(url string) (*Manifest, error) {
 	if len(c.PublicKey) == 0 {
 		return nil, errors.New("更新公钥未配置")
 	}
 	client := c.httpClient(30 * time.Second)
-	resp, err := client.Get(c.ManifestURL)
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +227,9 @@ func ApplyAndRestart(zipPath string) error {
 		os.Rename(oldPath, target)
 		return err
 	}
-	if err := exec.Command(target).Start(); err != nil {
+	cmd := exec.Command(target)
+	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
+	if err := cmd.Start(); err != nil {
 		return err
 	}
 	return nil

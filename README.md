@@ -6,6 +6,12 @@
 
 ---
 
+## 界面预览
+
+![主界面](docs/screenshot.png)
+
+---
+
 ## 功能特性
 
 - **产品 / 零件管理**：编码、规格、单位、状态、库存预警
@@ -71,26 +77,6 @@ build.bat
 build-installer.bat
 ```
 产物：`dist\Setup-RFERP-<版本>.exe`
-
----
-
-## 发布新版本（维护者）
-
-### 一次性准备
-1. 生成更新签名密钥对：
-   ```bat
-   go run ./cmd/keygen
-   ```
-   - 私钥（`rferp-update-private.key`）**务必自行保管，切勿提交或外发**
-   - 公钥写入 `internal/update/keys.go` 的 `PublicKeyB64`
-
-### 发布
-```bat
-release.bat 1.2.3
-```
-自动完成：校验私钥 → 编辑更新说明 → 构建 → 打包 → 签名清单 → 构建安装包 → 上传 GitHub Release。
-
-更新说明使用项目根目录的 `release-notes.txt`（不存在时会生成模板）。
 
 ---
 

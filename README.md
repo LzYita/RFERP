@@ -59,10 +59,16 @@
 
 ## 从源码构建
 
-### 依赖
-- [Go](https://go.dev/) 1.22+
-- GCC（CGO 需要，如 [TDM-GCC](https://jmeubank.github.io/tdm-gcc/)）
-- 构建安装包需 [Inno Setup 6](https://jrsoftware.org/isdl.php)
+### 环境要求
+
+| 项 | 要求 |
+|---|---|
+| 操作系统 | Windows 10 / 11（64 位） |
+| Go | 1.22 或更高（建议使用最新稳定版） |
+| C 编译器 | **64 位 mingw-w64 GCC**（CGO 必需）。**已验证：TDM-GCC 64 位（10.3.0）**；其他 GCC 发行版可能无法生成可运行的程序 |
+| Inno Setup | 6（仅构建安装包时需要） |
+
+> 以上工具仅**构建者**需要；**最终用户安装和运行不需要 Go 或 GCC**（发布产物已自带运行库）。
 
 ### 构建
 ```bat

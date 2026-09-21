@@ -81,6 +81,28 @@ func (s *Service) writeAudit(e auditEntry) {
 	})
 }
 
+func (s *Service) writeAuditTx(tx *repository.Tx, e auditEntry) error {
+	oldJSON, err := toJSON(e.OldData)
+	if err != nil {
+		return fmt.Errorf("marshal audit old data: %w", err)
+	}
+	newJSON, err := toJSON(e.NewData)
+	if err != nil {
+		return fmt.Errorf("marshal audit new data: %w", err)
+	}
+	if err := tx.CreateAuditLog(&model.AuditLog{
+		TableName: e.TableName,
+		RecordID:  e.RecordID,
+		Action:    e.Action,
+		OldData:   oldJSON,
+		NewData:   newJSON,
+		Operator:  &e.Operator,
+	}); err != nil {
+		return fmt.Errorf("write audit %s/%d: %w", e.TableName, e.RecordID, err)
+	}
+	return nil
+}
+
 func toJSON(v any) (*map[string]any, error) {
 	if v == nil {
 		return nil, nil
@@ -211,42 +233,44 @@ func (s *Service) DeletePart(id int64, operator string) error {
 }
 
 func (s *Service) StockIn(partID int64, qty float64, operator string) error {
-	old, err := s.repo.GetPart(partID)
-	if err != nil {
-		return fmt.Errorf("get part: %w", err)
-	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	newStock := old.StockQty + qty
-	if err := s.repo.UpdatePartStock(partID, newStock); err != nil {
-		return fmt.Errorf("update stock: %w", err)
-	}
-	s.writeAudit(auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
-		"old_stock": old.StockQty,
-		"in_qty":    qty,
-		"new_stock": newStock,
-	}, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		newStock := old.StockQty + qty
+		if err := tx.UpdatePartStock(partID, newStock); err != nil {
+			return fmt.Errorf("update stock: %w", err)
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
+			"old_stock": old.StockQty,
+			"in_qty":    qty,
+			"new_stock": newStock,
+		}, operator})
+	})
 }
 
 func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
-	old, err := s.repo.GetPart(partID)
-	if err != nil {
-		return fmt.Errorf("get part: %w", err)
-	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	if err := s.repo.UpdatePartStock(partID, newQty); err != nil {
-		return fmt.Errorf("adjust stock: %w", err)
-	}
-	s.writeAudit(auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
-		"old_stock": old.StockQty,
-		"new_stock": newQty,
-		"diff":      newQty - old.StockQty,
-	}, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		if err := tx.UpdatePartStock(partID, newQty); err != nil {
+			return fmt.Errorf("adjust stock: %w", err)
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
+			"old_stock": old.StockQty,
+			"new_stock": newQty,
+			"diff":      newQty - old.StockQty,
+		}, operator})
+	})
 }
 
 // ---- BOM ----
@@ -322,139 +346,186 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 }
 
 func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error {
-	batch, err := s.repo.GetBatch(id)
-	if err != nil {
-		return fmt.Errorf("get batch: %w", err)
-	}
-	if batch == nil {
-		return fmt.Errorf("batch not found")
-	}
-	if batch.Status == 4 {
-		return fmt.Errorf("已撤销的批次不能更改状态")
-	}
-	// 完成生产 → 自动按BOM扣减库存
-	if status == 2 && batch.Status != 2 {
-		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
-			return fmt.Errorf("get bom: %w", err)
+			return fmt.Errorf("get batch: %w", err)
 		}
-		skipParts, _ := s.repo.GetSkippedParts(id)
-		skipMap := make(map[int64]bool)
-		for _, pid := range skipParts {
-			skipMap[pid] = true
+		if batch == nil {
+			return fmt.Errorf("batch not found")
 		}
-		for _, item := range bom {
-			if skipMap[item.PartID] {
-				continue
-			}
-			part, err := s.repo.GetPart(item.PartID)
+		if batch.Status == 4 {
+			return fmt.Errorf("已撤销的批次不能更改状态")
+		}
+		if status < 0 || status > 3 {
+			return fmt.Errorf("状态 %d 不允许通过 UpdateBatchStatus 修改；撤销批次请使用 RevokeBatch", status)
+		}
+		if batch.Status == 2 {
+			return fmt.Errorf("已完成的批次不能更改状态；如需撤销请使用 RevokeBatch")
+		}
+
+		// 完成生产 → 自动按BOM扣减库存
+		if status == 2 {
+			bom, err := tx.GetBOMByProduct(batch.ProductID)
 			if err != nil {
-				return fmt.Errorf("get part %d: %w", item.PartID, err)
+				return fmt.Errorf("get bom: %w", err)
 			}
-			if part == nil {
-				continue
+			skipParts, err := tx.GetSkippedParts(id)
+			if err != nil {
+				return fmt.Errorf("get skipped parts: %w", err)
 			}
-			deduct := bomConsume(batch.PlanQty, item)
-			newStock := part.StockQty - deduct
-			if newStock < 0 {
-				newStock = 0
+			skipMap := make(map[int64]bool)
+			for _, pid := range skipParts {
+				skipMap[pid] = true
 			}
-			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
-				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+			for _, item := range bom {
+				if skipMap[item.PartID] {
+					continue
+				}
+				part, err := tx.GetPartForUpdate(item.PartID)
+				if err != nil {
+					return fmt.Errorf("get part %d: %w", item.PartID, err)
+				}
+				if part == nil {
+					continue
+				}
+				requestedDeduct := bomConsume(batch.PlanQty, item)
+				actualDeduct := requestedDeduct
+				if actualDeduct > part.StockQty {
+					actualDeduct = part.StockQty
+				}
+				newStock := part.StockQty - actualDeduct
+				if newStock < 0 {
+					newStock = 0
+				}
+				if err := tx.UpdatePartStock(item.PartID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+				}
+				if err := tx.CreateBatchConsumption(&model.BatchConsumption{
+					BatchID:     id,
+					PartID:      item.PartID,
+					ConsumedQty: actualDeduct,
+				}); err != nil {
+					return fmt.Errorf("record consumption for part %d: %w", item.PartID, err)
+				}
+				if err := s.writeAuditTx(tx, auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
+					"old_stock":        part.StockQty,
+					"requested_deduct": requestedDeduct,
+					"deduct":           actualDeduct,
+					"new_stock":        newStock,
+					"batch_id":         id,
+				}, operator}); err != nil {
+					return err
+				}
 			}
-			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
-				"old_stock": part.StockQty,
-				"deduct":    deduct,
-				"new_stock": newStock,
-				"batch_id":  id,
-			}, operator})
+			if err := tx.UpdateBatchProduced(id, batch.PlanQty); err != nil {
+				return fmt.Errorf("update batch produced: %w", err)
+			}
+			if err := tx.MarkBatchConsumptionRecorded(id); err != nil {
+				return fmt.Errorf("mark batch consumption recorded: %w", err)
+			}
 		}
-		// 更新完成数
-		_ = s.repo.UpdateBatchProduced(id, batch.PlanQty)
-	}
-	affected, err := s.repo.UpdateBatchStatus(id, status, operator)
-	if err != nil {
-		return fmt.Errorf("update batch status: %w", err)
-	}
-	if affected == 0 {
-		return fmt.Errorf("batch not found")
-	}
-	// 查产品信息用于审计日志
-	prod, _ := s.repo.GetProduct(batch.ProductID)
-	oldMap := map[string]any{
-		"batch_no":     batch.BatchNo,
-		"product_id":   batch.ProductID,
-		"product_code": "",
-		"product_name": "",
-		"plan_qty":     batch.PlanQty,
-		"status":       batch.Status,
-		"customer":     nullStrSvc(batch.Customer),
-	}
-	if prod != nil {
-		oldMap["product_code"] = prod.Code
-		oldMap["product_name"] = prod.Name
-	}
-	s.writeAudit(auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator})
-	return nil
+
+		prod, err := tx.GetProduct(batch.ProductID)
+		if err != nil {
+			return fmt.Errorf("get product for batch audit: %w", err)
+		}
+		oldMap := map[string]any{
+			"batch_no":     batch.BatchNo,
+			"product_id":   batch.ProductID,
+			"product_code": "",
+			"product_name": "",
+			"plan_qty":     batch.PlanQty,
+			"status":       batch.Status,
+			"customer":     nullStrSvc(batch.Customer),
+		}
+		if prod != nil {
+			oldMap["product_code"] = prod.Code
+			oldMap["product_name"] = prod.Name
+		}
+		affected, err := tx.UpdateBatchStatusFrom(id, status, operator, batch.Status)
+		if err != nil {
+			return fmt.Errorf("update batch status: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("batch state changed, please refresh and retry")
+		}
+		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Service) RevokeBatch(id int64, operator string) error {
-	batch, err := s.repo.GetBatch(id)
-	if err != nil {
-		return fmt.Errorf("get batch: %w", err)
-	}
-	if batch == nil {
-		return fmt.Errorf("batch not found")
-	}
-
-	// 已完成批次：回退库存（跳过被跳过的零件）
-	if batch.Status == 2 {
-		skipParts, _ := s.repo.GetSkippedParts(id)
-		skipMap := make(map[int64]bool)
-		for _, pid := range skipParts {
-			skipMap[pid] = true
-		}
-		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
-			return fmt.Errorf("get bom: %w", err)
+			return fmt.Errorf("get batch: %w", err)
 		}
-		for _, item := range bom {
-			if skipMap[item.PartID] {
-				continue
-			}
-			part, err := s.repo.GetPart(item.PartID)
-			if err != nil {
-				return fmt.Errorf("get part %d: %w", item.PartID, err)
-			}
-			if part == nil {
-				continue
-			}
-			deduct := bomConsume(batch.PlanQty, item)
-			newStock := part.StockQty + deduct
-			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
-				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
-			}
-			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_ADJUST", part, map[string]any{
-				"old_stock": part.StockQty,
-				"new_stock": newStock,
-				"diff":      deduct,
-				"batch_id":  id,
-				"remark":    "批次撤销回退",
-			}, operator})
+		if batch == nil {
+			return fmt.Errorf("batch not found")
 		}
-	}
+		if batch.Status == 4 {
+			return fmt.Errorf("批次已经撤销，不能重复撤销")
+		}
 
-	s.writeAudit(auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
-		"batch_no":     batch.BatchNo,
-		"product_id":   batch.ProductID,
-		"plan_qty":     batch.PlanQty,
-		"produced_qty": batch.ProducedQty,
-		"status":       batch.Status,
-		"customer":     batch.Customer,
-		"operator":     operator,
-	}, operator})
-	_, err = s.repo.UpdateBatchStatus(id, 4, operator)
-	return err
+		// 已完成批次：只按完成时冻结的实际消耗记录回退库存。
+		if batch.Status == 2 {
+			if batch.ConsumptionRecorded != 1 {
+				return fmt.Errorf("批次缺少冻结的库存消耗记录，无法安全撤销")
+			}
+			consumptions, err := tx.ListBatchConsumptions(id)
+			if err != nil {
+				return fmt.Errorf("get batch consumptions: %w", err)
+			}
+			for _, consumption := range consumptions {
+				if consumption.ConsumedQty <= 0 {
+					continue
+				}
+				part, err := tx.GetPartForUpdate(consumption.PartID)
+				if err != nil {
+					return fmt.Errorf("get part %d: %w", consumption.PartID, err)
+				}
+				if part == nil {
+					continue
+				}
+				newStock := part.StockQty + consumption.ConsumedQty
+				if err := tx.UpdatePartStock(consumption.PartID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", consumption.PartID, err)
+				}
+				if err := s.writeAuditTx(tx, auditEntry{"parts", consumption.PartID, "STOCK_ADJUST", part, map[string]any{
+					"old_stock": part.StockQty,
+					"new_stock": newStock,
+					"diff":      consumption.ConsumedQty,
+					"batch_id":  id,
+					"remark":    "批次撤销回退",
+				}, operator}); err != nil {
+					return err
+				}
+			}
+		}
+
+		affected, err := tx.UpdateBatchStatusFrom(id, 4, operator, batch.Status)
+		if err != nil {
+			return fmt.Errorf("update batch status: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("batch state changed, please refresh and retry")
+		}
+		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
+			"batch_no":     batch.BatchNo,
+			"product_id":   batch.ProductID,
+			"plan_qty":     batch.PlanQty,
+			"produced_qty": batch.ProducedQty,
+			"status":       4,
+			"customer":     batch.Customer,
+			"operator":     operator,
+		}, operator}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
@@ -744,11 +815,41 @@ func numVal(v any) float64 {
 }
 
 func (s *Service) AddSkipPart(batchID, partID int64) error {
-	return s.repo.AddSkipPart(batchID, partID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
+		}
+		if err := tx.AddSkipPart(batchID, partID); err != nil {
+			return fmt.Errorf("add skipped part: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Service) RemoveSkipPart(batchID, partID int64) error {
-	return s.repo.RemoveSkipPart(batchID, partID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
+		}
+		if err := tx.RemoveSkipPart(batchID, partID); err != nil {
+			return fmt.Errorf("remove skipped part: %w", err)
+		}
+		return nil
+	})
 }
 
 // ---- 追溯 ----

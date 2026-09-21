@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -14,8 +15,35 @@ type Repository struct {
 	db *sqlx.DB
 }
 
+// Tx exposes repository operations that participate in one atomic state
+// transition. The transaction is owned by Repository.WithTx.
+type Tx struct {
+	tx *sqlx.Tx
+}
+
 func New(db *sqlx.DB) *Repository {
 	return &Repository{db: db}
+}
+
+// WithTx runs fn in a transaction and commits only when fn succeeds. Callers
+// use the transaction for every read-modify-write and audit operation that
+// must share one commit boundary.
+func (r *Repository) WithTx(fn func(*Tx) error) error {
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return err
+	}
+
+	if err := fn(&Tx{tx: tx}); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit batch transaction: %w", err)
+	}
+	return nil
 }
 
 // ---- 产品 ----
@@ -132,7 +160,7 @@ func (r *Repository) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 		FROM bom_items b
 		JOIN parts p ON p.id = b.part_id
 		WHERE b.product_id = ?
-		ORDER BY b.id`, productID)
+		ORDER BY b.part_id, b.id`, productID)
 	return list, err
 }
 
@@ -172,13 +200,35 @@ func (r *Repository) GetSkippedParts(batchID int64) ([]int64, error) {
 }
 
 func (r *Repository) AddSkipPart(batchID, partID int64) error {
-	_, err := r.db.Exec(`INSERT IGNORE INTO batch_skip_parts (batch_id,part_id) VALUES (?,?)`, batchID, partID)
-	return err
+	return r.WithTx(func(tx *Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return err
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("completed or revoked batch cannot change skipped parts")
+		}
+		return tx.AddSkipPart(batchID, partID)
+	})
 }
 
 func (r *Repository) RemoveSkipPart(batchID, partID int64) error {
-	_, err := r.db.Exec(`DELETE FROM batch_skip_parts WHERE batch_id=? AND part_id=?`, batchID, partID)
-	return err
+	return r.WithTx(func(tx *Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return err
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("completed or revoked batch cannot change skipped parts")
+		}
+		return tx.RemoveSkipPart(batchID, partID)
+	})
 }
 
 func (r *Repository) CreateBatch(b *model.ProductBatch) (int64, error) {
@@ -215,8 +265,16 @@ func (r *Repository) ListBatches() ([]model.ProductBatch, error) {
 }
 
 func (r *Repository) UpdatePartStock(partID int64, newQty float64) error {
-	_, err := r.db.Exec(`UPDATE parts SET stock_qty=? WHERE id=?`, newQty, partID)
-	return err
+	return r.WithTx(func(tx *Tx) error {
+		part, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return err
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
+		return tx.UpdatePartStock(partID, newQty)
+	})
 }
 
 func (r *Repository) UpdateBatchProduced(id int64, qty int) error {
@@ -233,6 +291,131 @@ func (r *Repository) UpdateBatchStatus(id int64, status int, operator string) (i
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (t *Tx) GetBatchForUpdate(id int64) (*model.ProductBatch, error) {
+	var b model.ProductBatch
+	err := t.tx.Get(&b, `SELECT * FROM product_batches WHERE id=? FOR UPDATE`, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (t *Tx) GetProduct(id int64) (*model.Product, error) {
+	var p model.Product
+	err := t.tx.Get(&p, `SELECT * FROM products WHERE id=?`, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (t *Tx) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
+	var list []model.BOMItem
+	err := t.tx.Select(&list, `
+		SELECT b.*, p.code AS part_code, p.name AS part_name
+		FROM bom_items b
+		JOIN parts p ON p.id = b.part_id
+		WHERE b.product_id = ?
+		ORDER BY b.part_id, b.id`, productID)
+	return list, err
+}
+
+func (t *Tx) GetSkippedParts(batchID int64) ([]int64, error) {
+	var ids []int64
+	err := t.tx.Select(&ids, `SELECT part_id FROM batch_skip_parts WHERE batch_id=?`, batchID)
+	return ids, err
+}
+
+func (t *Tx) GetPartForUpdate(id int64) (*model.Part, error) {
+	var p model.Part
+	err := t.tx.Get(&p, `SELECT * FROM parts WHERE id=? FOR UPDATE`, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (t *Tx) UpdatePartStock(partID int64, newQty float64) error {
+	_, err := t.tx.Exec(`UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?`, newQty, partID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *Tx) UpdateBatchProduced(id int64, qty int) error {
+	_, err := t.tx.Exec(`UPDATE product_batches SET produced_qty=? WHERE id=?`, qty, id)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *Tx) MarkBatchConsumptionRecorded(id int64) error {
+	_, err := t.tx.Exec(`UPDATE product_batches SET consumption_recorded=1 WHERE id=?`, id)
+	return err
+}
+
+func (t *Tx) UpdateBatchStatusFrom(id int64, status int, operator string, fromStatus int) (int64, error) {
+	res, err := t.tx.Exec(
+		`UPDATE product_batches SET status=?, operator=?, version=version+1 WHERE id=? AND status=?`,
+		status, operator, id, fromStatus,
+	)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
+func (t *Tx) CreateAuditLog(log *model.AuditLog) error {
+	oldJSON := toRawJSON(log.OldData)
+	newJSON := toRawJSON(log.NewData)
+	_, err := t.tx.Exec(
+		`INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)`,
+		log.TableName, log.RecordID, log.Action, oldJSON, newJSON, log.Operator,
+	)
+	return err
+}
+
+func (t *Tx) CreateBatchConsumption(c *model.BatchConsumption) error {
+	_, err := t.tx.Exec(
+		`INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)`,
+		c.BatchID, c.PartID, c.ConsumedQty,
+	)
+	return err
+}
+
+func (t *Tx) ListBatchConsumptions(batchID int64) ([]model.BatchConsumption, error) {
+	var list []model.BatchConsumption
+	err := t.tx.Select(&list,
+		`SELECT part_id, consumed_qty FROM batch_consumptions WHERE batch_id=? ORDER BY part_id`,
+		batchID)
+	return list, err
+}
+
+func (t *Tx) AddSkipPart(batchID, partID int64) error {
+	_, err := t.tx.Exec(`INSERT IGNORE INTO batch_skip_parts (batch_id,part_id) VALUES (?,?)`, batchID, partID)
+	return err
+}
+
+func (t *Tx) RemoveSkipPart(batchID, partID int64) error {
+	_, err := t.tx.Exec(`DELETE FROM batch_skip_parts WHERE batch_id=? AND part_id=?`, batchID, partID)
+	return err
 }
 
 // ---- 追溯 ----

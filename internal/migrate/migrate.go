@@ -38,6 +38,7 @@ var migrations = []migration{
 	{6, "parts_supplier", applyPartsSupplier},
 	{7, "batches_customer", applyBatchesCustomer},
 	{8, "users", applyUsers},
+	{9, "batch_consumptions", applyBatchConsumptions},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -260,6 +261,69 @@ func applyUsers(db *sqlx.DB) error {
 	return err
 }
 
+func applyBatchConsumptions(db *sqlx.DB) error {
+	ok, err := columnExists(db, "product_batches", "consumption_recorded")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if _, err := db.Exec(`ALTER TABLE product_batches ADD COLUMN consumption_recorded TINYINT NOT NULL DEFAULT 0 COMMENT '是否已冻结批次实际库存消耗'`); err != nil {
+			return err
+		}
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS batch_consumptions (
+		id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+		batch_id     BIGINT NOT NULL,
+		part_id      BIGINT NOT NULL,
+		consumed_qty DECIMAL(12,2) NOT NULL,
+		created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (batch_id) REFERENCES product_batches(id) ON DELETE CASCADE,
+		FOREIGN KEY (part_id) REFERENCES parts(id),
+		UNIQUE KEY uk_batch_consumption (batch_id, part_id)
+	) COMMENT '批次实际消耗记录-完成时冻结'`)
+	if err != nil {
+		return err
+	}
+
+	// Older completed batches only have STOCK_DEDUCT audit rows. Recover the
+	// actual quantity removed (old_stock-new_stock), not the requested quantity,
+	// so they can still be revoked without inventing stock.
+	_, err = db.Exec(`
+		INSERT INTO batch_consumptions (batch_id, part_id, consumed_qty)
+		SELECT
+			CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED),
+			a.record_id,
+			SUM(GREATEST(
+				CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.old_stock')) AS DECIMAL(12,2)) -
+				CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.new_stock')) AS DECIMAL(12,2)),
+				0
+			))
+		FROM audit_log a
+		JOIN product_batches b ON b.id = CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED)
+		JOIN parts p ON p.id = a.record_id
+		WHERE a.table_name = 'parts'
+		  AND a.action = 'STOCK_DEDUCT'
+		  AND JSON_EXTRACT(a.new_data, '$.batch_id') IS NOT NULL
+		  AND JSON_EXTRACT(a.new_data, '$.old_stock') IS NOT NULL
+		  AND JSON_EXTRACT(a.new_data, '$.new_stock') IS NOT NULL
+		GROUP BY
+			CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED),
+			a.record_id
+		ON DUPLICATE KEY UPDATE consumed_qty = VALUES(consumed_qty)`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec(`
+		UPDATE product_batches b
+		SET consumption_recorded = 1
+		WHERE EXISTS (
+			SELECT 1 FROM batch_consumptions c WHERE c.batch_id = b.id
+		)`)
+	return err
+}
+
 var baseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -315,6 +379,7 @@ var baseSchema = []string{
 		updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		operator        VARCHAR(50),
 		customer        VARCHAR(200)          COMMENT '客户',
+		consumption_recorded TINYINT NOT NULL DEFAULT 0 COMMENT '是否已冻结批次实际库存消耗',
 		FOREIGN KEY (product_id) REFERENCES products(id)
 	) COMMENT '生产批次'`,
 	`CREATE TABLE IF NOT EXISTS batch_trace (

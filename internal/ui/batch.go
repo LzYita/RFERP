@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -329,8 +330,11 @@ func (s *BatchScreen) createBatch() {
 			dialog.ShowInformation("提示", "未找到匹配的产品", s.window)
 			return
 		}
-		qty := 0
-		_, _ = fmt.Sscanf(planQty.Text, "%d", &qty)
+		qty, err := parseIntText(planQty.Text)
+		if err != nil || qty <= 0 {
+			dialog.ShowInformation("提示", "计划数量必须是大于0的整数", s.window)
+			return
+		}
 		op := auth.OperatorName()
 		c := customer.Text
 		b := &model.ProductBatch{
@@ -460,10 +464,14 @@ func (s *BatchScreen) recordTrace() {
 			saved := 0
 			for i, bi := range bomItems {
 				r := rows[i]
-				qty := 0.0
-				_, _ = fmt.Sscanf(r.qtyEntry.Text, "%f", &qty)
-				if qty <= 0 {
+				text := strings.TrimSpace(r.qtyEntry.Text)
+				if text == "" {
 					continue
+				}
+				qty, err := parseFloatText(text)
+				if err != nil || qty <= 0 {
+					dialog.ShowInformation("提示", "投料数量必须是大于0的有限数值", s.window)
+					return
 				}
 				pb := r.batEntry.Text
 				sup := r.supEntry.Text

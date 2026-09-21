@@ -33,6 +33,55 @@ func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *con
 	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
 }
 
+const maxLossRate = 100.0
+
+func validatePlanQty(qty int) error {
+	if qty <= 0 {
+		return fmt.Errorf("计划数量必须大于0")
+	}
+	return nil
+}
+
+func validatePositiveQuantity(label string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		return fmt.Errorf("%s必须是大于0的有限数值", label)
+	}
+	return nil
+}
+
+func validateNonNegativeQuantity(label string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return fmt.Errorf("%s必须是非负有限数值", label)
+	}
+	return nil
+}
+
+func validateBOMItem(item *model.BOMItem) error {
+	if item == nil {
+		return fmt.Errorf("BOM零件不能为空")
+	}
+	if item.UseMode != 0 && item.UseMode != 1 {
+		return fmt.Errorf("BOM用量模式不合法")
+	}
+	if err := validatePositiveQuantity("BOM用量", item.Quantity); err != nil {
+		return err
+	}
+	if math.IsNaN(item.LossRate) || math.IsInf(item.LossRate, 0) || item.LossRate < 0 || item.LossRate > maxLossRate {
+		return fmt.Errorf("损耗率必须在0到%.0f之间", maxLossRate)
+	}
+	return nil
+}
+
+func validatePartQuantities(p *model.Part) error {
+	if p == nil {
+		return fmt.Errorf("零件不能为空")
+	}
+	if err := validateNonNegativeQuantity("库存数量", p.StockQty); err != nil {
+		return err
+	}
+	return validateNonNegativeQuantity("预警库存", p.WarnQty)
+}
+
 // DataDir 返回当前数据（备份/导出）目录。
 func (s *Service) DataDir() string {
 	return paths.DataDir()
@@ -180,6 +229,9 @@ func (s *Service) DeleteProduct(id int64, operator string) error {
 // ---- 零件 ----
 
 func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
+	if err := validatePartQuantities(p); err != nil {
+		return nil, err
+	}
 	id, err := s.repo.CreatePart(p)
 	if err != nil {
 		return nil, fmt.Errorf("create part: %w", err)
@@ -198,6 +250,9 @@ func (s *Service) ListParts() ([]model.Part, error) {
 }
 
 func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
+	if err := validatePartQuantities(p); err != nil {
+		return nil, err
+	}
 	old, err := s.repo.GetPart(p.ID)
 	if err != nil {
 		return nil, err
@@ -233,6 +288,9 @@ func (s *Service) DeletePart(id int64, operator string) error {
 }
 
 func (s *Service) StockIn(partID int64, qty float64, operator string) error {
+	if err := validatePositiveQuantity("入库数量", qty); err != nil {
+		return err
+	}
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		old, err := tx.GetPartForUpdate(partID)
 		if err != nil {
@@ -254,6 +312,9 @@ func (s *Service) StockIn(partID int64, qty float64, operator string) error {
 }
 
 func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
+	if err := validateNonNegativeQuantity("调整后库存", newQty); err != nil {
+		return err
+	}
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		old, err := tx.GetPartForUpdate(partID)
 		if err != nil {
@@ -276,6 +337,9 @@ func (s *Service) AdjustStock(partID int64, newQty float64, operator string) err
 // ---- BOM ----
 
 func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
+	if err := validateBOMItem(b); err != nil {
+		return nil, err
+	}
 	// 校验产品和零件存在
 	prod, err := s.repo.GetProduct(b.ProductID)
 	if err != nil {
@@ -317,6 +381,12 @@ func (s *Service) RemoveBOMItem(id int64, operator string) error {
 // ---- 批次 ----
 
 func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error) {
+	if b == nil {
+		return nil, fmt.Errorf("批次不能为空")
+	}
+	if err := validatePlanQty(b.PlanQty); err != nil {
+		return nil, err
+	}
 	prod, err := s.repo.GetProduct(b.ProductID)
 	if err != nil {
 		return nil, err
@@ -366,9 +436,17 @@ func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error
 
 		// 完成生产 → 自动按BOM扣减库存
 		if status == 2 {
+			if err := validatePlanQty(batch.PlanQty); err != nil {
+				return err
+			}
 			bom, err := tx.GetBOMByProduct(batch.ProductID)
 			if err != nil {
 				return fmt.Errorf("get bom: %w", err)
+			}
+			for i := range bom {
+				if err := validateBOMItem(&bom[i]); err != nil {
+					return fmt.Errorf("invalid bom item %d: %w", bom[i].ID, err)
+				}
 			}
 			skipParts, err := tx.GetSkippedParts(id)
 			if err != nil {
@@ -855,6 +933,12 @@ func (s *Service) RemoveSkipPart(batchID, partID int64) error {
 // ---- 追溯 ----
 
 func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
+	if t == nil {
+		return nil, fmt.Errorf("投料记录不能为空")
+	}
+	if err := validatePositiveQuantity("投料数量", t.UsedQty); err != nil {
+		return nil, err
+	}
 	id, err := s.repo.CreateTrace(t)
 	if err != nil {
 		return nil, fmt.Errorf("create trace: %w", err)

@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"image/color"
 	"math"
+	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -115,6 +118,25 @@ func dataRowBG(row int, sel bool) color.Color {
 func withImportance(b *widget.Button, imp widget.Importance) *widget.Button {
 	b.Importance = imp
 	return b
+}
+
+func parseIntText(text string) (int, error) {
+	value, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0, fmt.Errorf("请输入有效整数: %w", err)
+	}
+	return value, nil
+}
+
+func parseFloatText(text string) (float64, error) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		if err == nil {
+			err = fmt.Errorf("数值必须有限")
+		}
+		return 0, fmt.Errorf("请输入有效数值: %w", err)
+	}
+	return value, nil
 }
 
 // bomConsumeQty 计算指定产品数量下某BOM项的零件消耗量

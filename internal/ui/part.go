@@ -297,10 +297,16 @@ func (s *PartScreen) add() {
 			return
 		}
 		op := auth.OperatorName()
-		qty := 0.0
-		_, _ = fmt.Sscanf(stock.Text, "%f", &qty)
-		warn := 0.0
-		_, _ = fmt.Sscanf(warnQty.Text, "%f", &warn)
+		qty, qtyErr := parseFloatText(stock.Text)
+		warn, warnErr := parseFloatText(warnQty.Text)
+		if qtyErr != nil || warnErr != nil {
+			dialog.ShowInformation("提示", "库存和预警库存必须是有效数值", s.window)
+			return
+		}
+		if qty < 0 || warn < 0 {
+			dialog.ShowInformation("提示", "库存和预警库存不能为负", s.window)
+			return
+		}
 		sup := supplier.Text
 		p := &model.Part{
 			Code:     code.Text,
@@ -359,8 +365,11 @@ func (s *PartScreen) edit() {
 			return
 		}
 		op := auth.OperatorName()
-		warn := 0.0
-		_, _ = fmt.Sscanf(warnQty.Text, "%f", &warn)
+		warn, err := parseFloatText(warnQty.Text)
+		if err != nil || warn < 0 {
+			dialog.ShowInformation("提示", "预警库存必须是非负有效数值", s.window)
+			return
+		}
 		sup := supplier.Text
 		up := &model.Part{
 			ID:       p.ID,
@@ -375,7 +384,7 @@ func (s *PartScreen) edit() {
 			Operator: &op,
 			Supplier: strPtr(sup),
 		}
-		_, err := s.svc.UpdatePart(up)
+		_, err = s.svc.UpdatePart(up)
 		if err != nil {
 			showError(s.window, "编辑失败", err)
 			return
@@ -423,9 +432,8 @@ func (s *PartScreen) stockIn() {
 		if !ok {
 			return
 		}
-		v := 0.0
-		_, _ = fmt.Sscanf(qty.Text, "%f", &v)
-		if v <= 0 {
+		v, err := parseFloatText(qty.Text)
+		if err != nil || v <= 0 {
 			dialog.ShowInformation("提示", "数量必须大于0", s.window)
 			return
 		}
@@ -455,9 +463,8 @@ func (s *PartScreen) adjustStock() {
 		if !ok {
 			return
 		}
-		v := 0.0
-		_, _ = fmt.Sscanf(qty.Text, "%f", &v)
-		if v < 0 {
+		v, err := parseFloatText(qty.Text)
+		if err != nil || v < 0 {
 			dialog.ShowInformation("提示", "数量不能为负", s.window)
 			return
 		}

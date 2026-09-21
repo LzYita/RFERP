@@ -377,10 +377,20 @@ func (s *BOMScreen) addPart() {
 			return
 		}
 
-		q := 1.0
-		l := 0.0
-		_, _ = fmt.Sscanf(qty.Text, "%f", &q)
-		_, _ = fmt.Sscanf(loss.Text, "%f", &l)
+		q, qErr := parseFloatText(qty.Text)
+		l, lErr := parseFloatText(loss.Text)
+		if qErr != nil || lErr != nil {
+			dialog.ShowInformation("提示", "用量和损耗率必须是有效数值", s.window)
+			return
+		}
+		if q <= 0 {
+			dialog.ShowInformation("提示", "BOM用量必须大于0", s.window)
+			return
+		}
+		if l < 0 || l > 100 {
+			dialog.ShowInformation("提示", "损耗率必须在0到100之间", s.window)
+			return
+		}
 		op := auth.OperatorName()
 		r := remark.Text
 		rep := 0
@@ -390,10 +400,6 @@ func (s *BOMScreen) addPart() {
 		useMode := 0
 		if modeSel.Selected == "每M台用1个零件（如包装箱）" {
 			useMode = 1
-			if q <= 0 {
-				dialog.ShowInformation("提示", "每多少台用1个(M)必须大于0", s.window)
-				return
-			}
 		}
 		b := &model.BOMItem{
 			ProductID:   pid,

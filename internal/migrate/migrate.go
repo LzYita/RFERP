@@ -39,6 +39,7 @@ var migrations = []migration{
 	{7, "batches_customer", applyBatchesCustomer},
 	{8, "users", applyUsers},
 	{9, "batch_consumptions", applyBatchConsumptions},
+	{10, "quantity_checks", applyQuantityChecks},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -131,6 +132,14 @@ func columnExists(db *sqlx.DB, table, column string) (bool, error) {
 	var n int
 	err := db.Get(&n, `SELECT COUNT(*) FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, table, column)
+	return n > 0, err
+}
+
+func constraintExists(db *sqlx.DB, table, constraint string) (bool, error) {
+	var n int
+	err := db.Get(&n, `SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+		WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ?
+		  AND CONSTRAINT_TYPE = 'CHECK'`, table, constraint)
 	return n > 0, err
 }
 
@@ -322,6 +331,33 @@ func applyBatchConsumptions(db *sqlx.DB) error {
 			SELECT 1 FROM batch_consumptions c WHERE c.batch_id = b.id
 		)`)
 	return err
+}
+
+func applyQuantityChecks(db *sqlx.DB) error {
+	checks := []struct {
+		table, name, expression string
+	}{
+		{"parts", "ck_parts_stock_nonnegative", "stock_qty >= 0"},
+		{"parts", "ck_parts_warn_nonnegative", "warn_qty >= 0"},
+		{"bom_items", "ck_bom_quantity_positive", "quantity > 0"},
+		{"bom_items", "ck_bom_loss_rate_range", "loss_rate >= 0 AND loss_rate <= 100"},
+		{"product_batches", "ck_batches_plan_positive", "plan_qty > 0"},
+		{"batch_trace", "ck_trace_used_positive", "used_qty > 0"},
+	}
+	for _, check := range checks {
+		exists, err := constraintExists(db, check.table, check.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		stmt := fmt.Sprintf("ALTER TABLE `%s` ADD CONSTRAINT `%s` CHECK (%s)", check.table, check.name, check.expression)
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("add %s: %w", check.name, err)
+		}
+	}
+	return nil
 }
 
 var baseSchema = []string{

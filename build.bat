@@ -17,7 +17,7 @@ if errorlevel 1 (
 )
 
 echo [2/3] go build ...
-go build -ldflags="-linkmode=internal -H windowsgui -X main.version=%VERSION%" -o app.exe cmd/desktop/main.go
+go build -ldflags="-H windowsgui -X main.version=%VERSION%" -o app.exe cmd/desktop/main.go
 if errorlevel 1 (
     echo   FAILED!
     pause

@@ -9,7 +9,7 @@ echo ================================
 echo   Build Installer - RFERP v%VERSION%
 echo ================================
 echo [1/2] Build RFERP.exe ...
-go build -ldflags="-linkmode=internal -H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
+go build -ldflags="-H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
 if errorlevel 1 (
     echo   BUILD FAILED!
     pause

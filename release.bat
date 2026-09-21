@@ -46,7 +46,7 @@ type "!NOTES_FILE!"
 echo   -----------------------
 
 echo [3/7] Build RFERP.exe ...
-go build -ldflags="-linkmode=internal -H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
+go build -ldflags="-H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
 if errorlevel 1 (
     echo   Build failed.
     pause

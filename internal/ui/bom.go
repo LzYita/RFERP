@@ -417,7 +417,7 @@ func (s *BOMScreen) removePart() {
 	}
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.bomData) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	b := s.bomData[idx-1]

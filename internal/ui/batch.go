@@ -174,7 +174,7 @@ func (s *BatchScreen) Build() fyne.CanvasObject {
 func (s *BatchScreen) setStatus(status int) {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行批次", s.window)
+		dialog.ShowInformation("提示", "请先选择一行批次", s.window)
 		return
 	}
 	b := s.data[idx-1]
@@ -219,7 +219,7 @@ func (s *BatchScreen) createBatch() {
 		return
 	}
 	if len(products) == 0 {
-		dialog.NewInformation("提示", "请先创建产品", s.window)
+		dialog.ShowInformation("提示", "请先创建产品", s.window)
 		return
 	}
 
@@ -390,7 +390,7 @@ func (s *BatchScreen) createBatch() {
 func (s *BatchScreen) getSelectedBatchID() (int64, bool) {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行批次", s.window)
+		dialog.ShowInformation("提示", "请先选择一行批次", s.window)
 		return 0, false
 	}
 	return s.data[idx-1].ID, true
@@ -412,7 +412,7 @@ func (s *BatchScreen) loadTraceForSelected() {
 func (s *BatchScreen) recordTrace() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行批次", s.window)
+		dialog.ShowInformation("提示", "请先选择一行批次", s.window)
 		return
 	}
 	b := s.data[idx-1]
@@ -491,7 +491,7 @@ func (s *BatchScreen) recordTrace() {
 func (s *BatchScreen) revokeBatch() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行批次", s.window)
+		dialog.ShowInformation("提示", "请先选择一行批次", s.window)
 		return
 	}
 	b := s.data[idx-1]
@@ -520,7 +520,7 @@ func (s *BatchScreen) revokeBatch() {
 func (s *BatchScreen) specialConsume() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行批次", s.window)
+		dialog.ShowInformation("提示", "请先选择一行批次", s.window)
 		return
 	}
 	b := s.data[idx-1]

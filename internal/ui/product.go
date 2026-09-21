@@ -169,7 +169,7 @@ func (s *ProductScreen) add() {
 func (s *ProductScreen) edit() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]
@@ -223,7 +223,7 @@ func (s *ProductScreen) edit() {
 func (s *ProductScreen) delete() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]

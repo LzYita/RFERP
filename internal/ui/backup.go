@@ -164,7 +164,7 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 func (s *BackupScreen) doClear() {
 	typed := s.clearConfirm.Text
 	if typed != "drop" {
-		dialog.NewInformation("确认失败", "请在输入框中准确输入 drop 以确认清空操作", s.window)
+		dialog.ShowInformation("确认失败", "请在输入框中准确输入 drop 以确认清空操作", s.window)
 		return
 	}
 	dialog.NewConfirm("最终警告", "确定要清空数据库所有数据吗？此操作不可恢复！", func(ok bool) {
@@ -176,7 +176,7 @@ func (s *BackupScreen) doClear() {
 			return
 		}
 		s.clearConfirm.SetText("")
-		dialog.NewInformation("清空完成", "所有表中的数据已被清空", s.window)
+		dialog.ShowInformation("清空完成", "所有表中的数据已被清空", s.window)
 	}, s.window).Show()
 }
 
@@ -204,7 +204,7 @@ func (s *BackupScreen) doBackup() {
 		return
 	}
 	s.backupPath.SetText(path)
-	dialog.NewInformation("备份完成",
+	dialog.ShowInformation("备份完成",
 		fmt.Sprintf("数据库备份成功！\n保存路径：\n%s", path), s.window)
 }
 
@@ -221,7 +221,7 @@ func (s *BackupScreen) doBrowse() {
 		return nil
 	})
 	if len(files) == 0 {
-		dialog.NewInformation("提示", fmt.Sprintf("在 %s 下未找到 .sql 备份文件", backupDir), s.window)
+		dialog.ShowInformation("提示", fmt.Sprintf("在 %s 下未找到 .sql 备份文件", backupDir), s.window)
 		return
 	}
 	sort.Strings(files)
@@ -249,11 +249,11 @@ func (s *BackupScreen) doBrowse() {
 func (s *BackupScreen) doImport() {
 	filePath := s.importPath.Text
 	if filePath == "" {
-		dialog.NewInformation("提示", "请先选择或输入备份文件路径", s.window)
+		dialog.ShowInformation("提示", "请先选择或输入备份文件路径", s.window)
 		return
 	}
 	if _, err := os.Stat(filePath); err != nil {
-		dialog.NewInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
+		dialog.ShowInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
 		return
 	}
 	dialog.NewConfirm("确认导入",
@@ -272,23 +272,23 @@ func (s *BackupScreen) doImport() {
 				msg += fmt.Sprintf("，%d 条跳过（可能已存在）", failed)
 			}
 			msg += fmt.Sprintf("\n文件：%s", filePath)
-			dialog.NewInformation("导入完成", msg, s.window)
+			dialog.ShowInformation("导入完成", msg, s.window)
 		}, s.window).Show()
 }
 
 func (s *BackupScreen) doExportAudit() {
 	start, err := time.Parse("2006-01-02", s.startDate.Text)
 	if err != nil {
-		dialog.NewInformation("提示", "开始日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
+		dialog.ShowInformation("提示", "开始日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
 		return
 	}
 	end, err := time.Parse("2006-01-02", s.endDate.Text)
 	if err != nil {
-		dialog.NewInformation("提示", "结束日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
+		dialog.ShowInformation("提示", "结束日期格式错误，请使用 YYYY-MM-DD 格式", s.window)
 		return
 	}
 	if end.Before(start) {
-		dialog.NewInformation("提示", "结束日期不能早于开始日期", s.window)
+		dialog.ShowInformation("提示", "结束日期不能早于开始日期", s.window)
 		return
 	}
 	dir := filepath.Join(s.getAuditExportDir(), time.Now().Format("20060102_150405"))
@@ -305,7 +305,7 @@ func (s *BackupScreen) doExportAudit() {
 		return
 	}
 	s.auditPath.SetText(filePath)
-	dialog.NewInformation("导出完成",
+	dialog.ShowInformation("导出完成",
 		fmt.Sprintf("共导出 %d 条审计日志\n保存路径：\n%s", count, filePath), s.window)
 }
 
@@ -321,5 +321,5 @@ func (s *BackupScreen) doExportAll() {
 		msg += fmt.Sprintf("\n%s → %s", name, path)
 	}
 	s.allDataPath.SetText(subDir)
-	dialog.NewInformation("导出完成", msg, s.window)
+	dialog.ShowInformation("导出完成", msg, s.window)
 }

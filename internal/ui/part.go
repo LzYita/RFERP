@@ -151,7 +151,7 @@ func (s *PartScreen) showWarnList() {
 		}
 	}
 	if len(warnParts) == 0 {
-		dialog.NewInformation("预警列表", "当前没有库存预警的零件", s.window)
+		dialog.ShowInformation("预警列表", "当前没有库存预警的零件", s.window)
 		return
 	}
 
@@ -325,7 +325,7 @@ func (s *PartScreen) add() {
 func (s *PartScreen) edit() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]
@@ -387,7 +387,7 @@ func (s *PartScreen) edit() {
 func (s *PartScreen) delete() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]
@@ -406,7 +406,7 @@ func (s *PartScreen) delete() {
 func (s *PartScreen) stockIn() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]
@@ -424,7 +424,7 @@ func (s *PartScreen) stockIn() {
 		v := 0.0
 		_, _ = fmt.Sscanf(qty.Text, "%f", &v)
 		if v <= 0 {
-			dialog.NewInformation("提示", "数量必须大于0", s.window)
+			dialog.ShowInformation("提示", "数量必须大于0", s.window)
 			return
 		}
 		if err := s.svc.StockIn(p.ID, v, "admin"); err != nil {
@@ -438,7 +438,7 @@ func (s *PartScreen) stockIn() {
 func (s *PartScreen) adjustStock() {
 	idx := s.selected
 	if idx <= 0 || idx-1 >= len(s.data) {
-		dialog.NewInformation("提示", "请先选择一行", s.window)
+		dialog.ShowInformation("提示", "请先选择一行", s.window)
 		return
 	}
 	p := s.data[idx-1]
@@ -456,7 +456,7 @@ func (s *PartScreen) adjustStock() {
 		v := 0.0
 		_, _ = fmt.Sscanf(qty.Text, "%f", &v)
 		if v < 0 {
-			dialog.NewInformation("提示", "数量不能为负", s.window)
+			dialog.ShowInformation("提示", "数量不能为负", s.window)
 			return
 		}
 		if err := s.svc.AdjustStock(p.ID, v, "admin"); err != nil {

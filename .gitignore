@@ -17,6 +17,7 @@ dist/
 
 # 发布说明（每次发版临时编辑）
 release-notes.txt
+release-notes.full.md
 
 # 临时文件
 *.tmp

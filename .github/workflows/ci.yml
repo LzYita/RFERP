@@ -34,7 +34,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.22.12'
+          go-version: '1.26.5' # keep in sync with the release toolchain
           cache: true
 
       - name: Set up MSYS2 UCRT64 GCC
@@ -113,7 +113,7 @@ jobs:
         shell: pwsh
         run: |
           $output = Join-Path $env:RUNNER_TEMP 'RFERP.exe'
-          go build -ldflags="-H windowsgui -X main.version=ci-${{ github.sha }}" -o $output ./cmd/desktop
+          go build -ldflags="-linkmode=internal -H windowsgui -X main.version=ci-${{ github.sha }}" -o $output ./cmd/desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path $output)) {
             throw "Build output was not created at $output"

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -60,5 +62,25 @@ func TestWriteCSVFileReturnsCloseError(t *testing.T) {
 	err := writeCSVFile("close-error.csv", []string{"header"}, nil, csvOutputFactory(output))
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("writeCSVFile returned the wrong error: %v", err)
+	}
+}
+
+func TestWriteCSVFileAtomicPreservesExistingOutput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.csv")
+	original := []byte("existing export\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("write existing export: %v", err)
+	}
+
+	if err := writeCSVFileAtomic(path, []string{"header"}, [][]string{{"new"}}); err == nil {
+		t.Fatal("writeCSVFileAtomic overwrote an existing export")
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read existing export: %v", err)
+	}
+	if !bytes.Equal(actual, original) {
+		t.Fatalf("existing export changed: %q", actual)
 	}
 }

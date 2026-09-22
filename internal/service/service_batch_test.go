@@ -310,6 +310,46 @@ func TestRevokeBatchReversesRecordedActualConsumptionAndAuditsStatusFour(t *test
 	}
 }
 
+func TestRevokeBatchQuantizesRestoredStockBeforePersistence(t *testing.T) {
+	svc, mock := newMockService(t)
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 0.1, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+	oldBatch := &model.ProductBatch{ID: 1, BatchNo: "B-1", ProductID: 10, PlanQty: 4, ProducedQty: 4, Status: 2, Version: 1, ConsumptionRecorded: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 2, 4))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id, consumed_qty FROM batch_consumptions WHERE batch_id=? ORDER BY part_id")).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id", "consumed_qty"}).AddRow(20, 0.2))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+		WithArgs(float64(0.3), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
+		"old_stock": float64(0.1),
+		"new_stock": float64(0.3),
+		"diff":      float64(0.2),
+		"batch_id":  int64(1),
+		"remark":    "批次撤销回退",
+	}, "operator")
+	mock.ExpectExec(statusUpdate).WithArgs(4, "operator", int64(1), 2).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectBatchAudit(t, mock, oldBatch, map[string]any{
+		"batch_no":     "B-1",
+		"product_id":   int64(10),
+		"plan_qty":     4,
+		"produced_qty": 4,
+		"status":       4,
+		"customer":     nil,
+		"operator":     "operator",
+	}, "REVOKE", "operator")
+	mock.ExpectCommit()
+
+	if err := svc.RevokeBatch(1, "operator"); err != nil {
+		t.Fatalf("revoke batch: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
 func TestRevokeBatchDoesNotInventStockForZeroActualConsumption(t *testing.T) {
 	svc, mock := newMockService(t)
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)

@@ -357,7 +357,7 @@ func (s *Service) StockIn(partID int64, qty float64, operator string) error {
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		newStock := old.StockQty + qty
+		newStock := quantizeQuantity(old.StockQty + qty)
 		if err := tx.UpdatePartStock(partID, newStock); err != nil {
 			return fmt.Errorf("update stock: %w", err)
 		}
@@ -373,6 +373,7 @@ func (s *Service) AdjustStock(partID int64, newQty float64, operator string) err
 	if err := validateNonNegativeQuantity("调整后库存", newQty); err != nil {
 		return err
 	}
+	newQty = quantizeQuantity(newQty)
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		old, err := tx.GetPartForUpdate(partID)
 		if err != nil {
@@ -636,7 +637,7 @@ func (s *Service) RevokeBatch(id int64, operator string) error {
 				if part == nil {
 					continue
 				}
-				newStock := part.StockQty + consumption.ConsumedQty
+				newStock := quantizeQuantity(part.StockQty + consumption.ConsumedQty)
 				if err := tx.UpdatePartStock(consumption.PartID, newStock); err != nil {
 					return fmt.Errorf("update stock for part %d: %w", consumption.PartID, err)
 				}
@@ -1015,6 +1016,30 @@ func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
 	return t, nil
 }
 
+func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
+	if len(traces) == 0 {
+		return nil
+	}
+	for i, trace := range traces {
+		if trace == nil {
+			return fmt.Errorf("第%d条投料记录不能为空", i+1)
+		}
+		if err := validatePositiveQuantity("投料数量", trace.UsedQty); err != nil {
+			return fmt.Errorf("第%d条投料记录无效: %w", i+1, err)
+		}
+	}
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		for i, trace := range traces {
+			id, err := tx.CreateTrace(trace)
+			if err != nil {
+				return fmt.Errorf("create trace %d: %w", i+1, err)
+			}
+			trace.ID = id
+		}
+		return nil
+	})
+}
+
 func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 	return s.repo.GetTraceByBatch(batchID)
 }
@@ -1343,6 +1368,33 @@ func writeCSVFile(path string, header []string, rows [][]string, create func(str
 	return nil
 }
 
+func writeCSVFileAtomic(path string, header []string, rows [][]string) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary csv file: %w", err)
+	}
+	tempPath := temp.Name()
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temporary csv file: %w", err)
+	}
+	if err := writeCSVFile(tempPath, header, rows, createCSVOutput); err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: target already exists")
+	} else if !os.IsNotExist(err) {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("check csv target: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
 	endDate = endDate.Add(24 * time.Hour)
 	logs, err := s.repo.ListAuditLogsByDate(startDate, endDate)
@@ -1363,7 +1415,7 @@ func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath strin
 			op,
 		})
 	}
-	if err := writeCSVFile(filePath, []string{"时间", "操作", "对象", "内容摘要", "操作人"}, rows, createCSVOutput); err != nil {
+	if err := writeCSVFileAtomic(filePath, []string{"时间", "操作", "对象", "内容摘要", "操作人"}, rows); err != nil {
 		return 0, fmt.Errorf("write audit csv: %w", err)
 	}
 	return len(logs), nil
@@ -1387,7 +1439,7 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 
 	writeCSV := func(name string, header []string, rows [][]string) (string, error) {
 		p := filepath.Join(subDir, name)
-		if err := writeCSVFile(p, header, rows, createCSVOutput); err != nil {
+		if err := writeCSVFileAtomic(p, header, rows); err != nil {
 			return "", err
 		}
 		return p, nil

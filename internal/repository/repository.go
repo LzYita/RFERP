@@ -543,6 +543,17 @@ func (t *Tx) CreateBatchConsumption(c *model.BatchConsumption) error {
 	return err
 }
 
+func (t *Tx) CreateTrace(trace *model.BatchTrace) (int64, error) {
+	res, err := t.tx.Exec(
+		`INSERT INTO batch_trace (batch_id,part_id,part_batch_no,used_qty,supplier,operator) VALUES (?,?,?,?,?,?)`,
+		trace.BatchID, trace.PartID, trace.PartBatchNo, trace.UsedQty, trace.Supplier, trace.Operator,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 func (t *Tx) ListBatchConsumptions(batchID int64) ([]model.BatchConsumption, error) {
 	var list []model.BatchConsumption
 	err := t.tx.Select(&list,

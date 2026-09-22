@@ -461,7 +461,7 @@ func (s *BatchScreen) recordTrace() {
 				return
 			}
 			op := auth.OperatorName()
-			saved := 0
+			traces := make([]*model.BatchTrace, 0, len(bomItems))
 			for i, bi := range bomItems {
 				r := rows[i]
 				text := strings.TrimSpace(r.qtyEntry.Text)
@@ -483,12 +483,13 @@ func (s *BatchScreen) recordTrace() {
 					Supplier:    &sup,
 					Operator:    &op,
 				}
-				if _, err := s.svc.RecordTrace(t); err != nil {
-					showError(s.window, fmt.Sprintf("记录 %s 失败", nullStr(bi.PartName)), err)
-					return
-				}
-				saved++
+				traces = append(traces, t)
 			}
+			if err := s.svc.RecordTraces(traces); err != nil {
+				showError(s.window, "批量记录投料失败", err)
+				return
+			}
+			saved := len(traces)
 			if saved > 0 {
 				s.loadTraceForSelected()
 				dialog.ShowInformation("记录完成", fmt.Sprintf("成功记录 %d 个零件的投料信息", saved), s.window)

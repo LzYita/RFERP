@@ -344,6 +344,7 @@ func applyQuantityChecks(db *sqlx.DB) error {
 		{"bom_items", "ck_bom_loss_rate_range", "loss_rate >= 0 AND loss_rate <= 100"},
 		{"product_batches", "ck_batches_plan_positive", "plan_qty > 0"},
 		{"batch_trace", "ck_trace_used_positive", "used_qty > 0"},
+		{"batch_consumptions", "ck_batch_consumptions_nonnegative", "consumed_qty >= 0"},
 	}
 	for _, check := range checks {
 		exists, err := constraintExists(db, check.table, check.name)

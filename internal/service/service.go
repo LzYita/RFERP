@@ -35,7 +35,11 @@ func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *con
 	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
 }
 
-const maxLossRate = 100.0
+const (
+	maxLossRate     = 100.0
+	quantityScale   = 100.0
+	quantityEpsilon = 1e-9
+)
 
 func validatePlanQty(qty int) error {
 	if qty <= 0 {
@@ -48,6 +52,9 @@ func validatePositiveQuantity(label string, value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
 		return fmt.Errorf("%s必须是大于0的有限数值", label)
 	}
+	if !representableQuantity(value) {
+		return fmt.Errorf("%s最多支持两位小数", label)
+	}
 	return nil
 }
 
@@ -55,7 +62,19 @@ func validateNonNegativeQuantity(label string, value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
 		return fmt.Errorf("%s必须是非负有限数值", label)
 	}
+	if !representableQuantity(value) {
+		return fmt.Errorf("%s最多支持两位小数", label)
+	}
 	return nil
+}
+
+func representableQuantity(value float64) bool {
+	scaled := value * quantityScale
+	return !math.IsInf(scaled, 0) && math.Abs(scaled-math.Round(scaled)) < quantityEpsilon
+}
+
+func quantizeQuantity(value float64) float64 {
+	return math.Round(value*quantityScale) / quantityScale
 }
 
 func validateBOMItem(item *model.BOMItem) error {
@@ -68,7 +87,7 @@ func validateBOMItem(item *model.BOMItem) error {
 	if err := validatePositiveQuantity("BOM用量", item.Quantity); err != nil {
 		return err
 	}
-	if math.IsNaN(item.LossRate) || math.IsInf(item.LossRate, 0) || item.LossRate < 0 || item.LossRate > maxLossRate {
+	if math.IsNaN(item.LossRate) || math.IsInf(item.LossRate, 0) || item.LossRate < 0 || item.LossRate > maxLossRate || !representableQuantity(item.LossRate) {
 		return fmt.Errorf("损耗率必须在0到%.0f之间", maxLossRate)
 	}
 	return nil
@@ -515,12 +534,13 @@ func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error
 				if part == nil {
 					continue
 				}
-				requestedDeduct := bomConsume(batch.PlanQty, item)
+				requestedDeduct := quantizeQuantity(bomConsume(batch.PlanQty, item))
 				actualDeduct := requestedDeduct
 				if actualDeduct > part.StockQty {
 					actualDeduct = part.StockQty
 				}
-				newStock := part.StockQty - actualDeduct
+				actualDeduct = quantizeQuantity(actualDeduct)
+				newStock := quantizeQuantity(part.StockQty - actualDeduct)
 				if newStock < 0 {
 					newStock = 0
 				}
@@ -1111,6 +1131,10 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 					success++
 					inInsert = false
 				}
+			}
+			if inInsert {
+				failed++
+				return fmt.Errorf("restore SQL contains unterminated INSERT")
 			}
 			return nil
 		})

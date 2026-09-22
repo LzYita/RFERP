@@ -70,6 +70,13 @@ func bomRows(now time.Time, quantity float64) *sqlmock.Rows {
 	}).AddRow(1, 10, 20, quantity, 0, nil, 1, now, now, "old", 0, 0, "P-20", "Part 20")
 }
 
+func bomRowsWithLoss(now time.Time, quantity, lossRate float64) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{
+		"id", "product_id", "part_id", "quantity", "loss_rate", "remark", "version",
+		"created_at", "updated_at", "operator", "replaceable", "use_mode", "part_code", "part_name",
+	}).AddRow(1, 10, 20, quantity, lossRate, nil, 1, now, now, "old", 0, 0, "P-20", "Part 20")
+}
+
 func auditJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -170,6 +177,59 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 		"product_code": "PR-10",
 		"product_name": "Product 10",
 		"plan_qty":     4,
+		"status":       1,
+		"customer":     "",
+	}, map[string]any{"status": 2}, "UPDATE_STATUS", "operator")
+	mock.ExpectCommit()
+
+	if err := svc.UpdateBatchStatus(1, 2, "operator"); err != nil {
+		t.Fatalf("complete batch: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T) {
+	svc, mock := newMockService(t)
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 1, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+	batchRowsWithPlan := sqlmock.NewRows([]string{
+		"id", "batch_no", "product_id", "plan_qty", "produced_qty", "status", "version",
+		"created_at", "updated_at", "operator", "customer", "consumption_recorded",
+	}).AddRow(1, "B-1", 10, 1, 0, 1, 1, now, now, "old", nil, 0)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRowsWithPlan)
+	mock.ExpectQuery(`(?s)SELECT b\.\*, p\.code AS part_code, p\.name AS part_name.*FROM bom_items`).
+		WithArgs(int64(10)).WillReturnRows(bomRowsWithLoss(now, 0.01, 50))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+		WithArgs(float64(0.98), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
+		WithArgs(int64(1), int64(20), float64(0.02)).WillReturnResult(sqlmock.NewResult(1, 1))
+	expectPartAudit(t, mock, oldPart, "STOCK_DEDUCT", map[string]any{
+		"old_stock":        float64(1),
+		"requested_deduct": float64(0.02),
+		"deduct":           float64(0.02),
+		"new_stock":        float64(0.98),
+		"batch_id":         int64(1),
+	}, "operator")
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=? WHERE id=?")).
+		WithArgs(1, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET consumption_recorded=1 WHERE id=?")).
+		WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM products WHERE id=?")).
+		WithArgs(int64(10)).WillReturnRows(productRows(now))
+	mock.ExpectExec(statusUpdate).WithArgs(2, "operator", int64(1), 1).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectBatchAudit(t, mock, map[string]any{
+		"batch_no":     "B-1",
+		"product_id":   int64(10),
+		"product_code": "PR-10",
+		"product_name": "Product 10",
+		"plan_qty":     1,
 		"status":       1,
 		"customer":     "",
 	}, map[string]any{"status": 2}, "UPDATE_STATUS", "operator")

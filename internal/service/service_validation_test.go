@@ -88,3 +88,19 @@ func TestServiceRejectsInvalidQuantitiesBeforeDatabaseAccess(t *testing.T) {
 		t.Fatal("RecordTrace accepted zero quantity")
 	}
 }
+
+func TestValidateQuantitiesRejectMoreThanTwoDecimalPlaces(t *testing.T) {
+	for _, value := range []float64{0.001, 1.234} {
+		if err := validatePositiveQuantity("数量", value); err == nil {
+			t.Errorf("validatePositiveQuantity(%v) accepted a value not representable at scale 2", value)
+		}
+		if err := validateNonNegativeQuantity("数量", value); err == nil {
+			t.Errorf("validateNonNegativeQuantity(%v) accepted a value not representable at scale 2", value)
+		}
+	}
+	for _, value := range []float64{0, 0.01, 1.23} {
+		if err := validateNonNegativeQuantity("数量", value); err != nil {
+			t.Errorf("validateNonNegativeQuantity(%v): %v", value, err)
+		}
+	}
+}

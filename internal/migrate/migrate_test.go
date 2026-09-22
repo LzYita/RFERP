@@ -38,7 +38,7 @@ func TestApplyBatchConsumptionsCreatesIdempotentTable(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS batch_consumptions (")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id, part_id, consumed_qty)")).
+	mock.ExpectExec(`(?s)INSERT INTO batch_consumptions \(batch_id, part_id, consumed_qty\).*JOIN product_batches b.*WHERE.*b\.status\s*=\s*2`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`(?s)UPDATE product_batches b.*SET consumption_recorded = 1.*WHERE EXISTS`).
 		WillReturnResult(sqlmock.NewResult(0, 0))

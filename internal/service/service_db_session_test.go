@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -78,6 +79,30 @@ func TestRestoreDatabaseRollsBackAndReturnsInsertError(t *testing.T) {
 	}
 	if !errors.Is(err, insertErr) {
 		t.Fatalf("RestoreDatabase returned the wrong error: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestRestoreDatabaseRejectsUnterminatedInsertAndRollsBack(t *testing.T) {
+	svc, mock := newMockService(t)
+	path := filepath.Join(t.TempDir(), "truncated.sql")
+	if err := os.WriteFile(path, []byte("INSERT INTO products (code) VALUES ('P-1')"), 0o600); err != nil {
+		t.Fatalf("write restore fixture: %v", err)
+	}
+
+	expectSessionChecks(t, mock)
+	mock.ExpectBegin()
+	mock.ExpectRollback()
+	expectSessionChecksRestored(t, mock)
+
+	success, failed, err := svc.RestoreDatabase(path)
+	if success != 0 || failed != 1 || err == nil {
+		t.Fatalf("RestoreDatabase = (%d, %d, %v), want unterminated INSERT error", success, failed, err)
+	}
+	if !strings.Contains(err.Error(), "unterminated INSERT") {
+		t.Fatalf("RestoreDatabase error = %v, want unterminated INSERT context", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)

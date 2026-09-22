@@ -79,7 +79,7 @@ func (r *Repository) WithTx(fn func(*Tx) error) error {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit batch transaction: %w", err)
+		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
 }

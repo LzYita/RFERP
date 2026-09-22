@@ -313,6 +313,7 @@ func applyBatchConsumptions(db *sqlx.DB) error {
 		JOIN parts p ON p.id = a.record_id
 		WHERE a.table_name = 'parts'
 		  AND a.action = 'STOCK_DEDUCT'
+		  AND b.status = 2
 		  AND JSON_EXTRACT(a.new_data, '$.batch_id') IS NOT NULL
 		  AND JSON_EXTRACT(a.new_data, '$.old_stock') IS NOT NULL
 		  AND JSON_EXTRACT(a.new_data, '$.new_stock') IS NOT NULL

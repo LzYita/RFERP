@@ -1,0 +1,121 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Windows / Go verify
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22.12'
+          cache: true
+
+      - name: Set up MSYS2 UCRT64 GCC
+        id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Configure CGO toolchain
+        shell: pwsh
+        run: |
+          $gccDir = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'ucrt64\bin'
+          $gcc = Join-Path $gccDir 'gcc.exe'
+          if (-not (Test-Path $gcc)) {
+            throw "gcc.exe was not found at $gcc"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $gccDir
+          Add-Content -Path $env:GITHUB_ENV -Value 'CGO_ENABLED=1'
+          Add-Content -Path $env:GITHUB_ENV -Value "CC=$gcc"
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          go version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:CC --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go env GOOS GOARCH CGO_ENABLED CC
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify modules
+        shell: pwsh
+        run: |
+          go mod download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- go.mod go.sum
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error 'Module files changed. Commit the updated go.mod/go.sum files.'
+            exit $LASTEXITCODE
+          }
+
+      - name: Check formatting and whitespace
+        shell: pwsh
+        run: |
+          $unformatted = @(gofmt -l .)
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if ($unformatted.Count -gt 0) {
+            Write-Host 'The following Go files are not formatted:'
+            $unformatted | ForEach-Object { Write-Host $_ }
+            exit 1
+          }
+          git diff --check
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Vet
+        shell: pwsh
+        run: go vet ./...
+
+      - name: Test
+        shell: pwsh
+        run: go test ./... -count=1
+
+      - name: Race test
+        shell: pwsh
+        run: go test -race ./... -count=1
+
+      - name: Build Windows GUI executable
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:RUNNER_TEMP 'RFERP.exe'
+          go build -ldflags="-H windowsgui -X main.version=ci-${{ github.sha }}" -o $output ./cmd/desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path $output)) {
+            throw "Build output was not created at $output"
+          }
+          Get-Item $output | Select-Object FullName, Length, LastWriteTime

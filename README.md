@@ -77,7 +77,7 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 | Item | Requirement |
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
-| Go | 1.22 or newer (latest stable recommended) |
+| Go | **1.26 or newer** (releases and CI are built with **go1.26.5**) |
 | C compiler | **64-bit mingw-w64 GCC** (required by CGO). **Verified: TDM-GCC 64-bit (10.3.0)**; other GCC distributions may fail to produce a runnable binary |
 | Inno Setup | 6 (only to build the installer) |
 
@@ -217,7 +217,7 @@ No open-source license is specified. Please contact the author before using, dis
 | 项 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 / 11（64 位） |
-| Go | 1.22 或更高（建议使用最新稳定版） |
+| Go | **1.26 或更高**（发布与 CI 均使用 **go1.26.5** 构建） |
 | C 编译器 | **64 位 mingw-w64 GCC**（CGO 必需）。**已验证：TDM-GCC 64 位（10.3.0）**；其他 GCC 发行版可能无法生成可运行的程序 |
 | Inno Setup | 6（仅构建安装包时需要） |
 

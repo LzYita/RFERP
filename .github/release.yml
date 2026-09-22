@@ -9,7 +9,6 @@ changelog:
     - title: "⚠️ Breaking Changes / 破坏性变更"
       labels:
         - breaking
-        - breaking-change
     - title: "✨ New Features / 新功能"
       labels:
         - feature

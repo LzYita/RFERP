@@ -43,7 +43,7 @@ func TestApplyBatchConsumptionsCreatesIdempotentTable(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`(?s)INSERT INTO batch_consumptions \(batch_id, part_id, consumed_qty\).*JOIN product_batches b.*WHERE.*b\.status\s*=\s*2`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec(`(?s)UPDATE product_batches b.*SET consumption_recorded = 1.*WHERE EXISTS`).
+	mock.ExpectExec(`(?s)UPDATE product_batches b\s+SET consumption_recorded = 1\s+WHERE b\.status = 2\s+AND NOT EXISTS`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	var batchConsumptionMigration migration
 	for _, candidate := range migrations {

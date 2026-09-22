@@ -25,7 +25,15 @@ type Tx struct {
 // Conn is a checked-out database connection. All operations through Conn use
 // the same physical MySQL session until Repository.WithConn returns.
 type Conn struct {
-	conn *sqlx.Conn
+	conn     *sqlx.Conn
+	unusable bool
+}
+
+// MarkUnusable discards this physical connection after WithConn returns.
+// Use it when session state cannot be restored, so a dirty MySQL session is
+// never reused by later callers through the pool.
+func (c *Conn) MarkUnusable() {
+	c.unusable = true
 }
 
 func New(db *sqlx.DB) *Repository {
@@ -43,8 +51,27 @@ func (r *Repository) WithConn(fn func(*Conn) error) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	return fn(&Conn{conn: conn})
+	c := &Conn{conn: conn}
+	fnErr := fn(c)
+	closeErr := c.close()
+	if fnErr != nil {
+		return fnErr
+	}
+	return closeErr
+}
+
+func (c *Conn) close() error {
+	if c.unusable {
+		// Close the driver connection first so database/sql sees IsValid == false
+		// and discards this session instead of returning it to the idle pool.
+		_ = c.conn.Raw(func(driverConn any) error {
+			if closer, ok := driverConn.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		})
+	}
+	return c.conn.Close()
 }
 
 func (c *Conn) Exec(query string, args ...any) (sql.Result, error) {

@@ -326,12 +326,25 @@ func applyBatchConsumptions(db *sqlx.DB) error {
 		return err
 	}
 
+	// Mark a batch recorded only when every non-skipped BOM part has a frozen
+	// consumption row. Partial historical recovery must stay unsafe to revoke.
 	_, err = db.Exec(`
 		UPDATE product_batches b
 		SET consumption_recorded = 1
-		WHERE EXISTS (
-			SELECT 1 FROM batch_consumptions c WHERE c.batch_id = b.id
-		)`)
+		WHERE b.status = 2
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM bom_items bi
+			WHERE bi.product_id = b.product_id
+			  AND NOT EXISTS (
+				SELECT 1 FROM batch_skip_parts sk
+				WHERE sk.batch_id = b.id AND sk.part_id = bi.part_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM batch_consumptions c
+				WHERE c.batch_id = b.id AND c.part_id = bi.part_id
+			  )
+		  )`)
 	return err
 }
 

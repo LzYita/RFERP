@@ -159,3 +159,33 @@ func TestClearDatabaseReturnsSessionRestoreError(t *testing.T) {
 		t.Fatalf("database expectations: %v", err)
 	}
 }
+
+func TestClearDatabaseMarksConnectionUnusableWhenRestoreFails(t *testing.T) {
+	svc, mock := newMockService(t)
+	expectSessionChecks(t, mock)
+	mock.ExpectBegin()
+	for _, stmt := range []string{
+		"DELETE FROM batch_skip_parts",
+		"DELETE FROM batch_trace",
+		"DELETE FROM batch_consumptions",
+		"DELETE FROM bom_items",
+		"DELETE FROM product_batches",
+		"DELETE FROM parts",
+		"DELETE FROM products",
+		"DELETE FROM audit_log",
+	} {
+		mock.ExpectExec(regexp.QuoteMeta(stmt)).WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectCommit()
+	mock.ExpectExec(regexp.QuoteMeta("SET FOREIGN_KEY_CHECKS = 1")).
+		WillReturnError(errors.New("cannot restore foreign key checks"))
+	mock.ExpectExec(regexp.QuoteMeta("SET UNIQUE_CHECKS = 1")).
+		WillReturnError(errors.New("cannot restore unique checks"))
+
+	if err := svc.ClearDatabase(); err == nil {
+		t.Fatal("ClearDatabase swallowed the session restore error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}

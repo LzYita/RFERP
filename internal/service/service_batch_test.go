@@ -445,6 +445,30 @@ func TestAdjustStockUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	}
 }
 
+func TestAdjustStockQuantizesAuditDiff(t *testing.T) {
+	svc, mock := newMockService(t)
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 0.3, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.3))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+		WithArgs(0.2, int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
+		"old_stock": 0.3,
+		"new_stock": 0.2,
+		"diff":      -0.1,
+	}, "operator")
+	mock.ExpectCommit()
+
+	if err := svc.AdjustStock(20, 0.2, "operator"); err != nil {
+		t.Fatalf("adjust stock: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
 func TestSkipPartChangesLockBatchAndRejectAfterCompletionStarts(t *testing.T) {
 	tests := []struct {
 		name string

@@ -388,7 +388,7 @@ func (s *Service) AdjustStock(partID int64, newQty float64, operator string) err
 		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
 			"old_stock": old.StockQty,
 			"new_stock": newQty,
-			"diff":      newQty - old.StockQty,
+			"diff":      quantizeQuantity(newQty - old.StockQty),
 		}, operator})
 	})
 }
@@ -1085,6 +1085,8 @@ func withDisabledChecks(conn *repository.Conn, operation func(*repository.Tx) er
 			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
 		}
 		if len(restoreErrs) > 0 {
+			// Session checks may still be disabled. Never pool this connection.
+			conn.MarkUnusable()
 			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
 		}
 	}()
@@ -1381,16 +1383,53 @@ func writeCSVFileAtomic(path string, header []string, rows [][]string) error {
 	if err := writeCSVFile(tempPath, header, rows, createCSVOutput); err != nil {
 		return err
 	}
-	if _, err := os.Stat(path); err == nil {
+	return finalizeCSVExclusive(tempPath, path)
+}
+
+// finalizeCSVExclusive publishes tempPath as path only when path does not
+// already exist. It never replaces an existing export, including when two
+// exports finalize at the same time.
+func finalizeCSVExclusive(tempPath, path string) error {
+	if err := os.Link(tempPath, path); err == nil {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("finalize csv file: remove temporary file: %w", err)
+		}
+		return nil
+	} else if os.IsExist(err) {
 		_ = os.Remove(tempPath)
 		return fmt.Errorf("finalize csv file: target already exists")
-	} else if !os.IsNotExist(err) {
-		_ = os.Remove(tempPath)
-		return fmt.Errorf("check csv target: %w", err)
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+
+	// Hard links can be unavailable on some filesystems. Fall back to an
+	// exclusive create and copy, still refusing to overwrite the target.
+	src, err := os.Open(tempPath)
+	if err != nil {
 		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: open temporary file: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		if os.IsExist(err) {
+			return fmt.Errorf("finalize csv file: target already exists")
+		}
 		return fmt.Errorf("finalize csv file: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: copy: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: close target: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("finalize csv file: remove temporary file: %w", err)
 	}
 	return nil
 }

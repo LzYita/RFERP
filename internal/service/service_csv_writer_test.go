@@ -84,3 +84,49 @@ func TestWriteCSVFileAtomicPreservesExistingOutput(t *testing.T) {
 		t.Fatalf("existing export changed: %q", actual)
 	}
 }
+
+func TestFinalizeCSVExclusiveDoesNotOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, ".audit.csv.tmp")
+	path := filepath.Join(dir, "audit.csv")
+	if err := os.WriteFile(tempPath, []byte("new export\n"), 0o600); err != nil {
+		t.Fatalf("write temp export: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("existing export\n"), 0o600); err != nil {
+		t.Fatalf("write existing export: %v", err)
+	}
+
+	if err := finalizeCSVExclusive(tempPath, path); err == nil {
+		t.Fatal("finalizeCSVExclusive overwrote an existing export")
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read existing export: %v", err)
+	}
+	if string(actual) != "existing export\n" {
+		t.Fatalf("existing export changed: %q", actual)
+	}
+}
+
+func TestFinalizeCSVExclusivePublishesNewTarget(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, ".audit.csv.tmp")
+	path := filepath.Join(dir, "audit.csv")
+	if err := os.WriteFile(tempPath, []byte("new export\n"), 0o600); err != nil {
+		t.Fatalf("write temp export: %v", err)
+	}
+
+	if err := finalizeCSVExclusive(tempPath, path); err != nil {
+		t.Fatalf("finalizeCSVExclusive: %v", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read published export: %v", err)
+	}
+	if string(actual) != "new export\n" {
+		t.Fatalf("published export = %q", actual)
+	}
+	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary file still exists, stat err = %v", err)
+	}
+}

@@ -40,6 +40,7 @@ var migrations = []migration{
 	{8, "users", applyUsers},
 	{9, "batch_consumptions", applyBatchConsumptions},
 	{10, "quantity_checks", applyQuantityChecks},
+	{11, "batch_consumption_checks", applyBatchConsumptionChecks},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -344,7 +345,6 @@ func applyQuantityChecks(db *sqlx.DB) error {
 		{"bom_items", "ck_bom_loss_rate_range", "loss_rate >= 0 AND loss_rate <= 100"},
 		{"product_batches", "ck_batches_plan_positive", "plan_qty > 0"},
 		{"batch_trace", "ck_trace_used_positive", "used_qty > 0"},
-		{"batch_consumptions", "ck_batch_consumptions_nonnegative", "consumed_qty >= 0"},
 	}
 	for _, check := range checks {
 		exists, err := constraintExists(db, check.table, check.name)
@@ -358,6 +358,23 @@ func applyQuantityChecks(db *sqlx.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("add %s: %w", check.name, err)
 		}
+	}
+	return nil
+}
+
+func applyBatchConsumptionChecks(db *sqlx.DB) error {
+	const table = "batch_consumptions"
+	const name = "ck_batch_consumptions_nonnegative"
+	exists, err := constraintExists(db, table, name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.Exec("ALTER TABLE `batch_consumptions` ADD CONSTRAINT `ck_batch_consumptions_nonnegative` CHECK (consumed_qty >= 0)")
+	if err != nil {
+		return fmt.Errorf("add %s: %w", name, err)
 	}
 	return nil
 }

@@ -22,6 +22,9 @@ func TestMigrationsIncludeQuantityValidationAfterBatchConsumptions(t *testing.T)
 	if versions["quantity_checks"] != 10 {
 		t.Fatalf("quantity_checks migration version = %d, want 10", versions["quantity_checks"])
 	}
+	if versions["batch_consumption_checks"] != 11 {
+		t.Fatalf("batch_consumption_checks migration version = %d, want 11", versions["batch_consumption_checks"])
+	}
 }
 
 func TestApplyBatchConsumptionsCreatesIdempotentTable(t *testing.T) {
@@ -77,7 +80,6 @@ func TestApplyQuantityChecksAddsConstraintsIdempotently(t *testing.T) {
 		{table: "bom_items", name: "ck_bom_loss_rate_range"},
 		{table: "product_batches", name: "ck_batches_plan_positive"},
 		{table: "batch_trace", name: "ck_trace_used_positive"},
-		{table: "batch_consumptions", name: "ck_batch_consumptions_nonnegative"},
 	}
 	for _, check := range checks {
 		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM information_schema\.TABLE_CONSTRAINTS.*`).
@@ -99,6 +101,37 @@ func TestApplyQuantityChecksAddsConstraintsIdempotently(t *testing.T) {
 	}
 	if err := quantityChecksMigration.Apply(sqlx.NewDb(db, "sqlmock")); err != nil {
 		t.Fatalf("apply quantity checks: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestApplyBatchConsumptionChecksAddsConstraintIdempotently(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("open sql mock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM information_schema\.TABLE_CONSTRAINTS.*`).
+		WithArgs("batch_consumptions", "ck_batch_consumptions_nonnegative").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE `batch_consumptions` ADD CONSTRAINT `ck_batch_consumptions_nonnegative` CHECK (")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	var migrationToTest migration
+	for _, candidate := range migrations {
+		if candidate.Name == "batch_consumption_checks" {
+			migrationToTest = candidate
+			break
+		}
+	}
+	if migrationToTest.Apply == nil {
+		t.Fatal("batch_consumption_checks migration not found")
+	}
+	if err := migrationToTest.Apply(sqlx.NewDb(db, "sqlmock")); err != nil {
+		t.Fatalf("apply batch consumption checks: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -62,14 +63,14 @@ func (r *Repository) WithConn(fn func(*Conn) error) error {
 
 func (c *Conn) close() error {
 	if c.unusable {
-		// Close the driver connection first so database/sql sees IsValid == false
-		// and discards this session instead of returning it to the idle pool.
+		// Returning driver.ErrBadConn from Raw is database/sql's discard path:
+		// the connection is closed and never reused. Do not also close the
+		// driver here — that double-close confuses pool accounting.
 		_ = c.conn.Raw(func(driverConn any) error {
-			if closer, ok := driverConn.(interface{ Close() error }); ok {
-				return closer.Close()
-			}
-			return nil
+			return driver.ErrBadConn
 		})
+		_ = c.conn.Close()
+		return nil
 	}
 	return c.conn.Close()
 }
@@ -582,11 +583,19 @@ func (t *Tx) CreateTrace(trace *model.BatchTrace) (int64, error) {
 }
 
 func (t *Tx) ListBatchConsumptions(batchID int64) ([]model.BatchConsumption, error) {
-	var list []model.BatchConsumption
-	err := t.tx.Select(&list,
+	var rows []model.BatchConsumption
+	err := t.tx.Select(&rows,
 		`SELECT part_id, consumed_qty FROM batch_consumptions WHERE batch_id=? ORDER BY part_id`,
 		batchID)
-	return list, err
+	return rows, err
+}
+
+// ListAllBatchConsumptions returns every frozen consumption row for export.
+func (r *Repository) ListAllBatchConsumptions() ([]model.BatchConsumption, error) {
+	var rows []model.BatchConsumption
+	err := r.db.Select(&rows,
+		`SELECT batch_id, part_id, consumed_qty FROM batch_consumptions ORDER BY batch_id, part_id`)
+	return rows, err
 }
 
 func (t *Tx) AddSkipPart(batchID, partID int64) error {

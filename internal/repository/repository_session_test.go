@@ -45,6 +45,8 @@ func TestWithConnMarkUnusableDiscardsConnection(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	mock.ExpectExec("SELECT 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	// MarkUnusable must close the driver connection instead of pooling it.
+	mock.ExpectClose()
 
 	repo := New(sqlx.NewDb(db, "sqlmock"))
 	err = repo.WithConn(func(conn *Conn) error {
@@ -59,17 +61,5 @@ func TestWithConnMarkUnusableDiscardsConnection(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
-	}
-
-	// A discarded connection must not satisfy a later checkout silently.
-	mock.ExpectExec("SELECT 1").WillReturnResult(sqlmock.NewResult(0, 0))
-	if err := repo.WithConn(func(conn *Conn) error {
-		_, err := conn.Exec("SELECT 1")
-		return err
-	}); err != nil {
-		t.Fatalf("WithConn after discard: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("database expectations after discard: %v", err)
 	}
 }

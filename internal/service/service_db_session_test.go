@@ -109,6 +109,40 @@ func TestRestoreDatabaseRejectsUnterminatedInsertAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestRestoreDatabaseDoesNotReportRolledBackSuccesses(t *testing.T) {
+	svc, mock := newMockService(t)
+	path := filepath.Join(t.TempDir(), "restore.sql")
+	if err := os.WriteFile(path, []byte(
+		"INSERT INTO products (code) VALUES ('P-1');\n"+
+			"INSERT INTO products (code) VALUES ('P-2');\n"+
+			"INSERT INTO products (code) VALUES ('P-3');\n",
+	), 0o600); err != nil {
+		t.Fatalf("write restore fixture: %v", err)
+	}
+
+	expectSessionChecks(t, mock)
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO products (code) VALUES ('P-1');")).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO products (code) VALUES ('P-2');")).WillReturnResult(sqlmock.NewResult(2, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO products (code) VALUES ('P-3');")).WillReturnError(errors.New("duplicate product"))
+	mock.ExpectRollback()
+	expectSessionChecksRestored(t, mock)
+
+	success, failed, err := svc.RestoreDatabase(path)
+	if err == nil {
+		t.Fatal("RestoreDatabase swallowed the insert error")
+	}
+	if success != 0 {
+		t.Fatalf("RestoreDatabase success = %d, want 0 after rollback", success)
+	}
+	if failed != 1 {
+		t.Fatalf("RestoreDatabase failed = %d, want 1", failed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
+	}
+}
+
 func TestClearDatabaseRollsBackAndReturnsDeleteError(t *testing.T) {
 	svc, mock := newMockService(t)
 	deleteErr := errors.New("delete failed")

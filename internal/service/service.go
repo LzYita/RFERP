@@ -1166,7 +1166,12 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 			return nil
 		})
 	})
-	return success, failed, err
+	if err != nil {
+		// The restore is one transaction: statement successes are rolled back
+		// when any later statement or the commit fails.
+		return 0, failed, err
+	}
+	return success, 0, nil
 }
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
@@ -1599,17 +1604,43 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 	// batches
 	var batchRows [][]string
 	for _, b := range batches {
+		recorded := "否"
+		if b.ConsumptionRecorded == 1 {
+			recorded = "是"
+		}
 		batchRows = append(batchRows, []string{
 			b.BatchNo,
 			nullStrSvc(b.ProductCode), nullStrSvc(b.ProductName),
 			fmt.Sprintf("%d", b.PlanQty), fmt.Sprintf("%d", b.ProducedQty),
 			batchStatusText(b.Status),
 			nullStrSvc(b.Customer), nullStrSvc(b.Operator),
+			recorded,
 		})
 	}
 	if err := addCSV("product_batches", "product_batches.csv",
-		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人"},
+		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人", "消耗已冻结"},
 		batchRows); err != nil {
+		return failExport(err)
+	}
+
+	// batch_consumptions
+	consumptions, err := s.repo.ListAllBatchConsumptions()
+	if err != nil {
+		return failExport(fmt.Errorf("query batch consumptions: %w", err))
+	}
+	var consumptionRows [][]string
+	for _, c := range consumptions {
+		b := batchMap[c.BatchID]
+		part := partMap[c.PartID]
+		consumptionRows = append(consumptionRows, []string{
+			b.BatchNo,
+			part.Code, part.Name,
+			fmt.Sprintf("%.2f", c.ConsumedQty),
+		})
+	}
+	if err := addCSV("batch_consumptions", "batch_consumptions.csv",
+		[]string{"批次号", "零件编码", "零件名称", "消耗数量"},
+		consumptionRows); err != nil {
 		return failExport(err)
 	}
 

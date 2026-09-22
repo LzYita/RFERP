@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -1275,27 +1276,62 @@ func auditSummary(l model.AuditLog) string {
 	return tableLabel(t) + "操作"
 }
 
+func createCSVOutput(path string) (io.WriteCloser, error) {
+	return os.Create(path)
+}
+
+func writeCSVFile(path string, header []string, rows [][]string, create func(string) (io.WriteCloser, error)) (retErr error) {
+	f, err := create(path)
+	if err != nil {
+		return fmt.Errorf("create csv file: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close csv file: %w", closeErr))
+		}
+		if retErr != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				retErr = errors.Join(retErr, fmt.Errorf("remove incomplete csv file: %w", removeErr))
+			}
+		}
+	}()
+
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	if n, err := f.Write(bom); err != nil {
+		return fmt.Errorf("write csv BOM: %w", err)
+	} else if n != len(bom) {
+		return fmt.Errorf("write csv BOM: %w", io.ErrShortWrite)
+	}
+
+	w := csv.NewWriter(f)
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("write csv row: %w", err)
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("flush csv: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
 	endDate = endDate.Add(24 * time.Hour)
 	logs, err := s.repo.ListAuditLogsByDate(startDate, endDate)
 	if err != nil {
 		return 0, fmt.Errorf("query audit logs: %w", err)
 	}
-	f, err := os.Create(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("create csv file: %w", err)
-	}
-	defer f.Close()
-	f.Write([]byte{0xEF, 0xBB, 0xBF})
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"时间", "操作", "对象", "内容摘要", "操作人"})
+	rows := make([][]string, 0, len(logs))
 	for _, log := range logs {
 		op := ""
 		if log.Operator != nil {
 			op = *log.Operator
 		}
-		w.Write([]string{
+		rows = append(rows, []string{
 			log.CreatedAt.Format("2006-01-02 15:04:05"),
 			actionText(log.Action),
 			tableLabel(log.TableName),
@@ -1303,46 +1339,65 @@ func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath strin
 			op,
 		})
 	}
+	if err := writeCSVFile(filePath, []string{"时间", "操作", "对象", "内容摘要", "操作人"}, rows, createCSVOutput); err != nil {
+		return 0, fmt.Errorf("write audit csv: %w", err)
+	}
 	return len(logs), nil
 }
 
 func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, error) {
-	now := time.Now().Format("20060102_150405")
-	subDir := filepath.Join(saveDir, now)
-	if err := os.MkdirAll(subDir, 0755); err != nil {
+	if err := os.MkdirAll(saveDir, 0755); err != nil {
+		return nil, "", fmt.Errorf("create export parent: %w", err)
+	}
+	subDir, err := os.MkdirTemp(saveDir, time.Now().Format("20060102_150405-"))
+	if err != nil {
 		return nil, "", fmt.Errorf("create export dir: %w", err)
 	}
 	files := make(map[string]string)
+	failExport := func(err error) (map[string]string, string, error) {
+		if cleanupErr := os.RemoveAll(subDir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove incomplete export directory: %w", cleanupErr))
+		}
+		return nil, "", err
+	}
 
 	writeCSV := func(name string, header []string, rows [][]string) (string, error) {
 		p := filepath.Join(subDir, name)
-		f, err := os.Create(p)
-		if err != nil {
+		if err := writeCSVFile(p, header, rows, createCSVOutput); err != nil {
 			return "", err
-		}
-		defer f.Close()
-		f.Write([]byte{0xEF, 0xBB, 0xBF})
-		w := csv.NewWriter(f)
-		defer w.Flush()
-		w.Write(header)
-		for _, r := range rows {
-			w.Write(r)
 		}
 		return p, nil
 	}
+	addCSV := func(key, name string, header []string, rows [][]string) error {
+		p, err := writeCSV(name, header, rows)
+		if err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+		files[key] = p
+		return nil
+	}
 
 	// build lookup maps
-	products, _ := s.repo.ListProducts()
+	products, err := s.repo.ListProducts()
+	if err != nil {
+		return failExport(fmt.Errorf("query products: %w", err))
+	}
 	prodMap := make(map[int64]model.Product)
 	for _, p := range products {
 		prodMap[p.ID] = p
 	}
-	parts, _ := s.repo.ListParts()
+	parts, err := s.repo.ListParts()
+	if err != nil {
+		return failExport(fmt.Errorf("query parts: %w", err))
+	}
 	partMap := make(map[int64]model.Part)
 	for _, p := range parts {
 		partMap[p.ID] = p
 	}
-	batches, _ := s.repo.ListBatches()
+	batches, err := s.repo.ListBatches()
+	if err != nil {
+		return failExport(fmt.Errorf("query batches: %w", err))
+	}
 	batchMap := make(map[int64]model.ProductBatch)
 	for _, b := range batches {
 		batchMap[b.ID] = b
@@ -1361,10 +1416,10 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			p.CreatedAt.Format("2006-01-02"),
 		})
 	}
-	if p, err := writeCSV("products.csv",
+	if err := addCSV("products", "products.csv",
 		[]string{"编码", "名称", "规格", "单位", "状态", "操作人", "创建日期"},
-		prodRows); err == nil {
-		files["products"] = p
+		prodRows); err != nil {
+		return failExport(err)
 	}
 
 	// parts
@@ -1384,14 +1439,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			nullStrSvc(p.Supplier), nullStrSvc(p.Operator),
 		})
 	}
-	if p, err := writeCSV("parts.csv",
+	if err := addCSV("parts", "parts.csv",
 		[]string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "操作人"},
-		partRows); err == nil {
-		files["parts"] = p
+		partRows); err != nil {
+		return failExport(err)
 	}
 
 	// bom_items
-	boms, _ := s.repo.ListAllBOMItems()
+	boms, err := s.repo.ListAllBOMItems()
+	if err != nil {
+		return failExport(fmt.Errorf("query BOM items: %w", err))
+	}
 	var bomRows [][]string
 	for _, b := range boms {
 		p := prodMap[b.ProductID]
@@ -1414,10 +1472,10 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			rep, nullStrSvc(b.Remark),
 		})
 	}
-	if p, err := writeCSV("bom_items.csv",
+	if err := addCSV("bom_items", "bom_items.csv",
 		[]string{"产品编码", "产品名称", "零件编码", "零件名称", "用量模式", "用量", "损耗率(%)", "可替换", "备注"},
-		bomRows); err == nil {
-		files["bom_items"] = p
+		bomRows); err != nil {
+		return failExport(err)
 	}
 
 	// batches
@@ -1431,14 +1489,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			nullStrSvc(b.Customer), nullStrSvc(b.Operator),
 		})
 	}
-	if p, err := writeCSV("product_batches.csv",
+	if err := addCSV("product_batches", "product_batches.csv",
 		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人"},
-		batchRows); err == nil {
-		files["product_batches"] = p
+		batchRows); err != nil {
+		return failExport(err)
 	}
 
 	// batch_trace
-	traces, _ := s.repo.ListAllBatchTraces()
+	traces, err := s.repo.ListAllBatchTraces()
+	if err != nil {
+		return failExport(fmt.Errorf("query batch traces: %w", err))
+	}
 	var traceRows [][]string
 	for _, t := range traces {
 		b := batchMap[t.BatchID]
@@ -1451,14 +1512,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			nullStrSvc(t.Supplier), nullStrSvc(t.Operator),
 		})
 	}
-	if p, err := writeCSV("batch_trace.csv",
+	if err := addCSV("batch_trace", "batch_trace.csv",
 		[]string{"批次号", "零件编码", "零件名称", "零件批次号", "使用数量", "供应商", "操作人"},
-		traceRows); err == nil {
-		files["batch_trace"] = p
+		traceRows); err != nil {
+		return failExport(err)
 	}
 
 	// batch_skip_parts
-	skipRows, _ := s.repo.GetAllSkippedParts()
+	skipRows, err := s.repo.GetAllSkippedParts()
+	if err != nil {
+		return failExport(fmt.Errorf("query skipped parts: %w", err))
+	}
 	var skipCSVRows [][]string
 	for _, sr := range skipRows {
 		b := batchMap[sr.BatchID]
@@ -1467,14 +1531,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			b.BatchNo, part.Code, part.Name,
 		})
 	}
-	if p, err := writeCSV("batch_skip_parts.csv",
+	if err := addCSV("batch_skip_parts", "batch_skip_parts.csv",
 		[]string{"批次号", "零件编码", "零件名称"},
-		skipCSVRows); err == nil {
-		files["batch_skip_parts"] = p
+		skipCSVRows); err != nil {
+		return failExport(err)
 	}
 
 	// audit_log (all)
-	logs, _ := s.repo.ListRecentAuditLogs(100000)
+	logs, err := s.repo.ListRecentAuditLogs(100000)
+	if err != nil {
+		return failExport(fmt.Errorf("query audit logs: %w", err))
+	}
 	var logRows [][]string
 	for _, l := range logs {
 		op := ""
@@ -1489,10 +1556,10 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			op,
 		})
 	}
-	if p, err := writeCSV("audit_log.csv",
+	if err := addCSV("audit_log", "audit_log.csv",
 		[]string{"时间", "操作", "对象", "内容摘要", "操作人"},
-		logRows); err == nil {
-		files["audit_log"] = p
+		logRows); err != nil {
+		return failExport(err)
 	}
 
 	return files, subDir, nil

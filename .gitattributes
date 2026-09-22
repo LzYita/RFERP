@@ -1,3 +1,5 @@
-# 批处理/脚本需 CRLF，否则 cmd.exe 解析异常
+# 行尾规范：Windows 原生脚本用 CRLF，Go 源码用 LF（gofmt/Go 工具链以 LF 为准）
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+*.iss text eol=crlf
+*.go  text eol=lf

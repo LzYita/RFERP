@@ -362,8 +362,8 @@ func (s *Service) StockIn(partID int64, qty float64, operator string) error {
 			return fmt.Errorf("update stock: %w", err)
 		}
 		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
-			"old_stock": old.StockQty,
-			"in_qty":    qty,
+			"old_stock": quantizeQuantity(old.StockQty),
+			"in_qty":    quantizeQuantity(qty),
 			"new_stock": newStock,
 		}, operator})
 	})
@@ -386,7 +386,7 @@ func (s *Service) AdjustStock(partID int64, newQty float64, operator string) err
 			return fmt.Errorf("adjust stock: %w", err)
 		}
 		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
-			"old_stock": old.StockQty,
+			"old_stock": quantizeQuantity(old.StockQty),
 			"new_stock": newQty,
 			"diff":      quantizeQuantity(newQty - old.StockQty),
 		}, operator})
@@ -556,7 +556,7 @@ func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error
 					return fmt.Errorf("record consumption for part %d: %w", item.PartID, err)
 				}
 				if err := s.writeAuditTx(tx, auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
-					"old_stock":        part.StockQty,
+					"old_stock":        quantizeQuantity(part.StockQty),
 					"requested_deduct": requestedDeduct,
 					"deduct":           actualDeduct,
 					"new_stock":        newStock,
@@ -642,9 +642,9 @@ func (s *Service) RevokeBatch(id int64, operator string) error {
 					return fmt.Errorf("update stock for part %d: %w", consumption.PartID, err)
 				}
 				if err := s.writeAuditTx(tx, auditEntry{"parts", consumption.PartID, "STOCK_ADJUST", part, map[string]any{
-					"old_stock": part.StockQty,
+					"old_stock": quantizeQuantity(part.StockQty),
 					"new_stock": newStock,
-					"diff":      consumption.ConsumedQty,
+					"diff":      quantizeQuantity(consumption.ConsumedQty),
 					"batch_id":  id,
 					"remark":    "批次撤销回退",
 				}, operator}); err != nil {
@@ -1381,6 +1381,9 @@ func writeCSVFileAtomic(path string, header []string, rows [][]string) error {
 		return fmt.Errorf("close temporary csv file: %w", err)
 	}
 	if err := writeCSVFile(tempPath, header, rows, createCSVOutput); err != nil {
+		// writeCSVFile removes its output on failure; also drop the CreateTemp
+		// placeholder if opening failed before that cleanup ran.
+		_ = os.Remove(tempPath)
 		return err
 	}
 	return finalizeCSVExclusive(tempPath, path)

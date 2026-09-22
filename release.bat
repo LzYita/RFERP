@@ -107,7 +107,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-"!GH!" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
+rem 手写要点（!NOTES_FILE!）作为前置说明，--generate-notes 追加"自上个版本以来合并的 PR 列表"
+"!GH!" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" --generate-notes "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
 if errorlevel 1 (
     echo   Release create failed.
     pause

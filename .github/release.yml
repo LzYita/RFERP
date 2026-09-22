@@ -1,0 +1,27 @@
+# GitHub 自动生成发行说明的分类规则（配合 gh release create --generate-notes）
+# 手写要点（release-notes.txt）会追加在这些自动生成的 PR 列表之前。
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - ignore-for-release
+  categories:
+    - title: "⚠️ Breaking Changes / 破坏性变更"
+      labels:
+        - breaking
+        - breaking-change
+    - title: "✨ New Features / 新功能"
+      labels:
+        - feature
+        - enhancement
+    - title: "🐛 Bug Fixes / 问题修复"
+      labels:
+        - bug
+        - fix
+    - title: "📝 Docs & Chores / 文档与杂项"
+      labels:
+        - documentation
+        - chore
+    - title: "🔧 Other Changes / 其他改动"
+      labels:
+        - "*"

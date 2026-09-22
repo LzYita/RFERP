@@ -3,7 +3,9 @@ package service
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -31,6 +33,74 @@ func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *con
 		mysqldumpPath = "mysqldump"
 	}
 	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
+}
+
+const (
+	maxLossRate     = 100.0
+	quantityScale   = 100.0
+	quantityEpsilon = 1e-9
+)
+
+func validatePlanQty(qty int) error {
+	if qty <= 0 {
+		return fmt.Errorf("计划数量必须大于0")
+	}
+	return nil
+}
+
+func validatePositiveQuantity(label string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		return fmt.Errorf("%s必须是大于0的有限数值", label)
+	}
+	if !representableQuantity(value) {
+		return fmt.Errorf("%s最多支持两位小数", label)
+	}
+	return nil
+}
+
+func validateNonNegativeQuantity(label string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return fmt.Errorf("%s必须是非负有限数值", label)
+	}
+	if !representableQuantity(value) {
+		return fmt.Errorf("%s最多支持两位小数", label)
+	}
+	return nil
+}
+
+func representableQuantity(value float64) bool {
+	scaled := value * quantityScale
+	return !math.IsInf(scaled, 0) && math.Abs(scaled-math.Round(scaled)) < quantityEpsilon
+}
+
+func quantizeQuantity(value float64) float64 {
+	return math.Round(value*quantityScale) / quantityScale
+}
+
+func validateBOMItem(item *model.BOMItem) error {
+	if item == nil {
+		return fmt.Errorf("BOM零件不能为空")
+	}
+	if item.UseMode != 0 && item.UseMode != 1 {
+		return fmt.Errorf("BOM用量模式不合法")
+	}
+	if err := validatePositiveQuantity("BOM用量", item.Quantity); err != nil {
+		return err
+	}
+	if math.IsNaN(item.LossRate) || math.IsInf(item.LossRate, 0) || item.LossRate < 0 || item.LossRate > maxLossRate || !representableQuantity(item.LossRate) {
+		return fmt.Errorf("损耗率必须在0到%.0f之间", maxLossRate)
+	}
+	return nil
+}
+
+func validatePartQuantities(p *model.Part) error {
+	if p == nil {
+		return fmt.Errorf("零件不能为空")
+	}
+	if err := validateNonNegativeQuantity("库存数量", p.StockQty); err != nil {
+		return err
+	}
+	return validateNonNegativeQuantity("预警库存", p.WarnQty)
 }
 
 // DataDir 返回当前数据（备份/导出）目录。
@@ -68,17 +138,48 @@ type auditEntry struct {
 	Operator  string
 }
 
-func (s *Service) writeAudit(e auditEntry) {
-	oldJSON, _ := toJSON(e.OldData)
-	newJSON, _ := toJSON(e.NewData)
-	_ = s.repo.CreateAuditLog(&model.AuditLog{
+func (s *Service) writeAudit(e auditEntry) error {
+	oldJSON, err := toJSON(e.OldData)
+	if err != nil {
+		return fmt.Errorf("marshal audit old data: %w", err)
+	}
+	newJSON, err := toJSON(e.NewData)
+	if err != nil {
+		return fmt.Errorf("marshal audit new data: %w", err)
+	}
+	if err := s.repo.CreateAuditLog(&model.AuditLog{
 		TableName: e.TableName,
 		RecordID:  e.RecordID,
 		Action:    e.Action,
 		OldData:   oldJSON,
 		NewData:   newJSON,
 		Operator:  &e.Operator,
-	})
+	}); err != nil {
+		return fmt.Errorf("write audit %s/%d: %w", e.TableName, e.RecordID, err)
+	}
+	return nil
+}
+
+func (s *Service) writeAuditTx(tx *repository.Tx, e auditEntry) error {
+	oldJSON, err := toJSON(e.OldData)
+	if err != nil {
+		return fmt.Errorf("marshal audit old data: %w", err)
+	}
+	newJSON, err := toJSON(e.NewData)
+	if err != nil {
+		return fmt.Errorf("marshal audit new data: %w", err)
+	}
+	if err := tx.CreateAuditLog(&model.AuditLog{
+		TableName: e.TableName,
+		RecordID:  e.RecordID,
+		Action:    e.Action,
+		OldData:   oldJSON,
+		NewData:   newJSON,
+		Operator:  &e.Operator,
+	}); err != nil {
+		return fmt.Errorf("write audit %s/%d: %w", e.TableName, e.RecordID, err)
+	}
+	return nil
 }
 
 func toJSON(v any) (*map[string]any, error) {
@@ -99,16 +200,24 @@ func toJSON(v any) (*map[string]any, error) {
 // ---- 产品 ----
 
 func (s *Service) CreateProduct(p *model.Product) (*model.Product, error) {
+	if p == nil {
+		return nil, fmt.Errorf("产品不能为空")
+	}
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	p.Version = 1
-	id, err := s.repo.CreateProduct(p)
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		id, err := tx.CreateProduct(p)
+		if err != nil {
+			return fmt.Errorf("create product: %w", err)
+		}
+		p.ID = id
+		return s.writeAuditTx(tx, auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
+	})
 	if err != nil {
-		return nil, fmt.Errorf("create product: %w", err)
+		return nil, err
 	}
-	p.ID = id
-	s.writeAudit(auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
 	return p, nil
 }
 
@@ -121,49 +230,66 @@ func (s *Service) ListProducts() ([]model.Product, error) {
 }
 
 func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
-	old, err := s.repo.GetProduct(p.ID)
+	if p == nil {
+		return nil, fmt.Errorf("产品不能为空")
+	}
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetProductForUpdate(p.ID)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("product not found")
+		}
+		affected, err := tx.UpdateProduct(p)
+		if err != nil {
+			return fmt.Errorf("update product: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("product version conflict, please refresh and retry")
+		}
+		p.Version = old.Version + 1
+		return s.writeAuditTx(tx, auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if old == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	affected, err := s.repo.UpdateProduct(p)
-	if err != nil {
-		return nil, fmt.Errorf("update product: %w", err)
-	}
-	if affected == 0 {
-		return nil, fmt.Errorf("product version conflict, please refresh and retry")
-	}
-	p.Version = old.Version + 1
-	s.writeAudit(auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
 	return p, nil
 }
 
 func (s *Service) DeleteProduct(id int64, operator string) error {
-	old, err := s.repo.GetProduct(id)
-	if err != nil {
-		return err
-	}
-	if old == nil {
-		return fmt.Errorf("product not found")
-	}
-	if err := s.repo.DeleteProduct(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"products", id, "DELETE", old, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetProductForUpdate(id)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("product not found")
+		}
+		if err := tx.DeleteProduct(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"products", id, "DELETE", old, nil, operator})
+	})
 }
 
 // ---- 零件 ----
 
 func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
-	id, err := s.repo.CreatePart(p)
-	if err != nil {
-		return nil, fmt.Errorf("create part: %w", err)
+	if err := validatePartQuantities(p); err != nil {
+		return nil, err
 	}
-	p.ID = id
-	s.writeAudit(auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		id, err := tx.CreatePart(p)
+		if err != nil {
+			return fmt.Errorf("create part: %w", err)
+		}
+		p.ID = id
+		return s.writeAuditTx(tx, auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
+	})
+	if err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -176,103 +302,129 @@ func (s *Service) ListParts() ([]model.Part, error) {
 }
 
 func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
-	old, err := s.repo.GetPart(p.ID)
+	if err := validatePartQuantities(p); err != nil {
+		return nil, err
+	}
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(p.ID)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		affected, err := tx.UpdatePart(p)
+		if err != nil {
+			return fmt.Errorf("update part: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("part version conflict, please refresh and retry")
+		}
+		p.Version = old.Version + 1
+		return s.writeAuditTx(tx, auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if old == nil {
-		return nil, fmt.Errorf("part not found")
-	}
-	affected, err := s.repo.UpdatePart(p)
-	if err != nil {
-		return nil, fmt.Errorf("update part: %w", err)
-	}
-	if affected == 0 {
-		return nil, fmt.Errorf("part version conflict, please refresh and retry")
-	}
-	p.Version = old.Version + 1
-	s.writeAudit(auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
 	return p, nil
 }
 
 func (s *Service) DeletePart(id int64, operator string) error {
-	old, err := s.repo.GetPart(id)
-	if err != nil {
-		return err
-	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	if err := s.repo.DeletePart(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"parts", id, "DELETE", old, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(id)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		if err := tx.DeletePart(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", id, "DELETE", old, nil, operator})
+	})
 }
 
 func (s *Service) StockIn(partID int64, qty float64, operator string) error {
-	old, err := s.repo.GetPart(partID)
-	if err != nil {
-		return fmt.Errorf("get part: %w", err)
+	if err := validatePositiveQuantity("入库数量", qty); err != nil {
+		return err
 	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	newStock := old.StockQty + qty
-	if err := s.repo.UpdatePartStock(partID, newStock); err != nil {
-		return fmt.Errorf("update stock: %w", err)
-	}
-	s.writeAudit(auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
-		"old_stock": old.StockQty,
-		"in_qty":    qty,
-		"new_stock": newStock,
-	}, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		newStock := quantizeQuantity(old.StockQty + qty)
+		if err := tx.UpdatePartStock(partID, newStock); err != nil {
+			return fmt.Errorf("update stock: %w", err)
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
+			"old_stock": quantizeQuantity(old.StockQty),
+			"in_qty":    quantizeQuantity(qty),
+			"new_stock": newStock,
+		}, operator})
+	})
 }
 
 func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
-	old, err := s.repo.GetPart(partID)
-	if err != nil {
-		return fmt.Errorf("get part: %w", err)
+	if err := validateNonNegativeQuantity("调整后库存", newQty); err != nil {
+		return err
 	}
-	if old == nil {
-		return fmt.Errorf("part not found")
-	}
-	if err := s.repo.UpdatePartStock(partID, newQty); err != nil {
-		return fmt.Errorf("adjust stock: %w", err)
-	}
-	s.writeAudit(auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
-		"old_stock": old.StockQty,
-		"new_stock": newQty,
-		"diff":      newQty - old.StockQty,
-	}, operator})
-	return nil
+	newQty = quantizeQuantity(newQty)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		old, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if old == nil {
+			return fmt.Errorf("part not found")
+		}
+		if err := tx.UpdatePartStock(partID, newQty); err != nil {
+			return fmt.Errorf("adjust stock: %w", err)
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
+			"old_stock": quantizeQuantity(old.StockQty),
+			"new_stock": newQty,
+			"diff":      quantizeQuantity(newQty - old.StockQty),
+		}, operator})
+	})
 }
 
 // ---- BOM ----
 
 func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
-	// 校验产品和零件存在
-	prod, err := s.repo.GetProduct(b.ProductID)
+	if err := validateBOMItem(b); err != nil {
+		return nil, err
+	}
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		// 校验产品和零件存在，并锁定零件避免并发删除。
+		prod, err := tx.GetProduct(b.ProductID)
+		if err != nil {
+			return err
+		}
+		if prod == nil {
+			return fmt.Errorf("product not found")
+		}
+		part, err := tx.GetPartForUpdate(b.PartID)
+		if err != nil {
+			return err
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
+		id, err := tx.CreateBOMItem(b)
+		if err != nil {
+			return fmt.Errorf("create bom: %w", err)
+		}
+		b.ID = id
+		return s.writeAuditTx(tx, auditEntry{"bom_items", id, "INSERT", nil, b, *b.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if prod == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	part, err := s.repo.GetPart(b.PartID)
-	if err != nil {
-		return nil, err
-	}
-	if part == nil {
-		return nil, fmt.Errorf("part not found")
-	}
-	id, err := s.repo.CreateBOMItem(b)
-	if err != nil {
-		return nil, fmt.Errorf("create bom: %w", err)
-	}
-	b.ID = id
-	s.writeAudit(auditEntry{"bom_items", id, "INSERT", nil, b, *b.Operator})
 	return b, nil
 }
 
@@ -281,39 +433,49 @@ func (s *Service) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 }
 
 func (s *Service) RemoveBOMItem(id int64, operator string) error {
-	// 先查询
-	_ = operator
-	if err := s.repo.DeleteBOMItem(id); err != nil {
-		return err
-	}
-	s.writeAudit(auditEntry{"bom_items", id, "DELETE", nil, nil, operator})
-	return nil
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		if err := tx.DeleteBOMItem(id); err != nil {
+			return err
+		}
+		return s.writeAuditTx(tx, auditEntry{"bom_items", id, "DELETE", nil, nil, operator})
+	})
 }
 
 // ---- 批次 ----
 
 func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error) {
-	prod, err := s.repo.GetProduct(b.ProductID)
+	if b == nil {
+		return nil, fmt.Errorf("批次不能为空")
+	}
+	if err := validatePlanQty(b.PlanQty); err != nil {
+		return nil, err
+	}
+	err := s.repo.WithTx(func(tx *repository.Tx) error {
+		prod, err := tx.GetProduct(b.ProductID)
+		if err != nil {
+			return err
+		}
+		if prod == nil {
+			return fmt.Errorf("product not found")
+		}
+		id, err := tx.CreateBatch(b)
+		if err != nil {
+			return fmt.Errorf("create batch: %w", err)
+		}
+		b.ID = id
+		auditData := map[string]any{
+			"batch_no":     b.BatchNo,
+			"product_id":   b.ProductID,
+			"product_code": prod.Code,
+			"product_name": prod.Name,
+			"plan_qty":     b.PlanQty,
+			"customer":     b.Customer,
+		}
+		return s.writeAuditTx(tx, auditEntry{"product_batches", id, "INSERT", nil, auditData, *b.Operator})
+	})
 	if err != nil {
 		return nil, err
 	}
-	if prod == nil {
-		return nil, fmt.Errorf("product not found")
-	}
-	id, err := s.repo.CreateBatch(b)
-	if err != nil {
-		return nil, fmt.Errorf("create batch: %w", err)
-	}
-	b.ID = id
-	auditData := map[string]any{
-		"batch_no":     b.BatchNo,
-		"product_id":   b.ProductID,
-		"product_code": prod.Code,
-		"product_name": prod.Name,
-		"plan_qty":     b.PlanQty,
-		"customer":     b.Customer,
-	}
-	s.writeAudit(auditEntry{"product_batches", id, "INSERT", nil, auditData, *b.Operator})
 	return b, nil
 }
 
@@ -322,139 +484,195 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 }
 
 func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error {
-	batch, err := s.repo.GetBatch(id)
-	if err != nil {
-		return fmt.Errorf("get batch: %w", err)
-	}
-	if batch == nil {
-		return fmt.Errorf("batch not found")
-	}
-	if batch.Status == 4 {
-		return fmt.Errorf("已撤销的批次不能更改状态")
-	}
-	// 完成生产 → 自动按BOM扣减库存
-	if status == 2 && batch.Status != 2 {
-		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
-			return fmt.Errorf("get bom: %w", err)
+			return fmt.Errorf("get batch: %w", err)
 		}
-		skipParts, _ := s.repo.GetSkippedParts(id)
-		skipMap := make(map[int64]bool)
-		for _, pid := range skipParts {
-			skipMap[pid] = true
+		if batch == nil {
+			return fmt.Errorf("batch not found")
 		}
-		for _, item := range bom {
-			if skipMap[item.PartID] {
-				continue
+		if batch.Status == 4 {
+			return fmt.Errorf("已撤销的批次不能更改状态")
+		}
+		if status < 0 || status > 3 {
+			return fmt.Errorf("状态 %d 不允许通过 UpdateBatchStatus 修改；撤销批次请使用 RevokeBatch", status)
+		}
+		if batch.Status == 2 {
+			return fmt.Errorf("已完成的批次不能更改状态；如需撤销请使用 RevokeBatch")
+		}
+
+		// 完成生产 → 自动按BOM扣减库存
+		if status == 2 {
+			if err := validatePlanQty(batch.PlanQty); err != nil {
+				return err
 			}
-			part, err := s.repo.GetPart(item.PartID)
+			bom, err := tx.GetBOMByProduct(batch.ProductID)
 			if err != nil {
-				return fmt.Errorf("get part %d: %w", item.PartID, err)
+				return fmt.Errorf("get bom: %w", err)
 			}
-			if part == nil {
-				continue
+			for i := range bom {
+				if err := validateBOMItem(&bom[i]); err != nil {
+					return fmt.Errorf("invalid bom item %d: %w", bom[i].ID, err)
+				}
 			}
-			deduct := bomConsume(batch.PlanQty, item)
-			newStock := part.StockQty - deduct
-			if newStock < 0 {
-				newStock = 0
+			skipParts, err := tx.GetSkippedParts(id)
+			if err != nil {
+				return fmt.Errorf("get skipped parts: %w", err)
 			}
-			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
-				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+			skipMap := make(map[int64]bool)
+			for _, pid := range skipParts {
+				skipMap[pid] = true
 			}
-			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
-				"old_stock": part.StockQty,
-				"deduct":    deduct,
-				"new_stock": newStock,
-				"batch_id":  id,
-			}, operator})
+			for _, item := range bom {
+				if skipMap[item.PartID] {
+					continue
+				}
+				part, err := tx.GetPartForUpdate(item.PartID)
+				if err != nil {
+					return fmt.Errorf("get part %d: %w", item.PartID, err)
+				}
+				if part == nil {
+					continue
+				}
+				requestedDeduct := quantizeQuantity(bomConsume(batch.PlanQty, item))
+				actualDeduct := requestedDeduct
+				if actualDeduct > part.StockQty {
+					actualDeduct = part.StockQty
+				}
+				actualDeduct = quantizeQuantity(actualDeduct)
+				newStock := quantizeQuantity(part.StockQty - actualDeduct)
+				if newStock < 0 {
+					newStock = 0
+				}
+				if err := tx.UpdatePartStock(item.PartID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+				}
+				if err := tx.CreateBatchConsumption(&model.BatchConsumption{
+					BatchID:     id,
+					PartID:      item.PartID,
+					ConsumedQty: actualDeduct,
+				}); err != nil {
+					return fmt.Errorf("record consumption for part %d: %w", item.PartID, err)
+				}
+				if err := s.writeAuditTx(tx, auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
+					"old_stock":        quantizeQuantity(part.StockQty),
+					"requested_deduct": requestedDeduct,
+					"deduct":           actualDeduct,
+					"new_stock":        newStock,
+					"batch_id":         id,
+				}, operator}); err != nil {
+					return err
+				}
+			}
+			if err := tx.UpdateBatchProduced(id, batch.PlanQty); err != nil {
+				return fmt.Errorf("update batch produced: %w", err)
+			}
+			if err := tx.MarkBatchConsumptionRecorded(id); err != nil {
+				return fmt.Errorf("mark batch consumption recorded: %w", err)
+			}
 		}
-		// 更新完成数
-		_ = s.repo.UpdateBatchProduced(id, batch.PlanQty)
-	}
-	affected, err := s.repo.UpdateBatchStatus(id, status, operator)
-	if err != nil {
-		return fmt.Errorf("update batch status: %w", err)
-	}
-	if affected == 0 {
-		return fmt.Errorf("batch not found")
-	}
-	// 查产品信息用于审计日志
-	prod, _ := s.repo.GetProduct(batch.ProductID)
-	oldMap := map[string]any{
-		"batch_no":     batch.BatchNo,
-		"product_id":   batch.ProductID,
-		"product_code": "",
-		"product_name": "",
-		"plan_qty":     batch.PlanQty,
-		"status":       batch.Status,
-		"customer":     nullStrSvc(batch.Customer),
-	}
-	if prod != nil {
-		oldMap["product_code"] = prod.Code
-		oldMap["product_name"] = prod.Name
-	}
-	s.writeAudit(auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator})
-	return nil
+
+		prod, err := tx.GetProduct(batch.ProductID)
+		if err != nil {
+			return fmt.Errorf("get product for batch audit: %w", err)
+		}
+		oldMap := map[string]any{
+			"batch_no":     batch.BatchNo,
+			"product_id":   batch.ProductID,
+			"product_code": "",
+			"product_name": "",
+			"plan_qty":     batch.PlanQty,
+			"status":       batch.Status,
+			"customer":     nullStrSvc(batch.Customer),
+		}
+		if prod != nil {
+			oldMap["product_code"] = prod.Code
+			oldMap["product_name"] = prod.Name
+		}
+		affected, err := tx.UpdateBatchStatusFrom(id, status, operator, batch.Status)
+		if err != nil {
+			return fmt.Errorf("update batch status: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("batch state changed, please refresh and retry")
+		}
+		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Service) RevokeBatch(id int64, operator string) error {
-	batch, err := s.repo.GetBatch(id)
-	if err != nil {
-		return fmt.Errorf("get batch: %w", err)
-	}
-	if batch == nil {
-		return fmt.Errorf("batch not found")
-	}
-
-	// 已完成批次：回退库存（跳过被跳过的零件）
-	if batch.Status == 2 {
-		skipParts, _ := s.repo.GetSkippedParts(id)
-		skipMap := make(map[int64]bool)
-		for _, pid := range skipParts {
-			skipMap[pid] = true
-		}
-		bom, err := s.repo.GetBOMByProduct(batch.ProductID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
-			return fmt.Errorf("get bom: %w", err)
+			return fmt.Errorf("get batch: %w", err)
 		}
-		for _, item := range bom {
-			if skipMap[item.PartID] {
-				continue
-			}
-			part, err := s.repo.GetPart(item.PartID)
-			if err != nil {
-				return fmt.Errorf("get part %d: %w", item.PartID, err)
-			}
-			if part == nil {
-				continue
-			}
-			deduct := bomConsume(batch.PlanQty, item)
-			newStock := part.StockQty + deduct
-			if err := s.repo.UpdatePartStock(item.PartID, newStock); err != nil {
-				return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
-			}
-			s.writeAudit(auditEntry{"parts", item.PartID, "STOCK_ADJUST", part, map[string]any{
-				"old_stock": part.StockQty,
-				"new_stock": newStock,
-				"diff":      deduct,
-				"batch_id":  id,
-				"remark":    "批次撤销回退",
-			}, operator})
+		if batch == nil {
+			return fmt.Errorf("batch not found")
 		}
-	}
+		if batch.Status == 4 {
+			return fmt.Errorf("批次已经撤销，不能重复撤销")
+		}
 
-	s.writeAudit(auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
-		"batch_no":     batch.BatchNo,
-		"product_id":   batch.ProductID,
-		"plan_qty":     batch.PlanQty,
-		"produced_qty": batch.ProducedQty,
-		"status":       batch.Status,
-		"customer":     batch.Customer,
-		"operator":     operator,
-	}, operator})
-	_, err = s.repo.UpdateBatchStatus(id, 4, operator)
-	return err
+		// 已完成批次：只按完成时冻结的实际消耗记录回退库存。
+		if batch.Status == 2 {
+			if batch.ConsumptionRecorded != 1 {
+				return fmt.Errorf("批次缺少冻结的库存消耗记录，无法安全撤销")
+			}
+			consumptions, err := tx.ListBatchConsumptions(id)
+			if err != nil {
+				return fmt.Errorf("get batch consumptions: %w", err)
+			}
+			for _, consumption := range consumptions {
+				if consumption.ConsumedQty <= 0 {
+					continue
+				}
+				part, err := tx.GetPartForUpdate(consumption.PartID)
+				if err != nil {
+					return fmt.Errorf("get part %d: %w", consumption.PartID, err)
+				}
+				if part == nil {
+					continue
+				}
+				newStock := quantizeQuantity(part.StockQty + consumption.ConsumedQty)
+				if err := tx.UpdatePartStock(consumption.PartID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", consumption.PartID, err)
+				}
+				if err := s.writeAuditTx(tx, auditEntry{"parts", consumption.PartID, "STOCK_ADJUST", part, map[string]any{
+					"old_stock": quantizeQuantity(part.StockQty),
+					"new_stock": newStock,
+					"diff":      quantizeQuantity(consumption.ConsumedQty),
+					"batch_id":  id,
+					"remark":    "批次撤销回退",
+				}, operator}); err != nil {
+					return err
+				}
+			}
+		}
+
+		affected, err := tx.UpdateBatchStatusFrom(id, 4, operator, batch.Status)
+		if err != nil {
+			return fmt.Errorf("update batch status: %w", err)
+		}
+		if affected == 0 {
+			return fmt.Errorf("batch state changed, please refresh and retry")
+		}
+		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
+			"batch_no":     batch.BatchNo,
+			"product_id":   batch.ProductID,
+			"plan_qty":     batch.PlanQty,
+			"produced_qty": batch.ProducedQty,
+			"status":       4,
+			"customer":     batch.Customer,
+			"operator":     operator,
+		}, operator}); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
@@ -744,22 +962,82 @@ func numVal(v any) float64 {
 }
 
 func (s *Service) AddSkipPart(batchID, partID int64) error {
-	return s.repo.AddSkipPart(batchID, partID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
+		}
+		if err := tx.AddSkipPart(batchID, partID); err != nil {
+			return fmt.Errorf("add skipped part: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Service) RemoveSkipPart(batchID, partID int64) error {
-	return s.repo.RemoveSkipPart(batchID, partID)
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
+		}
+		if err := tx.RemoveSkipPart(batchID, partID); err != nil {
+			return fmt.Errorf("remove skipped part: %w", err)
+		}
+		return nil
+	})
 }
 
 // ---- 追溯 ----
 
 func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
+	if t == nil {
+		return nil, fmt.Errorf("投料记录不能为空")
+	}
+	if err := validatePositiveQuantity("投料数量", t.UsedQty); err != nil {
+		return nil, err
+	}
 	id, err := s.repo.CreateTrace(t)
 	if err != nil {
 		return nil, fmt.Errorf("create trace: %w", err)
 	}
 	t.ID = id
 	return t, nil
+}
+
+func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
+	if len(traces) == 0 {
+		return nil
+	}
+	for i, trace := range traces {
+		if trace == nil {
+			return fmt.Errorf("第%d条投料记录不能为空", i+1)
+		}
+		if err := validatePositiveQuantity("投料数量", trace.UsedQty); err != nil {
+			return fmt.Errorf("第%d条投料记录无效: %w", i+1, err)
+		}
+	}
+	return s.repo.WithTx(func(tx *repository.Tx) error {
+		for i, trace := range traces {
+			id, err := tx.CreateTrace(trace)
+			if err != nil {
+				return fmt.Errorf("create trace %d: %w", i+1, err)
+			}
+			trace.ID = id
+		}
+		return nil
+	})
 }
 
 func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
@@ -787,60 +1065,113 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 // ---- 备份与导出 ----
 
+type mysqlSessionChecks struct {
+	ForeignKeyChecks int `db:"foreign_key_checks"`
+	UniqueChecks     int `db:"unique_checks"`
+}
+
+func withDisabledChecks(conn *repository.Conn, operation func(*repository.Tx) error) (retErr error) {
+	var previous mysqlSessionChecks
+	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
+		return fmt.Errorf("read MySQL session checks: %w", err)
+	}
+
+	defer func() {
+		var restoreErrs []error
+		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore FOREIGN_KEY_CHECKS: %w", err))
+		}
+		if _, err := conn.Exec(fmt.Sprintf("SET UNIQUE_CHECKS = %d", previous.UniqueChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
+		}
+		if len(restoreErrs) > 0 {
+			// Session checks may still be disabled. Never pool this connection.
+			conn.MarkUnusable()
+			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
+		}
+	}()
+
+	if _, err := conn.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable FOREIGN_KEY_CHECKS: %w", err)
+	}
+	if _, err := conn.Exec("SET UNIQUE_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable UNIQUE_CHECKS: %w", err)
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin database operation: %w", err)
+	}
+	if err := operation(tx); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit database operation: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read file: %w", err)
 	}
 
-	// disable checks for smooth import
-	s.repo.Exec("SET FOREIGN_KEY_CHECKS = 0")
-	s.repo.Exec("SET UNIQUE_CHECKS = 0")
-	defer func() {
-		s.repo.Exec("SET FOREIGN_KEY_CHECKS = 1")
-		s.repo.Exec("SET UNIQUE_CHECKS = 1")
-	}()
-
-	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
 	lines := strings.Split(content, "\n")
 
-	var buf strings.Builder
-	inInsert := false
-
-	execInsert := func(sql string) bool {
-		if _, e := s.repo.Exec(sql); e != nil {
-			failed++
-			return false
-		}
-		success++
-		return true
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-			continue
-		}
-		if !inInsert {
-			if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
-				buf.Reset()
+	err = s.repo.WithConn(func(conn *repository.Conn) error {
+		return withDisabledChecks(conn, func(tx *repository.Tx) error {
+			var buf strings.Builder
+			inInsert := false
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+					continue
+				}
+				if !inInsert {
+					if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+						buf.Reset()
+						buf.WriteString(line)
+						if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+							if _, err := tx.Exec(buf.String()); err != nil {
+								failed++
+								return fmt.Errorf("restore INSERT failed: %w", err)
+							}
+							success++
+						} else {
+							inInsert = true
+						}
+					}
+					continue
+				}
+				buf.WriteString("\n")
 				buf.WriteString(line)
-				if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
-					execInsert(buf.String())
-				} else {
-					inInsert = true
+				if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+					if _, err := tx.Exec(buf.String()); err != nil {
+						failed++
+						return fmt.Errorf("restore INSERT failed: %w", err)
+					}
+					success++
+					inInsert = false
 				}
 			}
-			continue
-		}
-		buf.WriteString("\n")
-		buf.WriteString(line)
-		if strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";") {
-			execInsert(buf.String())
-			inInsert = false
-		}
+			if inInsert {
+				failed++
+				return fmt.Errorf("restore SQL contains unterminated INSERT")
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		// The restore is one transaction: statement successes are rolled back
+		// when any later statement or the commit fails.
+		return 0, failed, err
 	}
-	return success, failed, nil
+	return success, 0, nil
 }
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
@@ -1001,27 +1332,129 @@ func auditSummary(l model.AuditLog) string {
 	return tableLabel(t) + "操作"
 }
 
+func createCSVOutput(path string) (io.WriteCloser, error) {
+	return os.Create(path)
+}
+
+func writeCSVFile(path string, header []string, rows [][]string, create func(string) (io.WriteCloser, error)) (retErr error) {
+	f, err := create(path)
+	if err != nil {
+		return fmt.Errorf("create csv file: %w", err)
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close csv file: %w", closeErr))
+		}
+		if retErr != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				retErr = errors.Join(retErr, fmt.Errorf("remove incomplete csv file: %w", removeErr))
+			}
+		}
+	}()
+
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	if n, err := f.Write(bom); err != nil {
+		return fmt.Errorf("write csv BOM: %w", err)
+	} else if n != len(bom) {
+		return fmt.Errorf("write csv BOM: %w", io.ErrShortWrite)
+	}
+
+	w := csv.NewWriter(f)
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for _, row := range rows {
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("write csv row: %w", err)
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("flush csv: %w", err)
+	}
+	return nil
+}
+
+func writeCSVFileAtomic(path string, header []string, rows [][]string) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary csv file: %w", err)
+	}
+	tempPath := temp.Name()
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temporary csv file: %w", err)
+	}
+	if err := writeCSVFile(tempPath, header, rows, createCSVOutput); err != nil {
+		// writeCSVFile removes its output on failure; also drop the CreateTemp
+		// placeholder if opening failed before that cleanup ran.
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return finalizeCSVExclusive(tempPath, path)
+}
+
+// finalizeCSVExclusive publishes tempPath as path only when path does not
+// already exist. It never replaces an existing export, including when two
+// exports finalize at the same time.
+func finalizeCSVExclusive(tempPath, path string) error {
+	if err := os.Link(tempPath, path); err == nil {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("finalize csv file: remove temporary file: %w", err)
+		}
+		return nil
+	} else if os.IsExist(err) {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: target already exists")
+	}
+
+	// Hard links can be unavailable on some filesystems. Fall back to an
+	// exclusive create and copy, still refusing to overwrite the target.
+	src, err := os.Open(tempPath)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: open temporary file: %w", err)
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		if os.IsExist(err) {
+			return fmt.Errorf("finalize csv file: target already exists")
+		}
+		return fmt.Errorf("finalize csv file: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: copy: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("finalize csv file: close target: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("finalize csv file: remove temporary file: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
 	endDate = endDate.Add(24 * time.Hour)
 	logs, err := s.repo.ListAuditLogsByDate(startDate, endDate)
 	if err != nil {
 		return 0, fmt.Errorf("query audit logs: %w", err)
 	}
-	f, err := os.Create(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("create csv file: %w", err)
-	}
-	defer f.Close()
-	f.Write([]byte{0xEF, 0xBB, 0xBF})
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"时间", "操作", "对象", "内容摘要", "操作人"})
+	rows := make([][]string, 0, len(logs))
 	for _, log := range logs {
 		op := ""
 		if log.Operator != nil {
 			op = *log.Operator
 		}
-		w.Write([]string{
+		rows = append(rows, []string{
 			log.CreatedAt.Format("2006-01-02 15:04:05"),
 			actionText(log.Action),
 			tableLabel(log.TableName),
@@ -1029,46 +1462,65 @@ func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath strin
 			op,
 		})
 	}
+	if err := writeCSVFileAtomic(filePath, []string{"时间", "操作", "对象", "内容摘要", "操作人"}, rows); err != nil {
+		return 0, fmt.Errorf("write audit csv: %w", err)
+	}
 	return len(logs), nil
 }
 
 func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, error) {
-	now := time.Now().Format("20060102_150405")
-	subDir := filepath.Join(saveDir, now)
-	if err := os.MkdirAll(subDir, 0755); err != nil {
+	if err := os.MkdirAll(saveDir, 0755); err != nil {
+		return nil, "", fmt.Errorf("create export parent: %w", err)
+	}
+	subDir, err := os.MkdirTemp(saveDir, time.Now().Format("20060102_150405-"))
+	if err != nil {
 		return nil, "", fmt.Errorf("create export dir: %w", err)
 	}
 	files := make(map[string]string)
+	failExport := func(err error) (map[string]string, string, error) {
+		if cleanupErr := os.RemoveAll(subDir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove incomplete export directory: %w", cleanupErr))
+		}
+		return nil, "", err
+	}
 
 	writeCSV := func(name string, header []string, rows [][]string) (string, error) {
 		p := filepath.Join(subDir, name)
-		f, err := os.Create(p)
-		if err != nil {
+		if err := writeCSVFileAtomic(p, header, rows); err != nil {
 			return "", err
-		}
-		defer f.Close()
-		f.Write([]byte{0xEF, 0xBB, 0xBF})
-		w := csv.NewWriter(f)
-		defer w.Flush()
-		w.Write(header)
-		for _, r := range rows {
-			w.Write(r)
 		}
 		return p, nil
 	}
+	addCSV := func(key, name string, header []string, rows [][]string) error {
+		p, err := writeCSV(name, header, rows)
+		if err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+		files[key] = p
+		return nil
+	}
 
 	// build lookup maps
-	products, _ := s.repo.ListProducts()
+	products, err := s.repo.ListProducts()
+	if err != nil {
+		return failExport(fmt.Errorf("query products: %w", err))
+	}
 	prodMap := make(map[int64]model.Product)
 	for _, p := range products {
 		prodMap[p.ID] = p
 	}
-	parts, _ := s.repo.ListParts()
+	parts, err := s.repo.ListParts()
+	if err != nil {
+		return failExport(fmt.Errorf("query parts: %w", err))
+	}
 	partMap := make(map[int64]model.Part)
 	for _, p := range parts {
 		partMap[p.ID] = p
 	}
-	batches, _ := s.repo.ListBatches()
+	batches, err := s.repo.ListBatches()
+	if err != nil {
+		return failExport(fmt.Errorf("query batches: %w", err))
+	}
 	batchMap := make(map[int64]model.ProductBatch)
 	for _, b := range batches {
 		batchMap[b.ID] = b
@@ -1087,10 +1539,10 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			p.CreatedAt.Format("2006-01-02"),
 		})
 	}
-	if p, err := writeCSV("products.csv",
+	if err := addCSV("products", "products.csv",
 		[]string{"编码", "名称", "规格", "单位", "状态", "操作人", "创建日期"},
-		prodRows); err == nil {
-		files["products"] = p
+		prodRows); err != nil {
+		return failExport(err)
 	}
 
 	// parts
@@ -1110,14 +1562,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			nullStrSvc(p.Supplier), nullStrSvc(p.Operator),
 		})
 	}
-	if p, err := writeCSV("parts.csv",
+	if err := addCSV("parts", "parts.csv",
 		[]string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "操作人"},
-		partRows); err == nil {
-		files["parts"] = p
+		partRows); err != nil {
+		return failExport(err)
 	}
 
 	// bom_items
-	boms, _ := s.repo.ListAllBOMItems()
+	boms, err := s.repo.ListAllBOMItems()
+	if err != nil {
+		return failExport(fmt.Errorf("query BOM items: %w", err))
+	}
 	var bomRows [][]string
 	for _, b := range boms {
 		p := prodMap[b.ProductID]
@@ -1140,31 +1595,60 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			rep, nullStrSvc(b.Remark),
 		})
 	}
-	if p, err := writeCSV("bom_items.csv",
+	if err := addCSV("bom_items", "bom_items.csv",
 		[]string{"产品编码", "产品名称", "零件编码", "零件名称", "用量模式", "用量", "损耗率(%)", "可替换", "备注"},
-		bomRows); err == nil {
-		files["bom_items"] = p
+		bomRows); err != nil {
+		return failExport(err)
 	}
 
 	// batches
 	var batchRows [][]string
 	for _, b := range batches {
+		recorded := "否"
+		if b.ConsumptionRecorded == 1 {
+			recorded = "是"
+		}
 		batchRows = append(batchRows, []string{
 			b.BatchNo,
 			nullStrSvc(b.ProductCode), nullStrSvc(b.ProductName),
 			fmt.Sprintf("%d", b.PlanQty), fmt.Sprintf("%d", b.ProducedQty),
 			batchStatusText(b.Status),
 			nullStrSvc(b.Customer), nullStrSvc(b.Operator),
+			recorded,
 		})
 	}
-	if p, err := writeCSV("product_batches.csv",
-		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人"},
-		batchRows); err == nil {
-		files["product_batches"] = p
+	if err := addCSV("product_batches", "product_batches.csv",
+		[]string{"批次号", "产品编码", "产品名称", "计划数量", "完成数量", "状态", "客户", "操作人", "消耗已冻结"},
+		batchRows); err != nil {
+		return failExport(err)
+	}
+
+	// batch_consumptions
+	consumptions, err := s.repo.ListAllBatchConsumptions()
+	if err != nil {
+		return failExport(fmt.Errorf("query batch consumptions: %w", err))
+	}
+	var consumptionRows [][]string
+	for _, c := range consumptions {
+		b := batchMap[c.BatchID]
+		part := partMap[c.PartID]
+		consumptionRows = append(consumptionRows, []string{
+			b.BatchNo,
+			part.Code, part.Name,
+			fmt.Sprintf("%.2f", c.ConsumedQty),
+		})
+	}
+	if err := addCSV("batch_consumptions", "batch_consumptions.csv",
+		[]string{"批次号", "零件编码", "零件名称", "消耗数量"},
+		consumptionRows); err != nil {
+		return failExport(err)
 	}
 
 	// batch_trace
-	traces, _ := s.repo.ListAllBatchTraces()
+	traces, err := s.repo.ListAllBatchTraces()
+	if err != nil {
+		return failExport(fmt.Errorf("query batch traces: %w", err))
+	}
 	var traceRows [][]string
 	for _, t := range traces {
 		b := batchMap[t.BatchID]
@@ -1177,14 +1661,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			nullStrSvc(t.Supplier), nullStrSvc(t.Operator),
 		})
 	}
-	if p, err := writeCSV("batch_trace.csv",
+	if err := addCSV("batch_trace", "batch_trace.csv",
 		[]string{"批次号", "零件编码", "零件名称", "零件批次号", "使用数量", "供应商", "操作人"},
-		traceRows); err == nil {
-		files["batch_trace"] = p
+		traceRows); err != nil {
+		return failExport(err)
 	}
 
 	// batch_skip_parts
-	skipRows, _ := s.repo.GetAllSkippedParts()
+	skipRows, err := s.repo.GetAllSkippedParts()
+	if err != nil {
+		return failExport(fmt.Errorf("query skipped parts: %w", err))
+	}
 	var skipCSVRows [][]string
 	for _, sr := range skipRows {
 		b := batchMap[sr.BatchID]
@@ -1193,14 +1680,17 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			b.BatchNo, part.Code, part.Name,
 		})
 	}
-	if p, err := writeCSV("batch_skip_parts.csv",
+	if err := addCSV("batch_skip_parts", "batch_skip_parts.csv",
 		[]string{"批次号", "零件编码", "零件名称"},
-		skipCSVRows); err == nil {
-		files["batch_skip_parts"] = p
+		skipCSVRows); err != nil {
+		return failExport(err)
 	}
 
 	// audit_log (all)
-	logs, _ := s.repo.ListRecentAuditLogs(100000)
+	logs, err := s.repo.ListRecentAuditLogs(100000)
+	if err != nil {
+		return failExport(fmt.Errorf("query audit logs: %w", err))
+	}
 	var logRows [][]string
 	for _, l := range logs {
 		op := ""
@@ -1215,10 +1705,10 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 			op,
 		})
 	}
-	if p, err := writeCSV("audit_log.csv",
+	if err := addCSV("audit_log", "audit_log.csv",
 		[]string{"时间", "操作", "对象", "内容摘要", "操作人"},
-		logRows); err == nil {
-		files["audit_log"] = p
+		logRows); err != nil {
+		return failExport(err)
 	}
 
 	return files, subDir, nil
@@ -1254,22 +1744,25 @@ func bomConsume(planQty int, item model.BOMItem) float64 {
 
 func (s *Service) ClearDatabase() error {
 	stmts := []string{
-		"SET FOREIGN_KEY_CHECKS = 0",
 		"DELETE FROM batch_skip_parts",
 		"DELETE FROM batch_trace",
+		"DELETE FROM batch_consumptions",
 		"DELETE FROM bom_items",
 		"DELETE FROM product_batches",
 		"DELETE FROM parts",
 		"DELETE FROM products",
 		"DELETE FROM audit_log",
-		"SET FOREIGN_KEY_CHECKS = 1",
 	}
-	for _, stmt := range stmts {
-		if _, err := s.repo.Exec(stmt); err != nil {
-			return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
-		}
-	}
-	return nil
+	return s.repo.WithConn(func(conn *repository.Conn) error {
+		return withDisabledChecks(conn, func(tx *repository.Tx) error {
+			for _, stmt := range stmts {
+				if _, err := tx.Exec(stmt); err != nil {
+					return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
+				}
+			}
+			return nil
+		})
+	})
 }
 
 func (s *Service) ValidateBOM(productID int64) (bool, error) {

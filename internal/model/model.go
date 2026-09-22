@@ -52,20 +52,31 @@ type BOMItem struct {
 }
 
 type ProductBatch struct {
-	ID          int64     `db:"id" json:"id"`
-	BatchNo     string    `db:"batch_no" json:"batch_no"`
-	ProductID   int64     `db:"product_id" json:"product_id"`
-	PlanQty     int       `db:"plan_qty" json:"plan_qty"`
-	ProducedQty int       `db:"produced_qty" json:"produced_qty"`
-	Status      int       `db:"status" json:"status"`
-	Version     int       `db:"version" json:"version"`
-	CreatedAt   time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
-	Operator    *string   `db:"operator" json:"operator,omitempty"`
-	Customer    *string   `db:"customer" json:"customer,omitempty"`
+	ID                  int64     `db:"id" json:"id"`
+	BatchNo             string    `db:"batch_no" json:"batch_no"`
+	ProductID           int64     `db:"product_id" json:"product_id"`
+	PlanQty             int       `db:"plan_qty" json:"plan_qty"`
+	ProducedQty         int       `db:"produced_qty" json:"produced_qty"`
+	Status              int       `db:"status" json:"status"`
+	Version             int       `db:"version" json:"version"`
+	CreatedAt           time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt           time.Time `db:"updated_at" json:"updated_at"`
+	Operator            *string   `db:"operator" json:"operator,omitempty"`
+	Customer            *string   `db:"customer" json:"customer,omitempty"`
+	ConsumptionRecorded int       `db:"consumption_recorded" json:"consumption_recorded"`
 	// 关联
 	ProductName *string `db:"product_name" json:"product_name,omitempty"`
 	ProductCode *string `db:"product_code" json:"product_code,omitempty"`
+}
+
+// BatchConsumption records the actual quantity removed from one part when a
+// batch is completed. It is immutable after completion and is the source of
+// truth for a later batch reversal.
+type BatchConsumption struct {
+	BatchID     int64     `db:"batch_id" json:"batch_id"`
+	PartID      int64     `db:"part_id" json:"part_id"`
+	ConsumedQty float64   `db:"consumed_qty" json:"consumed_qty"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
 type BatchTrace struct {

@@ -38,6 +38,9 @@ var migrations = []migration{
 	{6, "parts_supplier", applyPartsSupplier},
 	{7, "batches_customer", applyBatchesCustomer},
 	{8, "users", applyUsers},
+	{9, "batch_consumptions", applyBatchConsumptions},
+	{10, "quantity_checks", applyQuantityChecks},
+	{11, "batch_consumption_checks", applyBatchConsumptionChecks},
 }
 
 func Run(db *sqlx.DB, opts Options) (Result, error) {
@@ -130,6 +133,14 @@ func columnExists(db *sqlx.DB, table, column string) (bool, error) {
 	var n int
 	err := db.Get(&n, `SELECT COUNT(*) FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, table, column)
+	return n > 0, err
+}
+
+func constraintExists(db *sqlx.DB, table, constraint string) (bool, error) {
+	var n int
+	err := db.Get(&n, `SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+		WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ?
+		  AND CONSTRAINT_TYPE = 'CHECK'`, table, constraint)
 	return n > 0, err
 }
 
@@ -260,6 +271,127 @@ func applyUsers(db *sqlx.DB) error {
 	return err
 }
 
+func applyBatchConsumptions(db *sqlx.DB) error {
+	ok, err := columnExists(db, "product_batches", "consumption_recorded")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if _, err := db.Exec(`ALTER TABLE product_batches ADD COLUMN consumption_recorded TINYINT NOT NULL DEFAULT 0 COMMENT '是否已冻结批次实际库存消耗'`); err != nil {
+			return err
+		}
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS batch_consumptions (
+		id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+		batch_id     BIGINT NOT NULL,
+		part_id      BIGINT NOT NULL,
+		consumed_qty DECIMAL(12,2) NOT NULL,
+		created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (batch_id) REFERENCES product_batches(id) ON DELETE CASCADE,
+		FOREIGN KEY (part_id) REFERENCES parts(id),
+		UNIQUE KEY uk_batch_consumption (batch_id, part_id)
+	) COMMENT '批次实际消耗记录-完成时冻结'`)
+	if err != nil {
+		return err
+	}
+
+	// Older completed batches only have STOCK_DEDUCT audit rows. Recover the
+	// actual quantity removed (old_stock-new_stock), not the requested quantity,
+	// so they can still be revoked without inventing stock.
+	_, err = db.Exec(`
+		INSERT INTO batch_consumptions (batch_id, part_id, consumed_qty)
+		SELECT
+			CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED),
+			a.record_id,
+			SUM(GREATEST(
+				CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.old_stock')) AS DECIMAL(12,2)) -
+				CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.new_stock')) AS DECIMAL(12,2)),
+				0
+			))
+		FROM audit_log a
+		JOIN product_batches b ON b.id = CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED)
+		JOIN parts p ON p.id = a.record_id
+		WHERE a.table_name = 'parts'
+		  AND a.action = 'STOCK_DEDUCT'
+		  AND b.status = 2
+		  AND JSON_EXTRACT(a.new_data, '$.batch_id') IS NOT NULL
+		  AND JSON_EXTRACT(a.new_data, '$.old_stock') IS NOT NULL
+		  AND JSON_EXTRACT(a.new_data, '$.new_stock') IS NOT NULL
+		GROUP BY
+			CAST(JSON_UNQUOTE(JSON_EXTRACT(a.new_data, '$.batch_id')) AS UNSIGNED),
+			a.record_id
+		ON DUPLICATE KEY UPDATE consumed_qty = VALUES(consumed_qty)`)
+	if err != nil {
+		return err
+	}
+
+	// Mark a batch recorded only when every non-skipped BOM part has a frozen
+	// consumption row. Partial historical recovery must stay unsafe to revoke.
+	_, err = db.Exec(`
+		UPDATE product_batches b
+		SET consumption_recorded = 1
+		WHERE b.status = 2
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM bom_items bi
+			WHERE bi.product_id = b.product_id
+			  AND NOT EXISTS (
+				SELECT 1 FROM batch_skip_parts sk
+				WHERE sk.batch_id = b.id AND sk.part_id = bi.part_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM batch_consumptions c
+				WHERE c.batch_id = b.id AND c.part_id = bi.part_id
+			  )
+		  )`)
+	return err
+}
+
+func applyQuantityChecks(db *sqlx.DB) error {
+	checks := []struct {
+		table, name, expression string
+	}{
+		{"parts", "ck_parts_stock_nonnegative", "stock_qty >= 0"},
+		{"parts", "ck_parts_warn_nonnegative", "warn_qty >= 0"},
+		{"bom_items", "ck_bom_quantity_positive", "quantity > 0"},
+		{"bom_items", "ck_bom_loss_rate_range", "loss_rate >= 0 AND loss_rate <= 100"},
+		{"product_batches", "ck_batches_plan_positive", "plan_qty > 0"},
+		{"batch_trace", "ck_trace_used_positive", "used_qty > 0"},
+	}
+	for _, check := range checks {
+		exists, err := constraintExists(db, check.table, check.name)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		stmt := fmt.Sprintf("ALTER TABLE `%s` ADD CONSTRAINT `%s` CHECK (%s)", check.table, check.name, check.expression)
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("add %s: %w", check.name, err)
+		}
+	}
+	return nil
+}
+
+func applyBatchConsumptionChecks(db *sqlx.DB) error {
+	const table = "batch_consumptions"
+	const name = "ck_batch_consumptions_nonnegative"
+	exists, err := constraintExists(db, table, name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.Exec("ALTER TABLE `batch_consumptions` ADD CONSTRAINT `ck_batch_consumptions_nonnegative` CHECK (consumed_qty >= 0)")
+	if err != nil {
+		return fmt.Errorf("add %s: %w", name, err)
+	}
+	return nil
+}
+
 var baseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -315,6 +447,7 @@ var baseSchema = []string{
 		updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		operator        VARCHAR(50),
 		customer        VARCHAR(200)          COMMENT '客户',
+		consumption_recorded TINYINT NOT NULL DEFAULT 0 COMMENT '是否已冻结批次实际库存消耗',
 		FOREIGN KEY (product_id) REFERENCES products(id)
 	) COMMENT '生产批次'`,
 	`CREATE TABLE IF NOT EXISTS batch_trace (

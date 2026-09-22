@@ -107,8 +107,15 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-rem 手写要点（!NOTES_FILE!）作为前置说明，--generate-notes 追加"自上个版本以来合并的 PR 列表"
-"!GH!" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "!NOTES_FILE!" --generate-notes "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
+rem 组合发行说明：手写要点 + 自动 PR 列表（.github/release.yml 分组）+ 直推提交
+rem 结果写入 release-notes.full.md（已 gitignore）；手写要点仍用于更新清单 signmanifest
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0changelog.ps1" -Version %VERSION% -Repo %REPO% -Highlights "!NOTES_FILE!" -Out "release-notes.full.md"
+if errorlevel 1 (
+    echo   Changelog generation failed.
+    pause
+    exit /b 1
+)
+"!GH!" release create %TAG% --draft --target main --title "RFERP %VERSION%" --notes-file "release-notes.full.md" "dist\Setup-RFERP-%VERSION%.exe" "dist\RFERP-%VERSION%.zip" "dist\releases.json"
 if errorlevel 1 (
     echo   Release create failed.
     pause

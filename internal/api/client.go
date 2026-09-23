@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,9 +19,10 @@ import (
 
 // Client 是远程用例适配（D1/D2）：UI 经 HTTP 访问主机上的同一 Service。
 type Client struct {
-	base string
-	hc   *http.Client
-	tok  string
+	base      string
+	hc        *http.Client
+	tok       string
+	lastCount string
 }
 
 var _ usecase.Applications = (*Client)(nil)
@@ -83,6 +86,51 @@ func (c *Client) do(method, path string, in any, out any) error {
 		return nil
 	}
 	return json.Unmarshal(raw, out)
+}
+
+func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
+	var body io.Reader
+	if in != nil {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, c.base+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.tok != "" {
+		req.Header.Set("Authorization", "Bearer "+c.tok)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.lastCount = resp.Header.Get("X-Count")
+	if resp.StatusCode >= 400 {
+		var er struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &er)
+		if er.Error == "" {
+			er.Error = strings.TrimSpace(string(raw))
+		}
+		if er.Error == "" {
+			er.Error = http.StatusText(resp.StatusCode)
+		}
+		return nil, &APIError{Status: resp.StatusCode, Message: er.Error}
+	}
+	return raw, nil
 }
 
 // APIError 保留 HTTP 状态，便于 UI/上层判断。
@@ -173,16 +221,11 @@ func (c *Client) CreateProduct(p *model.Product) (*model.Product, error) {
 }
 
 func (c *Client) GetProduct(id int64) (*model.Product, error) {
-	list, err := c.ListProducts()
-	if err != nil {
+	var out model.Product
+	if err := c.do(http.MethodGet, "/api/products/get?id="+strconv.FormatInt(id, 10), nil, &out); err != nil {
 		return nil, err
 	}
-	for i := range list {
-		if list[i].ID == id {
-			return &list[i], nil
-		}
-	}
-	return nil, fmt.Errorf("product not found")
+	return &out, nil
 }
 
 func (c *Client) ListProducts() ([]model.Product, error) {
@@ -192,28 +235,31 @@ func (c *Client) ListProducts() ([]model.Product, error) {
 }
 
 func (c *Client) UpdateProduct(p *model.Product) (*model.Product, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.Product
+	if err := c.do(http.MethodPut, "/api/products", p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) DeleteProduct(id int64, operator string) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodDelete, "/api/products?id="+strconv.FormatInt(id, 10), nil, nil)
 }
 
 func (c *Client) CreatePart(p *model.Part) (*model.Part, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.Part
+	if err := c.do(http.MethodPost, "/api/parts", p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) GetPart(id int64) (*model.Part, error) {
-	parts, err := c.ListParts()
-	if err != nil {
+	var out model.Part
+	if err := c.do(http.MethodGet, "/api/parts/get?id="+strconv.FormatInt(id, 10), nil, &out); err != nil {
 		return nil, err
 	}
-	for i := range parts {
-		if parts[i].ID == id {
-			return &parts[i], nil
-		}
-	}
-	return nil, fmt.Errorf("part not found")
+	return &out, nil
 }
 
 func (c *Client) ListParts() ([]model.Part, error) {
@@ -223,11 +269,15 @@ func (c *Client) ListParts() ([]model.Part, error) {
 }
 
 func (c *Client) UpdatePart(p *model.Part) (*model.Part, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.Part
+	if err := c.do(http.MethodPut, "/api/parts", p, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) DeletePart(id int64, operator string) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodDelete, "/api/parts?id="+strconv.FormatInt(id, 10), nil, nil)
 }
 
 func (c *Client) StockIn(in usecase.StockInInput) error {
@@ -242,25 +292,41 @@ func (c *Client) AdjustStock(in usecase.AdjustStockInput) error {
 }
 
 func (c *Client) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.BOMItem
+	if err := c.do(http.MethodPost, "/api/bom", b, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []model.BOMItem
+	err := c.do(http.MethodGet, "/api/bom?product_id="+strconv.FormatInt(productID, 10), nil, &out)
+	return out, err
 }
 
 func (c *Client) RemoveBOMItem(id int64, operator string) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodDelete, "/api/bom?id="+strconv.FormatInt(id, 10), nil, nil)
 }
 
 func (c *Client) ValidateBOM(productID int64) (bool, error) {
-	return false, fmt.Errorf("not implemented in remote client yet")
+	var out struct {
+		Valid bool `json:"valid"`
+	}
+	if err := c.do(http.MethodGet, "/api/bom/validate?product_id="+strconv.FormatInt(productID, 10), nil, &out); err != nil {
+		return false, err
+	}
+	return out.Valid, nil
 }
 
 // ---- Production / Trace / Audit / Stats / Backup ----
 
 func (c *Client) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.ProductBatch
+	if err := c.do(http.MethodPost, "/api/batches", b, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) ListBatches() ([]model.ProductBatch, error) {
@@ -275,43 +341,59 @@ func (c *Client) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 }
 
 func (c *Client) RevokeBatch(in usecase.RevokeBatchInput) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodPost, "/api/batches/revoke", map[string]any{"id": in.ID}, nil)
 }
 
 func (c *Client) AddSkipPart(batchID, partID int64) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodPost, "/api/batches/skip", map[string]any{"batch_id": batchID, "part_id": partID}, nil)
 }
 
 func (c *Client) RemoveSkipPart(batchID, partID int64) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	path := "/api/batches/skip?batch_id=" + strconv.FormatInt(batchID, 10) + "&part_id=" + strconv.FormatInt(partID, 10)
+	return c.do(http.MethodDelete, path, nil, nil)
 }
 
 func (c *Client) GetSkippedParts(batchID int64) ([]int64, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []int64
+	err := c.do(http.MethodGet, "/api/batches/skipped?batch_id="+strconv.FormatInt(batchID, 10), nil, &out)
+	return out, err
 }
 
 func (c *Client) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out model.BatchTrace
+	if err := c.do(http.MethodPost, "/api/traces", t, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) RecordTraces(traces []*model.BatchTrace) error {
-	return fmt.Errorf("not implemented in remote client yet")
+	return c.do(http.MethodPost, "/api/traces/batch", traces, nil)
 }
 
 func (c *Client) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []model.BatchTrace
+	err := c.do(http.MethodGet, "/api/traces/by-batch?batch_id="+strconv.FormatInt(batchID, 10), nil, &out)
+	return out, err
 }
 
 func (c *Client) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []model.BatchTrace
+	err := c.do(http.MethodGet, "/api/traces/by-product?batch_no="+url.QueryEscape(batchNo), nil, &out)
+	return out, err
 }
 
 func (c *Client) TraceByPart(partCode string) ([]model.BatchTrace, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []model.BatchTrace
+	err := c.do(http.MethodGet, "/api/traces/by-part?part_code="+url.QueryEscape(partCode), nil, &out)
+	return out, err
 }
 
 func (c *Client) GetAuditLogs(tableName string, recordID int64) ([]model.AuditLog, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out []model.AuditLog
+	path := "/api/audit?table=" + url.QueryEscape(tableName) + "&record_id=" + strconv.FormatInt(recordID, 10)
+	err := c.do(http.MethodGet, path, nil, &out)
+	return out, err
 }
 
 func (c *Client) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
@@ -321,7 +403,11 @@ func (c *Client) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 }
 
 func (c *Client) GetStockStats(days int) (*usecase.StockStats, error) {
-	return nil, fmt.Errorf("not implemented in remote client yet")
+	var out usecase.StockStats
+	if err := c.do(http.MethodGet, "/api/stats?days="+strconv.Itoa(days), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) DataDir() string { return "" }
@@ -350,7 +436,19 @@ func (c *Client) ClearDatabase() error {
 }
 
 func (c *Client) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
-	return 0, fmt.Errorf("not implemented in remote client yet")
+	body := map[string]any{"start": startDate, "end": endDate}
+	raw, err := c.doBytes(http.MethodPost, "/api/export/audit", body)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	if v := c.lastCount; v != "" {
+		count, _ = strconv.Atoi(v)
+	}
+	if err := os.WriteFile(filePath, raw, 0o600); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (c *Client) ExportAllDataCSV(saveDir string) (map[string]string, string, error) {

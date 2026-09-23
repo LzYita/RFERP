@@ -13,7 +13,8 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
     ports:
-      - "3306:3306"
+      # 宿主机 3306 常被本机 MySQL 占用；联调用 33306，业务访问可不暴露
+      - "33306:3306"
     volumes:
       - rferp-mysql-data:/var/lib/mysql
     healthcheck:

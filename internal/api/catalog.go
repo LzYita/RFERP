@@ -36,6 +36,11 @@ func (s *Server) handleUpdateProduct(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	u, _ := s.userFromRequest(r)
+	if p.Operator == nil {
+		name := operatorName(u)
+		p.Operator = &name
+	}
 	out, err := s.apps.UpdateProduct(&p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

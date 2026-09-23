@@ -181,7 +181,8 @@ func (c *Client) CreateInitialAdmin(username, password, displayName string) (*mo
 	if err := c.do(http.MethodPost, "/api/bootstrap-admin", in, &u); err != nil {
 		return nil, err
 	}
-	return &u, nil
+	// bootstrap 只建号不发 token，必须再登录，否则后续请求全是 unauthorized。
+	return c.Login(username, password)
 }
 
 func (c *Client) CreateUser(in usecase.CreateUserInput) (*model.User, error) {

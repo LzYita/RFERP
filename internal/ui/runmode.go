@@ -35,8 +35,9 @@ func ShowRunModePicker(a fyne.App, cfg *config.Config, onReady func(mode string)
 			dialog.ShowError(err, w)
 			return
 		}
-		w.Close()
+		// 先打开下一界面再关本窗，避免 Fyne 因最后一个窗口关闭而退出。
 		onReady(config.ModeLocal)
+		w.Close()
 	})
 
 	clientBtn := widget.NewButton("连接服务器（车间多机）", func() {
@@ -50,8 +51,8 @@ func ShowRunModePicker(a fyne.App, cfg *config.Config, onReady func(mode string)
 			dialog.ShowError(err, w)
 			return
 		}
-		w.Close()
 		onReady(config.ModeClient)
+		w.Close()
 	})
 
 	box := container.NewVBox(

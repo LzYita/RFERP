@@ -42,8 +42,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
-	// 空库首次部署：仅当无任何用户时可建初始管理员（Docker/主机首启）。
+	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)
+	// 未登录可读用户数，供首启判断（仅 count）。
+	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
@@ -52,7 +54,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/batches/status", s.auth(s.handleUpdateBatchStatus, "Production.UpdateBatchStatus"))
 	mux.HandleFunc("GET /api/audit/recent", s.auth(s.handleRecentAudit, "Audit.ListRecentAuditLogs"))
 	mux.HandleFunc("GET /api/users", s.auth(s.handleListUsers, "Identity.ListUsers"))
-	mux.HandleFunc("GET /api/users/count", s.auth(s.handleUserCount, "Identity.UserCount"))
 	mux.HandleFunc("POST /api/users", s.auth(s.handleCreateUser, "Identity.CreateUser"))
 	mux.HandleFunc("PUT /api/users", s.auth(s.handleUpdateUser, "Identity.UpdateUser"))
 	mux.HandleFunc("DELETE /api/users", s.auth(s.handleDeleteUser, "Identity.DeleteUser"))

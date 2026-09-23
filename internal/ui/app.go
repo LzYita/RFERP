@@ -111,14 +111,8 @@ func (a *App) buildSidebarFooter() fyne.CanvasObject {
 	})
 	logoutBtn.Importance = widget.LowImportance
 
-	var modeBtn *widget.Button
-	modeBtn = widget.NewButtonWithIcon("切换运行模式", theme.SettingsIcon(), func() {
-		ShowRunModeSwitch(a.svc, a.cfg, a.window)
-	})
-	modeBtn.Importance = widget.LowImportance
-
 	info := container.NewVBox(nameLbl, roleLbl)
-	box := container.NewVBox(widget.NewSeparator(), container.NewPadded(info), container.NewPadded(logoutBtn), container.NewPadded(modeBtn))
+	box := container.NewVBox(widget.NewSeparator(), container.NewPadded(info), container.NewPadded(logoutBtn))
 	return box
 }
 

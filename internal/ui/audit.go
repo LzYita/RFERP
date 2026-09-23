@@ -14,11 +14,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type AuditScreen struct {
-	svc     *service.Service
+	svc     usecase.Applications
 	window  fyne.Window
 	allData []model.AuditLog
 	data    []model.AuditLog
@@ -27,7 +27,7 @@ type AuditScreen struct {
 	filter  string
 }
 
-func NewAuditScreen(svc *service.Service, w fyne.Window) *AuditScreen {
+func NewAuditScreen(svc usecase.Applications, w fyne.Window) *AuditScreen {
 	return &AuditScreen{svc: svc, window: w, filter: "all"}
 }
 

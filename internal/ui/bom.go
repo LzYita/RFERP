@@ -12,11 +12,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type BOMScreen struct {
-	svc      *service.Service
+	svc      usecase.Applications
 	window   fyne.Window
 	nameSel  *widget.Select
 	codeSel  *widget.Select
@@ -31,7 +31,7 @@ type BOMScreen struct {
 	delBtn   *widget.Button
 }
 
-func NewBOMScreen(svc *service.Service, w fyne.Window) *BOMScreen {
+func NewBOMScreen(svc usecase.Applications, w fyne.Window) *BOMScreen {
 	return &BOMScreen{svc: svc, window: w}
 }
 

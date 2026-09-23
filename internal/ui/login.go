@@ -10,11 +10,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 // TryAutoLogin 尝试用本机记住的凭据自动登录。
-func TryAutoLogin(svc *service.Service) (*model.User, bool) {
+func TryAutoLogin(svc usecase.Applications) (*model.User, bool) {
 	username, password, ok := auth.LoadRemembered()
 	if !ok {
 		return nil, false
@@ -29,7 +29,7 @@ func TryAutoLogin(svc *service.Service) (*model.User, bool) {
 }
 
 // ShowLogin 显示登录窗；若系统尚无任何用户，则引导创建初始管理员。
-func ShowLogin(a fyne.App, svc *service.Service, onReady func(*model.User)) {
+func ShowLogin(a fyne.App, svc usecase.Applications, onReady func(*model.User)) {
 	n, err := svc.UserCount()
 	if err != nil {
 		log.Printf("user count failed: %v", err)
@@ -42,7 +42,7 @@ func ShowLogin(a fyne.App, svc *service.Service, onReady func(*model.User)) {
 	showLoginForm(a, svc, onReady)
 }
 
-func showLoginForm(a fyne.App, svc *service.Service, onReady func(*model.User)) {
+func showLoginForm(a fyne.App, svc usecase.Applications, onReady func(*model.User)) {
 	w := a.NewWindow("RFERP 登录")
 	w.SetIcon(AppLogo())
 	w.Resize(fyne.NewSize(420, 340))
@@ -99,7 +99,7 @@ func showLoginForm(a fyne.App, svc *service.Service, onReady func(*model.User)) 
 	w.Show()
 }
 
-func showCreateAdmin(a fyne.App, svc *service.Service, onReady func(*model.User)) {
+func showCreateAdmin(a fyne.App, svc usecase.Applications, onReady func(*model.User)) {
 	w := a.NewWindow("创建管理员账号")
 	w.Resize(fyne.NewSize(460, 400))
 	w.CenterOnScreen()

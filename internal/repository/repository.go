@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -89,6 +90,64 @@ func (c *Conn) Begin() (*Tx, error) {
 		return nil, err
 	}
 	return &Tx{tx: tx}, nil
+}
+
+type sessionChecks struct {
+	ForeignKeyChecks int `db:"foreign_key_checks"`
+	UniqueChecks     int `db:"unique_checks"`
+}
+
+// WithBulkLoad runs operation on one physical connection with MySQL session
+// checks disabled (FK/UNIQUE), then restores them. Dialect stays in this
+// adapter; Service must not issue these statements.
+func (r *Repository) WithBulkLoad(operation func(*Tx) error) error {
+	return r.WithConn(func(conn *Conn) error {
+		return withMySQLChecksDisabled(conn, operation)
+	})
+}
+
+func withMySQLChecksDisabled(conn *Conn, operation func(*Tx) error) (retErr error) {
+	var previous sessionChecks
+	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
+		return fmt.Errorf("read MySQL session checks: %w", err)
+	}
+
+	defer func() {
+		var restoreErrs []error
+		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore FOREIGN_KEY_CHECKS: %w", err))
+		}
+		if _, err := conn.Exec(fmt.Sprintf("SET UNIQUE_CHECKS = %d", previous.UniqueChecks)); err != nil {
+			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
+		}
+		if len(restoreErrs) > 0 {
+			// Session checks may still be disabled. Never pool this connection.
+			conn.MarkUnusable()
+			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
+		}
+	}()
+
+	if _, err := conn.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable FOREIGN_KEY_CHECKS: %w", err)
+	}
+	if _, err := conn.Exec("SET UNIQUE_CHECKS = 0"); err != nil {
+		return fmt.Errorf("disable UNIQUE_CHECKS: %w", err)
+	}
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin database operation: %w", err)
+	}
+	if err := operation(tx); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit database operation: %w", err)
+	}
+	return nil
 }
 
 // WithTx runs fn in a transaction and commits only when fn succeeds. Callers

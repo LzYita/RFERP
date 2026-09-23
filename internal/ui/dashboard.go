@@ -14,11 +14,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type DashboardScreen struct {
-	svc         *service.Service
+	svc         usecase.Applications
 	window      fyne.Window
 	cardGrid    *fyne.Container
 	warnList    *widget.List
@@ -28,7 +28,7 @@ type DashboardScreen struct {
 	lastRefresh *widget.Label
 }
 
-func NewDashboardScreen(svc *service.Service, w fyne.Window) *DashboardScreen {
+func NewDashboardScreen(svc usecase.Applications, w fyne.Window) *DashboardScreen {
 	return &DashboardScreen{svc: svc, window: w}
 }
 

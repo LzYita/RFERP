@@ -1,7 +1,7 @@
 # RFERP
 # RenFeng ERP(Warehouse Management System) / 仁风仓库管理系统
 
-**English** | **中文**
+**[English](#english)** | **[中文](#中文)**
 
 ---
 

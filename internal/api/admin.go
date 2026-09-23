@@ -68,10 +68,21 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleChangePassword 只允许改自己的密码（登录即可，不需要 users/write）；
+// 管理员重置他人密码走 /api/users/reset-password。
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var in usecase.ChangePasswordInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	u, ok := s.userFromRequest(r)
+	if !ok || u == nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if in.ID != u.ID {
+		writeErr(w, http.StatusForbidden, "can only change your own password")
 		return
 	}
 	if err := s.apps.ChangePassword(in); err != nil {
@@ -111,10 +122,8 @@ func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := s.userFromRequest(r)
-	if p.Operator == nil {
-		name := operatorName(u)
-		p.Operator = &name
-	}
+	name := operatorName(u)
+	p.Operator = &name
 	out, err := s.apps.CreateProduct(&p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

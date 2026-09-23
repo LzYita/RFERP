@@ -25,6 +25,10 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+
+	// bootstrapMu 串行化"首次建管理员"的计数+创建，
+	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
+	bootstrapMu sync.Mutex
 }
 
 type session struct {
@@ -59,7 +63,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/users", s.auth(s.handleUpdateUser, "Identity.UpdateUser"))
 	mux.HandleFunc("DELETE /api/users", s.auth(s.handleDeleteUser, "Identity.DeleteUser"))
 	mux.HandleFunc("POST /api/users/reset-password", s.auth(s.handleResetPassword, "Identity.ResetPassword"))
-	mux.HandleFunc("POST /api/users/change-password", s.auth(s.handleChangePassword, "Identity.ChangePassword"))
+	// 改自己的密码：登录即可，处理器内部再校验只能改自己。
+	mux.HandleFunc("POST /api/users/change-password", s.auth(s.handleChangePassword, ""))
 	mux.HandleFunc("GET /api/products", s.auth(s.handleListProducts, "Catalog.ListProducts"))
 	mux.HandleFunc("GET /api/products/get", s.auth(s.handleGetProduct, "Catalog.GetProduct"))
 	mux.HandleFunc("POST /api/products", s.auth(s.handleCreateProduct, "Catalog.CreateProduct"))
@@ -153,6 +158,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
+	s.bootstrapMu.Lock()
+	defer s.bootstrapMu.Unlock()
+
 	n, err := s.apps.UserCount()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

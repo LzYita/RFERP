@@ -37,10 +37,8 @@ func (s *Server) handleUpdateProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := s.userFromRequest(r)
-	if p.Operator == nil {
-		name := operatorName(u)
-		p.Operator = &name
-	}
+	name := operatorName(u)
+	p.Operator = &name
 	out, err := s.apps.UpdateProduct(&p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -87,10 +85,8 @@ func (s *Server) handleCreatePart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := s.userFromRequest(r)
-	if p.Operator == nil {
-		name := operatorName(u)
-		p.Operator = &name
-	}
+	name := operatorName(u)
+	p.Operator = &name
 	out, err := s.apps.CreatePart(&p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -147,10 +143,8 @@ func (s *Server) handleAddBOM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := s.userFromRequest(r)
-	if b.Operator == nil {
-		name := operatorName(u)
-		b.Operator = &name
-	}
+	name := operatorName(u)
+	b.Operator = &name
 	out, err := s.apps.AddBOMItem(&b)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -193,10 +187,8 @@ func (s *Server) handleCreateBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, _ := s.userFromRequest(r)
-	if b.Operator == nil {
-		name := operatorName(u)
-		b.Operator = &name
-	}
+	name := operatorName(u)
+	b.Operator = &name
 	out, err := s.apps.CreateBatch(&b)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

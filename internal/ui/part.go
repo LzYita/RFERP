@@ -12,11 +12,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type PartScreen struct {
-	svc        *service.Service
+	svc        usecase.Applications
 	window     fyne.Window
 	data       []model.Part
 	table      *widget.Table
@@ -26,7 +26,7 @@ type PartScreen struct {
 	filterSel  *widget.Select
 }
 
-func NewPartScreen(svc *service.Service, w fyne.Window) *PartScreen {
+func NewPartScreen(svc usecase.Applications, w fyne.Window) *PartScreen {
 	return &PartScreen{svc: svc, window: w}
 }
 
@@ -437,7 +437,7 @@ func (s *PartScreen) stockIn() {
 			dialog.ShowInformation("提示", "数量必须大于0", s.window)
 			return
 		}
-		if err := s.svc.StockIn(p.ID, v, auth.OperatorName()); err != nil {
+		if err := s.svc.StockIn(usecase.StockInInput{PartID: p.ID, Qty: v, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "入库失败", err)
 			return
 		}
@@ -468,7 +468,7 @@ func (s *PartScreen) adjustStock() {
 			dialog.ShowInformation("提示", "数量不能为负", s.window)
 			return
 		}
-		if err := s.svc.AdjustStock(p.ID, v, auth.OperatorName()); err != nil {
+		if err := s.svc.AdjustStock(usecase.AdjustStockInput{PartID: p.ID, NewQty: v, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "盘点失败", err)
 			return
 		}

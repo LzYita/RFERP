@@ -1,0 +1,51 @@
+# RFERP 多人形态最小栈：MySQL 8 + HTTP API（D-013：服务端锁定 MySQL）
+# 仅用于本机/服务器联调与演示。
+#
+# 凭据不写死在仓库里：先复制 deploy/docker/.env.example 为 deploy/docker/.env 并填入口令。
+#   cd deploy/docker && cp .env.example .env && docker compose up -d --build
+# 未设置 MYSQL_ROOT_PASSWORD / MYSQL_PASSWORD 时 compose 会直接报错，
+# 避免把示例弱口令原样带上生产。
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rferp-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in deploy/docker/.env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rferp}
+      MYSQL_USER: ${MYSQL_USER:-rferp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      # 宿主机 3306 常被本机 MySQL 占用；联调用 33306，业务访问可不暴露
+      - "33306:3306"
+    volumes:
+      - rferp-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: rferp-api
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # go-sql-driver DSN；容器内主机名是 mysql
+      DB_DSN: "${MYSQL_USER:-rferp}:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in deploy/docker/.env}@tcp(mysql:3306)/${MYSQL_DATABASE:-rferp}?parseTime=true&charset=utf8mb4"
+      SRV_ADDR: ":8080"
+      MES_DATA_DIR: /data
+    ports:
+      - "8080:8080"
+    volumes:
+      - rferp-api-data:/data
+
+volumes:
+  rferp-mysql-data:
+  rferp-api-data:

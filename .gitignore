@@ -3,6 +3,9 @@ config.json
 config.json.bak
 config.json.tmp
 
+# Docker 本地凭据（从 .env.example 复制）
+deploy/docker/.env
+
 # 构建产物
 *.exe
 !rcedit-x64.exe

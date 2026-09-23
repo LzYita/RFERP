@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
+	"app/internal/api"
 	"app/internal/config"
 	"app/internal/logging"
 	"app/internal/migrate"
@@ -24,6 +25,7 @@ import (
 	"app/internal/singleinstance"
 	"app/internal/ui"
 	"app/internal/update"
+	"app/internal/usecase"
 	"app/internal/winappid"
 	"app/internal/winmsg"
 )
@@ -110,6 +112,52 @@ func main() {
 	a.Settings().SetTheme(ui.NewTheme())
 	a.SetIcon(ui.AppLogo())
 
+	// D3：首启选定运行模式并持久化；之后不再询问。
+	// v1.1 及更早只有「本机 + MySQL」：已有配置视为 Local，避免升级后误弹选型。
+	if !cfg.ModeChosen() {
+		if cfg.Loaded() {
+			if err := cfg.SetRunMode(config.ModeLocal, ""); err != nil {
+				log.Printf("auto local mode: %v", err)
+			}
+			enterAfterMode(a, cfg, config.ModeLocal)
+			a.Run()
+			return
+		}
+		ui.ShowRunModePicker(a, cfg, func(mode string) {
+			enterAfterMode(a, config.Load(), mode)
+		})
+		a.Run()
+		return
+	}
+	enterAfterMode(a, cfg, cfg.Mode)
+	a.Run()
+}
+
+func enterAfterMode(a fyne.App, cfg *config.Config, mode string) {
+	if mode == config.ModeClient {
+		enterClientMode(a, cfg)
+		return
+	}
+	enterLocalMode(a, cfg)
+}
+
+func enterClientMode(a fyne.App, cfg *config.Config) {
+	log.Printf("run mode=client server=%s", cfg.ServerURL)
+	cli := api.NewClient(cfg.ServerURL)
+	var apps usecase.Applications = cli
+	if u, ok := ui.TryAutoLogin(apps); ok {
+		log.Printf("auto login: %s", u.Username)
+		launchMain(a, cfg, apps)
+		return
+	}
+	ui.ShowLogin(a, apps, func(u *model.User) {
+		log.Printf("login: %s (%s)", u.Username, u.Role)
+		launchMain(a, cfg, apps)
+	})
+}
+
+func enterLocalMode(a fyne.App, cfg *config.Config) {
+	log.Printf("run mode=local")
 	if cfg.Loaded() {
 		ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
 	}
@@ -119,18 +167,14 @@ func main() {
 		log.Printf("database connection failed: %v", err)
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
-			enterApp(a, newCfg, newDB)
+			enterLocalDB(a, newCfg, newDB)
 		})
-		a.Run()
 		return
 	}
-
-	enterApp(a, cfg, db)
-	a.Run()
+	enterLocalDB(a, cfg, db)
 }
 
-// enterApp 运行数据库迁移，然后进入登录流程（或自动登录）。
-func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
+func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
@@ -147,27 +191,33 @@ func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
 	}
 
-	svc := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+	apps := assembleApps(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
 
-	if u, ok := ui.TryAutoLogin(svc); ok {
+	if u, ok := ui.TryAutoLogin(apps); ok {
 		log.Printf("auto login: %s", u.Username)
-		launchMain(a, cfg, svc)
+		launchMain(a, cfg, apps)
 		return
 	}
-	ui.ShowLogin(a, svc, func(u *model.User) {
+	ui.ShowLogin(a, apps, func(u *model.User) {
 		log.Printf("login: %s (%s)", u.Username, u.Role)
-		launchMain(a, cfg, svc)
+		launchMain(a, cfg, apps)
 	})
 }
 
-func launchMain(a fyne.App, cfg *config.Config, svc *service.Service) {
+// assembleApps 是应用组装点（A4）：UI 只见 usecase.Applications，
+// 具体 Service / Repository / 备份适配在此接线（D-013）。
+func assembleApps(repo *repository.Repository, dsn, backupTool string, cfg *config.Config) usecase.Applications {
+	return service.New(repo, dsn, backupTool, cfg)
+}
+
+func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {
 	w := a.NewWindow("RFERP-仁风仓库管理系统 v" + version)
 	w.SetIcon(ui.AppLogo())
 	w.Resize(fyne.NewSize(1360, 860))
 	w.CenterOnScreen()
 	w.SetPadded(true)
 
-	appUI := ui.NewApp(svc, w, func() {
+	appUI := ui.NewApp(svc, cfg, w, func() {
 		w.Close()
 		ui.ShowLogin(a, svc, func(u *model.User) {
 			log.Printf("login: %s (%s)", u.Username, u.Role)

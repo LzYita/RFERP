@@ -15,24 +15,39 @@ import (
 
 	"app/internal/auth"
 	"app/internal/config"
-	"app/internal/dbbackup"
 	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/repository"
+	"app/internal/usecase"
 )
 
+// Service 实现 usecase.Applications。业务规则在此；库方言不在此。
 type Service struct {
-	repo          *repository.Repository
-	dsn           string
-	mysqldumpPath string
-	cfg           *config.Config
+	repo      *repository.Repository
+	snapshots usecase.SnapshotPort
+	dsn       string
+	cfg       *config.Config
 }
 
-func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *config.Config) *Service {
-	if mysqldumpPath == "" {
-		mysqldumpPath = "mysqldump"
+// 断言：满足全部用例接口，防止漂移。
+var (
+	_ usecase.Identity   = (*Service)(nil)
+	_ usecase.Catalog    = (*Service)(nil)
+	_ usecase.Inventory  = (*Service)(nil)
+	_ usecase.Production = (*Service)(nil)
+	_ usecase.Trace      = (*Service)(nil)
+	_ usecase.Audit      = (*Service)(nil)
+	_ usecase.Stats      = (*Service)(nil)
+	_ usecase.Backup     = (*Service)(nil)
+)
+
+func New(repo *repository.Repository, dsn string, backupTool string, cfg *config.Config) *Service {
+	return &Service{
+		repo:      repo,
+		snapshots: newMySQLSnapshotPort(dsn, backupTool),
+		dsn:       dsn,
+		cfg:       cfg,
 	}
-	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
 }
 
 const (
@@ -345,51 +360,51 @@ func (s *Service) DeletePart(id int64, operator string) error {
 	})
 }
 
-func (s *Service) StockIn(partID int64, qty float64, operator string) error {
-	if err := validatePositiveQuantity("入库数量", qty); err != nil {
+func (s *Service) StockIn(in usecase.StockInInput) error {
+	if err := validatePositiveQuantity("入库数量", in.Qty); err != nil {
 		return err
 	}
 	return s.repo.WithTx(func(tx *repository.Tx) error {
-		old, err := tx.GetPartForUpdate(partID)
+		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
 		}
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		newStock := quantizeQuantity(old.StockQty + qty)
-		if err := tx.UpdatePartStock(partID, newStock); err != nil {
+		newStock := quantizeQuantity(old.StockQty + in.Qty)
+		if err := tx.UpdatePartStock(in.PartID, newStock); err != nil {
 			return fmt.Errorf("update stock: %w", err)
 		}
-		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
+		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_IN", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
-			"in_qty":    quantizeQuantity(qty),
+			"in_qty":    quantizeQuantity(in.Qty),
 			"new_stock": newStock,
-		}, operator})
+		}, in.Operator})
 	})
 }
 
-func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
-	if err := validateNonNegativeQuantity("调整后库存", newQty); err != nil {
+func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
+	if err := validateNonNegativeQuantity("调整后库存", in.NewQty); err != nil {
 		return err
 	}
-	newQty = quantizeQuantity(newQty)
+	newQty := quantizeQuantity(in.NewQty)
 	return s.repo.WithTx(func(tx *repository.Tx) error {
-		old, err := tx.GetPartForUpdate(partID)
+		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
 		}
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		if err := tx.UpdatePartStock(partID, newQty); err != nil {
+		if err := tx.UpdatePartStock(in.PartID, newQty); err != nil {
 			return fmt.Errorf("adjust stock: %w", err)
 		}
-		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
+		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_ADJUST", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
 			"new_stock": newQty,
 			"diff":      quantizeQuantity(newQty - old.StockQty),
-		}, operator})
+		}, in.Operator})
 	})
 }
 
@@ -483,7 +498,8 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 	return s.repo.ListBatches()
 }
 
-func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error {
+func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
+	id, status, operator := in.ID, in.Status, in.Operator
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
@@ -604,7 +620,8 @@ func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error
 	})
 }
 
-func (s *Service) RevokeBatch(id int64, operator string) error {
+func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
+	id, operator := in.ID, in.Operator
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
@@ -682,51 +699,13 @@ func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
 // ---- 统计 ----
 
 // StockDailyPoint 某天的进出库汇总
-type StockDailyPoint struct {
-	Date string  // MM-DD
-	In   float64 // 入库量
-	Out  float64 // 出库量
-}
-
-// PartStockStat 单个零件近期的进出库统计
-type PartStockStat struct {
-	Code string
-	Name string
-	In   float64
-	Out  float64
-}
-
-// SupplierStockStat 供应商入库统计（入库主要针对零件）
-type SupplierStockStat struct {
-	Name string
-	In   float64
-}
-
-// CustomerStockStat 客户出库统计（出库关联客户，产品按批次）
-type CustomerStockStat struct {
-	Name string
-	Out  float64
-}
-
-// ProductStockStat 产品出库统计
-type ProductStockStat struct {
-	Code string
-	Name string
-	Out  float64
-}
-
-// StockStats 近期进出库统计结果
-type StockStats struct {
-	Days            []StockDailyPoint
-	TopIn           []PartStockStat     // 零件入库量前10
-	TopOut          []PartStockStat     // 零件出库量前10
-	TopSuppliers    []SupplierStockStat // 供应商入库前10
-	TopCustomers    []CustomerStockStat // 客户出库前10
-	TopProducts     []ProductStockStat  // 产品出库前10
-	TotalIn         float64
-	TotalOut        float64
-	ProductOutTotal float64
-}
+// 统计类型与用例层共享（D-013 可移植性：传输/用例类型不锁在业务包）。
+type StockDailyPoint = usecase.StockDailyPoint
+type PartStockStat = usecase.PartStockStat
+type SupplierStockStat = usecase.SupplierStockStat
+type CustomerStockStat = usecase.CustomerStockStat
+type ProductStockStat = usecase.ProductStockStat
+type StockStats = usecase.StockStats
 
 // GetStockStats 统计近 days 天的进出库规律
 func (s *Service) GetStockStats(days int) (*StockStats, error) {
@@ -1065,55 +1044,6 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 // ---- 备份与导出 ----
 
-type mysqlSessionChecks struct {
-	ForeignKeyChecks int `db:"foreign_key_checks"`
-	UniqueChecks     int `db:"unique_checks"`
-}
-
-func withDisabledChecks(conn *repository.Conn, operation func(*repository.Tx) error) (retErr error) {
-	var previous mysqlSessionChecks
-	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
-		return fmt.Errorf("read MySQL session checks: %w", err)
-	}
-
-	defer func() {
-		var restoreErrs []error
-		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
-			restoreErrs = append(restoreErrs, fmt.Errorf("restore FOREIGN_KEY_CHECKS: %w", err))
-		}
-		if _, err := conn.Exec(fmt.Sprintf("SET UNIQUE_CHECKS = %d", previous.UniqueChecks)); err != nil {
-			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
-		}
-		if len(restoreErrs) > 0 {
-			// Session checks may still be disabled. Never pool this connection.
-			conn.MarkUnusable()
-			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
-		}
-	}()
-
-	if _, err := conn.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
-		return fmt.Errorf("disable FOREIGN_KEY_CHECKS: %w", err)
-	}
-	if _, err := conn.Exec("SET UNIQUE_CHECKS = 0"); err != nil {
-		return fmt.Errorf("disable UNIQUE_CHECKS: %w", err)
-	}
-
-	tx, err := conn.Begin()
-	if err != nil {
-		return fmt.Errorf("begin database operation: %w", err)
-	}
-	if err := operation(tx); err != nil {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil {
-			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
-		}
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit database operation: %w", err)
-	}
-	return nil
-}
-
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -1123,48 +1053,46 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
 	lines := strings.Split(content, "\n")
 
-	err = s.repo.WithConn(func(conn *repository.Conn) error {
-		return withDisabledChecks(conn, func(tx *repository.Tx) error {
-			var buf strings.Builder
-			inInsert := false
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-					continue
-				}
-				if !inInsert {
-					if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
-						buf.Reset()
-						buf.WriteString(line)
-						if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-							if _, err := tx.Exec(buf.String()); err != nil {
-								failed++
-								return fmt.Errorf("restore INSERT failed: %w", err)
-							}
-							success++
-						} else {
-							inInsert = true
+	err = s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+		var buf strings.Builder
+		inInsert := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			if !inInsert {
+				if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+					buf.Reset()
+					buf.WriteString(line)
+					if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+						if _, err := tx.Exec(buf.String()); err != nil {
+							failed++
+							return fmt.Errorf("restore INSERT failed: %w", err)
 						}
+						success++
+					} else {
+						inInsert = true
 					}
-					continue
 				}
-				buf.WriteString("\n")
-				buf.WriteString(line)
-				if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-					if _, err := tx.Exec(buf.String()); err != nil {
-						failed++
-						return fmt.Errorf("restore INSERT failed: %w", err)
-					}
-					success++
-					inInsert = false
+				continue
+			}
+			buf.WriteString("\n")
+			buf.WriteString(line)
+			if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+				if _, err := tx.Exec(buf.String()); err != nil {
+					failed++
+					return fmt.Errorf("restore INSERT failed: %w", err)
 				}
+				success++
+				inInsert = false
 			}
-			if inInsert {
-				failed++
-				return fmt.Errorf("restore SQL contains unterminated INSERT")
-			}
-			return nil
-		})
+		}
+		if inInsert {
+			failed++
+			return fmt.Errorf("restore SQL contains unterminated INSERT")
+		}
+		return nil
 	})
 	if err != nil {
 		// The restore is one transaction: statement successes are rolled back
@@ -1175,7 +1103,7 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 }
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
-	return dbbackup.Backup(s.dsn, s.mysqldumpPath, saveDir)
+	return s.snapshots.Snapshot(saveDir)
 }
 
 func statusText(v int) string {
@@ -1753,15 +1681,13 @@ func (s *Service) ClearDatabase() error {
 		"DELETE FROM products",
 		"DELETE FROM audit_log",
 	}
-	return s.repo.WithConn(func(conn *repository.Conn) error {
-		return withDisabledChecks(conn, func(tx *repository.Tx) error {
-			for _, stmt := range stmts {
-				if _, err := tx.Exec(stmt); err != nil {
-					return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
-				}
+	return s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
 			}
-			return nil
-		})
+		}
+		return nil
 	})
 }
 
@@ -1802,28 +1728,34 @@ func (s *Service) CreateInitialAdmin(username, password, displayName string) (*m
 	if n > 0 {
 		return nil, fmt.Errorf("已存在用户，无法创建初始管理员")
 	}
-	return s.CreateUser(username, password, displayName, string(auth.RoleAdmin))
+	return s.CreateUser(usecase.CreateUserInput{
+		Username:    username,
+		Password:    password,
+		DisplayName: displayName,
+		Role:        string(auth.RoleAdmin),
+	})
 }
 
-func (s *Service) CreateUser(username, password, displayName, role string) (*model.User, error) {
-	username = strings.TrimSpace(username)
+func (s *Service) CreateUser(in usecase.CreateUserInput) (*model.User, error) {
+	username := strings.TrimSpace(in.Username)
 	if username == "" {
 		return nil, fmt.Errorf("用户名不能为空")
 	}
-	if err := auth.ValidatePassword(password); err != nil {
+	if err := auth.ValidatePassword(in.Password); err != nil {
 		return nil, err
 	}
+	role := in.Role
 	if role == "" {
 		role = string(auth.RoleViewer)
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return nil, err
 	}
 	u := &model.User{
 		Username:     username,
 		PasswordHash: hash,
-		DisplayName:  strPtrOrNil(displayName),
+		DisplayName:  strPtrOrNil(in.DisplayName),
 		Role:         role,
 		Status:       1,
 	}
@@ -1839,15 +1771,15 @@ func (s *Service) ListUsers() ([]model.User, error) {
 	return s.repo.ListUsers()
 }
 
-func (s *Service) UpdateUser(id int64, displayName, role string, status int) error {
-	u, err := s.repo.GetUserByID(id)
+func (s *Service) UpdateUser(in usecase.UpdateUserInput) error {
+	u, err := s.repo.GetUserByID(in.ID)
 	if err != nil {
 		return err
 	}
 	if u == nil {
 		return fmt.Errorf("用户不存在")
 	}
-	if u.Role == string(auth.RoleAdmin) && u.Status == 1 && (role != string(auth.RoleAdmin) || status != 1) {
+	if u.Role == string(auth.RoleAdmin) && u.Status == 1 && (in.Role != string(auth.RoleAdmin) || in.Status != 1) {
 		n, err := s.repo.CountActiveAdmins()
 		if err != nil {
 			return err
@@ -1856,35 +1788,35 @@ func (s *Service) UpdateUser(id int64, displayName, role string, status int) err
 			return fmt.Errorf("至少需保留一个启用状态的管理员")
 		}
 	}
-	u.DisplayName = strPtrOrNil(displayName)
-	u.Role = role
-	u.Status = status
+	u.DisplayName = strPtrOrNil(in.DisplayName)
+	u.Role = in.Role
+	u.Status = in.Status
 	return s.repo.UpdateUser(u)
 }
 
-func (s *Service) ResetPassword(id int64, password string) error {
-	if err := auth.ValidatePassword(password); err != nil {
+func (s *Service) ResetPassword(in usecase.ResetPasswordInput) error {
+	if err := auth.ValidatePassword(in.Password); err != nil {
 		return err
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return err
 	}
-	return s.repo.UpdateUserPassword(id, hash)
+	return s.repo.UpdateUserPassword(in.ID, hash)
 }
 
-func (s *Service) ChangePassword(id int64, oldPw, newPw string) error {
-	u, err := s.repo.GetUserByID(id)
+func (s *Service) ChangePassword(in usecase.ChangePasswordInput) error {
+	u, err := s.repo.GetUserByID(in.ID)
 	if err != nil {
 		return err
 	}
 	if u == nil {
 		return fmt.Errorf("用户不存在")
 	}
-	if !auth.VerifyPassword(oldPw, u.PasswordHash) {
+	if !auth.VerifyPassword(in.OldPass, u.PasswordHash) {
 		return fmt.Errorf("原密码错误")
 	}
-	return s.ResetPassword(id, newPw)
+	return s.ResetPassword(usecase.ResetPasswordInput{ID: in.ID, Password: in.NewPass})
 }
 
 func (s *Service) DeleteUser(id int64) error {

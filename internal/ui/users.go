@@ -12,11 +12,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type UsersScreen struct {
-	svc      *service.Service
+	svc      usecase.Applications
 	window   fyne.Window
 	data     []model.User
 	table    *widget.Table
@@ -24,7 +24,7 @@ type UsersScreen struct {
 	selected int
 }
 
-func NewUsersScreen(svc *service.Service, w fyne.Window) *UsersScreen {
+func NewUsersScreen(svc usecase.Applications, w fyne.Window) *UsersScreen {
 	return &UsersScreen{svc: svc, window: w, selected: -1}
 }
 
@@ -182,7 +182,12 @@ func (s *UsersScreen) add() {
 			dialog.ShowInformation("提示", "两次输入的密码不一致", s.window)
 			return
 		}
-		if _, err := s.svc.CreateUser(username.Text, password.Text, display.Text, roleKeyFromLabel(role.Selected)); err != nil {
+		if _, err := s.svc.CreateUser(usecase.CreateUserInput{
+			Username:    username.Text,
+			Password:    password.Text,
+			DisplayName: display.Text,
+			Role:        roleKeyFromLabel(role.Selected),
+		}); err != nil {
 			showError(s.window, "新增失败", err)
 			return
 		}
@@ -226,7 +231,12 @@ func (s *UsersScreen) edit() {
 			dialog.ShowInformation("提示", "不能停用当前登录账号", s.window)
 			return
 		}
-		if err := s.svc.UpdateUser(u.ID, display.Text, roleKeyFromLabel(role.Selected), st); err != nil {
+		if err := s.svc.UpdateUser(usecase.UpdateUserInput{
+			ID:          u.ID,
+			DisplayName: display.Text,
+			Role:        roleKeyFromLabel(role.Selected),
+			Status:      st,
+		}); err != nil {
 			showError(s.window, "保存失败", err)
 			return
 		}
@@ -255,7 +265,7 @@ func (s *UsersScreen) resetPassword() {
 			dialog.ShowInformation("提示", "两次输入的密码不一致", s.window)
 			return
 		}
-		if err := s.svc.ResetPassword(u.ID, password.Text); err != nil {
+		if err := s.svc.ResetPassword(usecase.ResetPasswordInput{ID: u.ID, Password: password.Text}); err != nil {
 			showError(s.window, "重置失败", err)
 			return
 		}

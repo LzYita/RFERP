@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"app/internal/model"
+	"app/internal/usecase"
 )
 
 func TestValidatePlanQtyRequiresPositiveInteger(t *testing.T) {
@@ -75,10 +76,10 @@ func TestServiceRejectsInvalidQuantitiesBeforeDatabaseAccess(t *testing.T) {
 	if _, err := svc.AddBOMItem(&model.BOMItem{Quantity: -1}); err == nil {
 		t.Fatal("AddBOMItem accepted negative quantity")
 	}
-	if err := svc.StockIn(1, 0, "operator"); err == nil {
+	if err := svc.StockIn(usecase.StockInInput{PartID: 1, Qty: 0, Operator: "operator"}); err == nil {
 		t.Fatal("StockIn accepted zero quantity")
 	}
-	if err := svc.AdjustStock(1, -1, "operator"); err == nil {
+	if err := svc.AdjustStock(usecase.AdjustStockInput{PartID: 1, NewQty: -1, Operator: "operator"}); err == nil {
 		t.Fatal("AdjustStock accepted negative quantity")
 	}
 	if _, err := svc.CreatePart(&model.Part{StockQty: -1}); err == nil {

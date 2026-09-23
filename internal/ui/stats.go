@@ -12,17 +12,17 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type StatsScreen struct {
-	svc     *service.Service
+	svc     usecase.Applications
 	window  fyne.Window
 	daysSel *widget.Select
 	body    *fyne.Container
 }
 
-func NewStatsScreen(svc *service.Service, w fyne.Window) *StatsScreen {
+func NewStatsScreen(svc usecase.Applications, w fyne.Window) *StatsScreen {
 	return &StatsScreen{svc: svc, window: w}
 }
 
@@ -116,7 +116,7 @@ type rankRow struct {
 	value float64
 }
 
-func rankRowsFromParts(items []service.PartStockStat) []rankRow {
+func rankRowsFromParts(items []usecase.PartStockStat) []rankRow {
 	var out []rankRow
 	for _, it := range items {
 		name := it.Name
@@ -128,7 +128,7 @@ func rankRowsFromParts(items []service.PartStockStat) []rankRow {
 	return out
 }
 
-func rankRowsFromSuppliers(items []service.SupplierStockStat) []rankRow {
+func rankRowsFromSuppliers(items []usecase.SupplierStockStat) []rankRow {
 	var out []rankRow
 	for _, it := range items {
 		out = append(out, rankRow{name: it.Name, value: it.In})
@@ -136,7 +136,7 @@ func rankRowsFromSuppliers(items []service.SupplierStockStat) []rankRow {
 	return out
 }
 
-func rankRowsFromCustomers(items []service.CustomerStockStat) []rankRow {
+func rankRowsFromCustomers(items []usecase.CustomerStockStat) []rankRow {
 	var out []rankRow
 	for _, it := range items {
 		out = append(out, rankRow{name: it.Name, value: it.Out})
@@ -144,7 +144,7 @@ func rankRowsFromCustomers(items []service.CustomerStockStat) []rankRow {
 	return out
 }
 
-func rankRowsFromProducts(items []service.ProductStockStat) []rankRow {
+func rankRowsFromProducts(items []usecase.ProductStockStat) []rankRow {
 	var out []rankRow
 	for _, it := range items {
 		name := it.Name
@@ -158,7 +158,7 @@ func rankRowsFromProducts(items []service.ProductStockStat) []rankRow {
 
 // ---- 折线图 ----
 
-func (s *StatsScreen) buildTrend(days []service.StockDailyPoint) fyne.CanvasObject {
+func (s *StatsScreen) buildTrend(days []usecase.StockDailyPoint) fyne.CanvasObject {
 	width := float32(980)
 	height := float32(300)
 	padL := float32(56)
@@ -249,7 +249,7 @@ func (s *StatsScreen) buildTrend(days []service.StockDailyPoint) fyne.CanvasObje
 	return container.NewBorder(header, nil, nil, nil, body)
 }
 
-func plotSeries(days []service.StockDailyPoint, isIn bool, padL, plotW, padT, plotH, maxV float32, c color.Color) []fyne.CanvasObject {
+func plotSeries(days []usecase.StockDailyPoint, isIn bool, padL, plotW, padT, plotH, maxV float32, c color.Color) []fyne.CanvasObject {
 	var objs []fyne.CanvasObject
 	for i := 1; i < len(days); i++ {
 		prev, cur := days[i-1], days[i]

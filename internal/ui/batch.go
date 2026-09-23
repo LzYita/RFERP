@@ -14,11 +14,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type BatchScreen struct {
-	svc        *service.Service
+	svc        usecase.Applications
 	window     fyne.Window
 	data       []model.ProductBatch
 	table      *widget.Table
@@ -28,7 +28,7 @@ type BatchScreen struct {
 	selected   int
 }
 
-func NewBatchScreen(svc *service.Service, w fyne.Window) *BatchScreen {
+func NewBatchScreen(svc usecase.Applications, w fyne.Window) *BatchScreen {
 	return &BatchScreen{svc: svc, window: w}
 }
 
@@ -193,7 +193,7 @@ func (s *BatchScreen) setStatus(status int) {
 		if !ok {
 			return
 		}
-		if err := s.svc.UpdateBatchStatus(b.ID, status, auth.OperatorName()); err != nil {
+		if err := s.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: b.ID, Status: status, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "操作失败", err)
 			return
 		}
@@ -519,7 +519,7 @@ func (s *BatchScreen) revokeBatch() {
 		if !ok {
 			return
 		}
-		if err := s.svc.RevokeBatch(b.ID, auth.OperatorName()); err != nil {
+		if err := s.svc.RevokeBatch(usecase.RevokeBatchInput{ID: b.ID, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "撤销失败", err)
 			return
 		}

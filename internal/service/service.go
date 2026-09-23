@@ -360,51 +360,51 @@ func (s *Service) DeletePart(id int64, operator string) error {
 	})
 }
 
-func (s *Service) StockIn(partID int64, qty float64, operator string) error {
-	if err := validatePositiveQuantity("入库数量", qty); err != nil {
+func (s *Service) StockIn(in usecase.StockInInput) error {
+	if err := validatePositiveQuantity("入库数量", in.Qty); err != nil {
 		return err
 	}
 	return s.repo.WithTx(func(tx *repository.Tx) error {
-		old, err := tx.GetPartForUpdate(partID)
+		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
 		}
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		newStock := quantizeQuantity(old.StockQty + qty)
-		if err := tx.UpdatePartStock(partID, newStock); err != nil {
+		newStock := quantizeQuantity(old.StockQty + in.Qty)
+		if err := tx.UpdatePartStock(in.PartID, newStock); err != nil {
 			return fmt.Errorf("update stock: %w", err)
 		}
-		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_IN", old, map[string]any{
+		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_IN", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
-			"in_qty":    quantizeQuantity(qty),
+			"in_qty":    quantizeQuantity(in.Qty),
 			"new_stock": newStock,
-		}, operator})
+		}, in.Operator})
 	})
 }
 
-func (s *Service) AdjustStock(partID int64, newQty float64, operator string) error {
-	if err := validateNonNegativeQuantity("调整后库存", newQty); err != nil {
+func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
+	if err := validateNonNegativeQuantity("调整后库存", in.NewQty); err != nil {
 		return err
 	}
-	newQty = quantizeQuantity(newQty)
+	newQty := quantizeQuantity(in.NewQty)
 	return s.repo.WithTx(func(tx *repository.Tx) error {
-		old, err := tx.GetPartForUpdate(partID)
+		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
 		}
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		if err := tx.UpdatePartStock(partID, newQty); err != nil {
+		if err := tx.UpdatePartStock(in.PartID, newQty); err != nil {
 			return fmt.Errorf("adjust stock: %w", err)
 		}
-		return s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_ADJUST", old, map[string]any{
+		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_ADJUST", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
 			"new_stock": newQty,
 			"diff":      quantizeQuantity(newQty - old.StockQty),
-		}, operator})
+		}, in.Operator})
 	})
 }
 
@@ -498,7 +498,8 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 	return s.repo.ListBatches()
 }
 
-func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error {
+func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
+	id, status, operator := in.ID, in.Status, in.Operator
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
@@ -619,7 +620,8 @@ func (s *Service) UpdateBatchStatus(id int64, status int, operator string) error
 	})
 }
 
-func (s *Service) RevokeBatch(id int64, operator string) error {
+func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
+	id, operator := in.ID, in.Operator
 	return s.repo.WithTx(func(tx *repository.Tx) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
@@ -1726,28 +1728,34 @@ func (s *Service) CreateInitialAdmin(username, password, displayName string) (*m
 	if n > 0 {
 		return nil, fmt.Errorf("已存在用户，无法创建初始管理员")
 	}
-	return s.CreateUser(username, password, displayName, string(auth.RoleAdmin))
+	return s.CreateUser(usecase.CreateUserInput{
+		Username:    username,
+		Password:    password,
+		DisplayName: displayName,
+		Role:        string(auth.RoleAdmin),
+	})
 }
 
-func (s *Service) CreateUser(username, password, displayName, role string) (*model.User, error) {
-	username = strings.TrimSpace(username)
+func (s *Service) CreateUser(in usecase.CreateUserInput) (*model.User, error) {
+	username := strings.TrimSpace(in.Username)
 	if username == "" {
 		return nil, fmt.Errorf("用户名不能为空")
 	}
-	if err := auth.ValidatePassword(password); err != nil {
+	if err := auth.ValidatePassword(in.Password); err != nil {
 		return nil, err
 	}
+	role := in.Role
 	if role == "" {
 		role = string(auth.RoleViewer)
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return nil, err
 	}
 	u := &model.User{
 		Username:     username,
 		PasswordHash: hash,
-		DisplayName:  strPtrOrNil(displayName),
+		DisplayName:  strPtrOrNil(in.DisplayName),
 		Role:         role,
 		Status:       1,
 	}
@@ -1763,15 +1771,15 @@ func (s *Service) ListUsers() ([]model.User, error) {
 	return s.repo.ListUsers()
 }
 
-func (s *Service) UpdateUser(id int64, displayName, role string, status int) error {
-	u, err := s.repo.GetUserByID(id)
+func (s *Service) UpdateUser(in usecase.UpdateUserInput) error {
+	u, err := s.repo.GetUserByID(in.ID)
 	if err != nil {
 		return err
 	}
 	if u == nil {
 		return fmt.Errorf("用户不存在")
 	}
-	if u.Role == string(auth.RoleAdmin) && u.Status == 1 && (role != string(auth.RoleAdmin) || status != 1) {
+	if u.Role == string(auth.RoleAdmin) && u.Status == 1 && (in.Role != string(auth.RoleAdmin) || in.Status != 1) {
 		n, err := s.repo.CountActiveAdmins()
 		if err != nil {
 			return err
@@ -1780,35 +1788,35 @@ func (s *Service) UpdateUser(id int64, displayName, role string, status int) err
 			return fmt.Errorf("至少需保留一个启用状态的管理员")
 		}
 	}
-	u.DisplayName = strPtrOrNil(displayName)
-	u.Role = role
-	u.Status = status
+	u.DisplayName = strPtrOrNil(in.DisplayName)
+	u.Role = in.Role
+	u.Status = in.Status
 	return s.repo.UpdateUser(u)
 }
 
-func (s *Service) ResetPassword(id int64, password string) error {
-	if err := auth.ValidatePassword(password); err != nil {
+func (s *Service) ResetPassword(in usecase.ResetPasswordInput) error {
+	if err := auth.ValidatePassword(in.Password); err != nil {
 		return err
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
 		return err
 	}
-	return s.repo.UpdateUserPassword(id, hash)
+	return s.repo.UpdateUserPassword(in.ID, hash)
 }
 
-func (s *Service) ChangePassword(id int64, oldPw, newPw string) error {
-	u, err := s.repo.GetUserByID(id)
+func (s *Service) ChangePassword(in usecase.ChangePasswordInput) error {
+	u, err := s.repo.GetUserByID(in.ID)
 	if err != nil {
 		return err
 	}
 	if u == nil {
 		return fmt.Errorf("用户不存在")
 	}
-	if !auth.VerifyPassword(oldPw, u.PasswordHash) {
+	if !auth.VerifyPassword(in.OldPass, u.PasswordHash) {
 		return fmt.Errorf("原密码错误")
 	}
-	return s.ResetPassword(id, newPw)
+	return s.ResetPassword(usecase.ResetPasswordInput{ID: in.ID, Password: in.NewPass})
 }
 
 func (s *Service) DeleteUser(id int64) error {

@@ -175,9 +175,13 @@ func (c *Client) Login(username, password string) (*model.User, error) {
 }
 
 func (c *Client) CreateInitialAdmin(username, password, displayName string) (*model.User, error) {
-	return c.CreateUser(usecase.CreateUserInput{
-		Username: username, Password: password, DisplayName: displayName, Role: "admin",
-	})
+	// 空库引导：无会话也可调用；已有用户则服务端 409。
+	var u model.User
+	in := map[string]string{"username": username, "password": password, "display_name": displayName}
+	if err := c.do(http.MethodPost, "/api/bootstrap-admin", in, &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
 }
 
 func (c *Client) CreateUser(in usecase.CreateUserInput) (*model.User, error) {

@@ -42,6 +42,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	// 空库首次部署：仅当无任何用户时可建初始管理员（Docker/主机首启）。
+	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
@@ -139,6 +141,33 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"token": tok,
 		"user":  toAPIUser(u),
 	})
+}
+
+func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
+	n, err := s.apps.UserCount()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n > 0 {
+		writeErr(w, http.StatusConflict, "already initialized")
+		return
+	}
+	var body struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	u, err := s.apps.CreateInitialAdmin(body.Username, body.Password, body.DisplayName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIUser(u))
 }
 
 func (s *Server) issueSession(u *model.User) (string, error) {

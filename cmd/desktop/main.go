@@ -208,7 +208,7 @@ func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {
 	w.CenterOnScreen()
 	w.SetPadded(true)
 
-	appUI := ui.NewApp(svc, w, func() {
+	appUI := ui.NewApp(svc, cfg, w, func() {
 		w.Close()
 		ui.ShowLogin(a, svc, func(u *model.User) {
 			log.Printf("login: %s (%s)", u.Username, u.Role)

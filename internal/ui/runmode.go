@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -9,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"app/internal/config"
+	"app/internal/usecase"
 )
 
 // ShowRunModePicker 首启选择运行模式并持久化（D3）。
@@ -65,3 +67,24 @@ type simpleErr string
 func (e simpleErr) Error() string { return string(e) }
 
 const errNeedServerURL = simpleErr("请填写服务器地址后再继续")
+
+// ShowRunModeSwitch 低频入口：切换运行模式（D3）。不迁移数据，确认后写配置并提示重启。
+func ShowRunModeSwitch(apps usecase.Applications, cfg *config.Config, parent fyne.Window) {
+	if cfg == nil {
+		dialog.ShowInformation("提示", "当前无法修改运行模式", parent)
+		return
+	}
+	dialog.ShowConfirm("切换运行模式",
+		"切换后不会自动迁移数据：\n本机库与服务器库是两套独立数据。\n\n需要退出并重新启动应用。继续？",
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			a := fyne.CurrentApp()
+			ShowRunModePicker(a, cfg, func(mode string) {
+				dialog.ShowInformation("已保存",
+					fmt.Sprintf("运行模式已切换为 %s。\n请退出并重新启动 RFERP。", mode),
+					parent)
+			})
+		}, parent)
+}

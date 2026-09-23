@@ -15,24 +15,39 @@ import (
 
 	"app/internal/auth"
 	"app/internal/config"
-	"app/internal/dbbackup"
 	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/repository"
+	"app/internal/usecase"
 )
 
+// Service 实现 usecase.Applications。业务规则在此；库方言不在此。
 type Service struct {
-	repo          *repository.Repository
-	dsn           string
-	mysqldumpPath string
-	cfg           *config.Config
+	repo      *repository.Repository
+	snapshots usecase.SnapshotPort
+	dsn       string
+	cfg       *config.Config
 }
 
-func New(repo *repository.Repository, dsn string, mysqldumpPath string, cfg *config.Config) *Service {
-	if mysqldumpPath == "" {
-		mysqldumpPath = "mysqldump"
+// 断言：满足全部用例接口，防止漂移。
+var (
+	_ usecase.Identity   = (*Service)(nil)
+	_ usecase.Catalog    = (*Service)(nil)
+	_ usecase.Inventory  = (*Service)(nil)
+	_ usecase.Production = (*Service)(nil)
+	_ usecase.Trace      = (*Service)(nil)
+	_ usecase.Audit      = (*Service)(nil)
+	_ usecase.Stats      = (*Service)(nil)
+	_ usecase.Backup     = (*Service)(nil)
+)
+
+func New(repo *repository.Repository, dsn string, backupTool string, cfg *config.Config) *Service {
+	return &Service{
+		repo:      repo,
+		snapshots: newMySQLSnapshotPort(dsn, backupTool),
+		dsn:       dsn,
+		cfg:       cfg,
 	}
-	return &Service{repo: repo, dsn: dsn, mysqldumpPath: mysqldumpPath, cfg: cfg}
 }
 
 const (
@@ -682,51 +697,13 @@ func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
 // ---- 统计 ----
 
 // StockDailyPoint 某天的进出库汇总
-type StockDailyPoint struct {
-	Date string  // MM-DD
-	In   float64 // 入库量
-	Out  float64 // 出库量
-}
-
-// PartStockStat 单个零件近期的进出库统计
-type PartStockStat struct {
-	Code string
-	Name string
-	In   float64
-	Out  float64
-}
-
-// SupplierStockStat 供应商入库统计（入库主要针对零件）
-type SupplierStockStat struct {
-	Name string
-	In   float64
-}
-
-// CustomerStockStat 客户出库统计（出库关联客户，产品按批次）
-type CustomerStockStat struct {
-	Name string
-	Out  float64
-}
-
-// ProductStockStat 产品出库统计
-type ProductStockStat struct {
-	Code string
-	Name string
-	Out  float64
-}
-
-// StockStats 近期进出库统计结果
-type StockStats struct {
-	Days            []StockDailyPoint
-	TopIn           []PartStockStat     // 零件入库量前10
-	TopOut          []PartStockStat     // 零件出库量前10
-	TopSuppliers    []SupplierStockStat // 供应商入库前10
-	TopCustomers    []CustomerStockStat // 客户出库前10
-	TopProducts     []ProductStockStat  // 产品出库前10
-	TotalIn         float64
-	TotalOut        float64
-	ProductOutTotal float64
-}
+// 统计类型与用例层共享（D-013 可移植性：传输/用例类型不锁在业务包）。
+type StockDailyPoint = usecase.StockDailyPoint
+type PartStockStat = usecase.PartStockStat
+type SupplierStockStat = usecase.SupplierStockStat
+type CustomerStockStat = usecase.CustomerStockStat
+type ProductStockStat = usecase.ProductStockStat
+type StockStats = usecase.StockStats
 
 // GetStockStats 统计近 days 天的进出库规律
 func (s *Service) GetStockStats(days int) (*StockStats, error) {
@@ -1065,55 +1042,6 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 // ---- 备份与导出 ----
 
-type mysqlSessionChecks struct {
-	ForeignKeyChecks int `db:"foreign_key_checks"`
-	UniqueChecks     int `db:"unique_checks"`
-}
-
-func withDisabledChecks(conn *repository.Conn, operation func(*repository.Tx) error) (retErr error) {
-	var previous mysqlSessionChecks
-	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
-		return fmt.Errorf("read MySQL session checks: %w", err)
-	}
-
-	defer func() {
-		var restoreErrs []error
-		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
-			restoreErrs = append(restoreErrs, fmt.Errorf("restore FOREIGN_KEY_CHECKS: %w", err))
-		}
-		if _, err := conn.Exec(fmt.Sprintf("SET UNIQUE_CHECKS = %d", previous.UniqueChecks)); err != nil {
-			restoreErrs = append(restoreErrs, fmt.Errorf("restore UNIQUE_CHECKS: %w", err))
-		}
-		if len(restoreErrs) > 0 {
-			// Session checks may still be disabled. Never pool this connection.
-			conn.MarkUnusable()
-			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
-		}
-	}()
-
-	if _, err := conn.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
-		return fmt.Errorf("disable FOREIGN_KEY_CHECKS: %w", err)
-	}
-	if _, err := conn.Exec("SET UNIQUE_CHECKS = 0"); err != nil {
-		return fmt.Errorf("disable UNIQUE_CHECKS: %w", err)
-	}
-
-	tx, err := conn.Begin()
-	if err != nil {
-		return fmt.Errorf("begin database operation: %w", err)
-	}
-	if err := operation(tx); err != nil {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil {
-			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
-		}
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit database operation: %w", err)
-	}
-	return nil
-}
-
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -1123,48 +1051,46 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
 	lines := strings.Split(content, "\n")
 
-	err = s.repo.WithConn(func(conn *repository.Conn) error {
-		return withDisabledChecks(conn, func(tx *repository.Tx) error {
-			var buf strings.Builder
-			inInsert := false
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-					continue
-				}
-				if !inInsert {
-					if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
-						buf.Reset()
-						buf.WriteString(line)
-						if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-							if _, err := tx.Exec(buf.String()); err != nil {
-								failed++
-								return fmt.Errorf("restore INSERT failed: %w", err)
-							}
-							success++
-						} else {
-							inInsert = true
+	err = s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+		var buf strings.Builder
+		inInsert := false
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			if !inInsert {
+				if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+					buf.Reset()
+					buf.WriteString(line)
+					if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+						if _, err := tx.Exec(buf.String()); err != nil {
+							failed++
+							return fmt.Errorf("restore INSERT failed: %w", err)
 						}
+						success++
+					} else {
+						inInsert = true
 					}
-					continue
 				}
-				buf.WriteString("\n")
-				buf.WriteString(line)
-				if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-					if _, err := tx.Exec(buf.String()); err != nil {
-						failed++
-						return fmt.Errorf("restore INSERT failed: %w", err)
-					}
-					success++
-					inInsert = false
+				continue
+			}
+			buf.WriteString("\n")
+			buf.WriteString(line)
+			if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
+				if _, err := tx.Exec(buf.String()); err != nil {
+					failed++
+					return fmt.Errorf("restore INSERT failed: %w", err)
 				}
+				success++
+				inInsert = false
 			}
-			if inInsert {
-				failed++
-				return fmt.Errorf("restore SQL contains unterminated INSERT")
-			}
-			return nil
-		})
+		}
+		if inInsert {
+			failed++
+			return fmt.Errorf("restore SQL contains unterminated INSERT")
+		}
+		return nil
 	})
 	if err != nil {
 		// The restore is one transaction: statement successes are rolled back
@@ -1175,7 +1101,7 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 }
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
-	return dbbackup.Backup(s.dsn, s.mysqldumpPath, saveDir)
+	return s.snapshots.Snapshot(saveDir)
 }
 
 func statusText(v int) string {
@@ -1753,15 +1679,13 @@ func (s *Service) ClearDatabase() error {
 		"DELETE FROM products",
 		"DELETE FROM audit_log",
 	}
-	return s.repo.WithConn(func(conn *repository.Conn) error {
-		return withDisabledChecks(conn, func(tx *repository.Tx) error {
-			for _, stmt := range stmts {
-				if _, err := tx.Exec(stmt); err != nil {
-					return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
-				}
+	return s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
 			}
-			return nil
-		})
+		}
+		return nil
 	})
 }
 

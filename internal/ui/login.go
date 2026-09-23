@@ -32,8 +32,10 @@ func TryAutoLogin(svc usecase.Applications) (*model.User, bool) {
 func ShowLogin(a fyne.App, svc usecase.Applications, onReady func(*model.User)) {
 	n, err := svc.UserCount()
 	if err != nil {
+		// 查询失败不要当成空库：优先给登录窗，避免误入创建管理员。
 		log.Printf("user count failed: %v", err)
-		n = 0
+		showLoginForm(a, svc, onReady)
+		return
 	}
 	if n == 0 {
 		showCreateAdmin(a, svc, onReady)
@@ -123,6 +125,12 @@ func showCreateAdmin(a fyne.App, svc usecase.Applications, onReady func(*model.U
 		}
 		u, err := svc.CreateInitialAdmin(username.Text, password.Text, display.Text)
 		if err != nil {
+			// 服务端已有账号时改走登录，而不是停在创建页报英文错。
+			if strings.Contains(err.Error(), "already initialized") || strings.Contains(err.Error(), "已存在用户") {
+				w.Close()
+				showLoginForm(a, svc, onReady)
+				return
+			}
 			status.SetText(err.Error())
 			return
 		}

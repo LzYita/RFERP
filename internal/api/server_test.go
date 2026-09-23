@@ -19,6 +19,20 @@ type fakeApps struct {
 	parts     []model.Part
 	stockIn   usecase.StockInInput
 	stockErr  error
+	userCount int
+}
+
+func testWarehouseUser() *model.User {
+	name := "仓管甲"
+	return &model.User{ID: 7, Username: "wh", Role: "warehouse", DisplayName: &name}
+}
+
+func testViewerUser() *model.User {
+	return &model.User{ID: 1, Username: "v", Role: "viewer"}
+}
+
+func stockInput() usecase.StockInInput {
+	return usecase.StockInInput{PartID: 20, Qty: 2, Operator: "ignored-by-api"}
 }
 
 func (f *fakeApps) Login(username, password string) (*model.User, error) {
@@ -38,6 +52,13 @@ func (f *fakeApps) StockIn(in usecase.StockInInput) error {
 func (f *fakeApps) ListBatches() ([]model.ProductBatch, error) { return nil, nil }
 
 func (f *fakeApps) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) { return nil, nil }
+
+func (f *fakeApps) UserCount() (int, error) { return f.userCount, nil }
+
+func (f *fakeApps) CreateInitialAdmin(username, password, displayName string) (*model.User, error) {
+	name := displayName
+	return &model.User{ID: 9, Username: username, Role: "admin", DisplayName: &name}, nil
+}
 
 func TestLoginAndStockInUsesSessionOperator(t *testing.T) {
 	name := "仓管甲"

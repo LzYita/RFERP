@@ -25,6 +25,10 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+
+	// bootstrapMu 串行化"首次建管理员"的计数+创建，
+	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
+	bootstrapMu sync.Mutex
 }
 
 type session struct {
@@ -43,6 +47,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	// 空库首次部署：仅当无任何用户时可建初始管理员。
+	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)
+	// 未登录可读用户数，供首启判断（仅 count）。
+	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
@@ -50,6 +58,41 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches", s.auth(s.handleListBatches, "Production.ListBatches"))
 	mux.HandleFunc("POST /api/batches/status", s.auth(s.handleUpdateBatchStatus, "Production.UpdateBatchStatus"))
 	mux.HandleFunc("GET /api/audit/recent", s.auth(s.handleRecentAudit, "Audit.ListRecentAuditLogs"))
+	mux.HandleFunc("GET /api/users", s.auth(s.handleListUsers, "Identity.ListUsers"))
+	mux.HandleFunc("POST /api/users", s.auth(s.handleCreateUser, "Identity.CreateUser"))
+	mux.HandleFunc("PUT /api/users", s.auth(s.handleUpdateUser, "Identity.UpdateUser"))
+	mux.HandleFunc("DELETE /api/users", s.auth(s.handleDeleteUser, "Identity.DeleteUser"))
+	mux.HandleFunc("POST /api/users/reset-password", s.auth(s.handleResetPassword, "Identity.ResetPassword"))
+	// 改自己的密码：登录即可，处理器内部再校验只能改自己。
+	mux.HandleFunc("POST /api/users/change-password", s.auth(s.handleChangePassword, ""))
+	mux.HandleFunc("GET /api/products", s.auth(s.handleListProducts, "Catalog.ListProducts"))
+	mux.HandleFunc("GET /api/products/get", s.auth(s.handleGetProduct, "Catalog.GetProduct"))
+	mux.HandleFunc("POST /api/products", s.auth(s.handleCreateProduct, "Catalog.CreateProduct"))
+	mux.HandleFunc("PUT /api/products", s.auth(s.handleUpdateProduct, "Catalog.UpdateProduct"))
+	mux.HandleFunc("DELETE /api/products", s.auth(s.handleDeleteProduct, "Catalog.DeleteProduct"))
+	mux.HandleFunc("GET /api/parts/get", s.auth(s.handleGetPart, "Catalog.GetPart"))
+	mux.HandleFunc("POST /api/parts", s.auth(s.handleCreatePart, "Catalog.CreatePart"))
+	mux.HandleFunc("PUT /api/parts", s.auth(s.handleUpdatePart, "Catalog.UpdatePart"))
+	mux.HandleFunc("DELETE /api/parts", s.auth(s.handleDeletePart, "Catalog.DeletePart"))
+	mux.HandleFunc("GET /api/bom", s.auth(s.handleListBOM, "Catalog.GetBOMByProduct"))
+	mux.HandleFunc("POST /api/bom", s.auth(s.handleAddBOM, "Catalog.AddBOMItem"))
+	mux.HandleFunc("DELETE /api/bom", s.auth(s.handleRemoveBOM, "Catalog.RemoveBOMItem"))
+	mux.HandleFunc("GET /api/bom/validate", s.auth(s.handleValidateBOM, "Catalog.ValidateBOM"))
+	mux.HandleFunc("POST /api/batches", s.auth(s.handleCreateBatch, "Production.CreateBatch"))
+	mux.HandleFunc("POST /api/batches/revoke", s.auth(s.handleRevokeBatch, "Production.RevokeBatch"))
+	mux.HandleFunc("GET /api/batches/skipped", s.auth(s.handleSkippedParts, "Production.GetSkippedParts"))
+	mux.HandleFunc("POST /api/batches/skip", s.auth(s.handleAddSkip, "Production.AddSkipPart"))
+	mux.HandleFunc("DELETE /api/batches/skip", s.auth(s.handleRemoveSkip, "Production.RemoveSkipPart"))
+	mux.HandleFunc("POST /api/traces", s.auth(s.handleRecordTrace, "Trace.RecordTrace"))
+	mux.HandleFunc("POST /api/traces/batch", s.auth(s.handleRecordTraces, "Trace.RecordTraces"))
+	mux.HandleFunc("GET /api/traces/by-batch", s.auth(s.handleTraceByBatch, "Trace.GetTraceByBatch"))
+	mux.HandleFunc("GET /api/traces/by-product", s.auth(s.handleTraceByProduct, "Trace.TraceByProduct"))
+	mux.HandleFunc("GET /api/traces/by-part", s.auth(s.handleTraceByPart, "Trace.TraceByPart"))
+	mux.HandleFunc("GET /api/audit", s.auth(s.handleAuditByRecord, "Audit.GetAuditLogs"))
+	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats, "Stats.GetStockStats"))
+	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
+	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
+	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
 	return mux
 }
 
@@ -112,6 +155,36 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"token": tok,
 		"user":  toAPIUser(u),
 	})
+}
+
+func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
+	s.bootstrapMu.Lock()
+	defer s.bootstrapMu.Unlock()
+
+	n, err := s.apps.UserCount()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n > 0 {
+		writeErr(w, http.StatusConflict, "already initialized")
+		return
+	}
+	var body struct {
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	u, err := s.apps.CreateInitialAdmin(body.Username, body.Password, body.DisplayName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIUser(u))
 }
 
 func (s *Server) issueSession(u *model.User) (string, error) {

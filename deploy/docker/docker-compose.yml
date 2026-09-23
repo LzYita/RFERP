@@ -1,0 +1,45 @@
+# RFERP 多人形态最小栈：MySQL 8 + HTTP API（D-013：服务端锁定 MySQL）
+# 仅用于本机/服务器联调与演示，不要用弱口令上生产。
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rferp-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rferp_dev_root
+      MYSQL_DATABASE: rferp
+      MYSQL_USER: rferp
+      MYSQL_PASSWORD: rferp_dev_app
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - rferp-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-urferp", "-prferp_dev_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: rferp-api
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # go-sql-driver DSN；容器内主机名是 mysql
+      DB_DSN: "rferp:rferp_dev_app@tcp(mysql:3306)/rferp?parseTime=true&charset=utf8mb4"
+      SRV_ADDR: ":8080"
+      MES_DATA_DIR: /data
+    ports:
+      - "8080:8080"
+    volumes:
+      - rferp-api-data:/data
+
+volumes:
+  rferp-mysql-data:
+  rferp-api-data:

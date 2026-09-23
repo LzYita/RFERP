@@ -31,11 +31,11 @@ type Identity interface {
 	UserCount() (int, error)
 	Login(username, password string) (*model.User, error)
 	CreateInitialAdmin(username, password, displayName string) (*model.User, error)
-	CreateUser(username, password, displayName, role string) (*model.User, error)
+	CreateUser(in CreateUserInput) (*model.User, error)
 	ListUsers() ([]model.User, error)
-	UpdateUser(id int64, displayName, role string, status int) error
-	ResetPassword(id int64, password string) error
-	ChangePassword(id int64, oldPw, newPw string) error
+	UpdateUser(in UpdateUserInput) error
+	ResetPassword(in ResetPasswordInput) error
+	ChangePassword(in ChangePasswordInput) error
 	DeleteUser(id int64) error
 }
 
@@ -61,16 +61,16 @@ type Catalog interface {
 
 // Inventory 零件库存出入与盘点。
 type Inventory interface {
-	StockIn(partID int64, qty float64, operator string) error
-	AdjustStock(partID int64, newQty float64, operator string) error
+	StockIn(in StockInInput) error
+	AdjustStock(in AdjustStockInput) error
 }
 
 // Production 生产批次与投料跳过零件。
 type Production interface {
 	CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error)
 	ListBatches() ([]model.ProductBatch, error)
-	UpdateBatchStatus(id int64, status int, operator string) error
-	RevokeBatch(id int64, operator string) error
+	UpdateBatchStatus(in UpdateBatchStatusInput) error
+	RevokeBatch(in RevokeBatchInput) error
 	AddSkipPart(batchID, partID int64) error
 	RemoveSkipPart(batchID, partID int64) error
 	GetSkippedParts(batchID int64) ([]int64, error)

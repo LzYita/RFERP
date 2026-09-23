@@ -13,6 +13,7 @@ import (
 
 	"app/internal/model"
 	"app/internal/repository"
+	"app/internal/usecase"
 )
 
 var (
@@ -130,7 +131,7 @@ func TestUpdateBatchStatusRejectsIllegalTransitions(t *testing.T) {
 			mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, tt.fromStatus, 4))
 			mock.ExpectRollback()
 
-			err := svc.UpdateBatchStatus(1, tt.toStatus, "operator")
+			err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: 1, Status: tt.toStatus, Operator: "operator"})
 			if err == nil || !strings.Contains(err.Error(), tt.expectError) {
 				t.Fatalf("expected illegal transition error containing %q, got %v", tt.expectError, err)
 			}
@@ -182,7 +183,7 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	}, map[string]any{"status": 2}, "UPDATE_STATUS", "operator")
 	mock.ExpectCommit()
 
-	if err := svc.UpdateBatchStatus(1, 2, "operator"); err != nil {
+	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: 1, Status: 2, Operator: "operator"}); err != nil {
 		t.Fatalf("complete batch: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -235,7 +236,7 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 	}, map[string]any{"status": 2}, "UPDATE_STATUS", "operator")
 	mock.ExpectCommit()
 
-	if err := svc.UpdateBatchStatus(1, 2, "operator"); err != nil {
+	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: 1, Status: 2, Operator: "operator"}); err != nil {
 		t.Fatalf("complete batch: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -261,7 +262,7 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 	mock.ExpectExec(auditInsert).WillReturnError(errors.New("stock audit failed"))
 	mock.ExpectRollback()
 
-	err := svc.UpdateBatchStatus(1, 2, "operator")
+	err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: 1, Status: 2, Operator: "operator"})
 	if err == nil || !strings.Contains(err.Error(), "stock audit failed") {
 		t.Fatalf("expected stock audit error, got %v", err)
 	}
@@ -302,7 +303,7 @@ func TestRevokeBatchReversesRecordedActualConsumptionAndAuditsStatusFour(t *test
 	}, "REVOKE", "operator")
 	mock.ExpectCommit()
 
-	if err := svc.RevokeBatch(1, "operator"); err != nil {
+	if err := svc.RevokeBatch(usecase.RevokeBatchInput{ID: 1, Operator: "operator"}); err != nil {
 		t.Fatalf("revoke batch: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -342,7 +343,7 @@ func TestRevokeBatchQuantizesRestoredStockBeforePersistence(t *testing.T) {
 	}, "REVOKE", "operator")
 	mock.ExpectCommit()
 
-	if err := svc.RevokeBatch(1, "operator"); err != nil {
+	if err := svc.RevokeBatch(usecase.RevokeBatchInput{ID: 1, Operator: "operator"}); err != nil {
 		t.Fatalf("revoke batch: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -371,7 +372,7 @@ func TestRevokeBatchDoesNotInventStockForZeroActualConsumption(t *testing.T) {
 	}, "REVOKE", "operator")
 	mock.ExpectCommit()
 
-	if err := svc.RevokeBatch(1, "operator"); err != nil {
+	if err := svc.RevokeBatch(usecase.RevokeBatchInput{ID: 1, Operator: "operator"}); err != nil {
 		t.Fatalf("revoke batch with zero actual consumption: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -388,7 +389,7 @@ func TestRevokeBatchRejectsCompletedBatchWithoutFrozenConsumptionRecord(t *testi
 		WillReturnRows(batchRowsWithConsumptionRecorded(now, 2, 4, 0))
 	mock.ExpectRollback()
 
-	err := svc.RevokeBatch(1, "operator")
+	err := svc.RevokeBatch(usecase.RevokeBatchInput{ID: 1, Operator: "operator"})
 	if err == nil || !strings.Contains(err.Error(), "冻结") {
 		t.Fatalf("expected missing frozen consumption error, got %v", err)
 	}
@@ -413,7 +414,7 @@ func TestStockInUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	}, "operator")
 	mock.ExpectCommit()
 
-	if err := svc.StockIn(20, 2, "operator"); err != nil {
+	if err := svc.StockIn(usecase.StockInInput{PartID: 20, Qty: 2, Operator: "operator"}); err != nil {
 		t.Fatalf("stock in: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -437,7 +438,7 @@ func TestAdjustStockUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	}, "operator")
 	mock.ExpectCommit()
 
-	if err := svc.AdjustStock(20, 8, "operator"); err != nil {
+	if err := svc.AdjustStock(usecase.AdjustStockInput{PartID: 20, NewQty: 8, Operator: "operator"}); err != nil {
 		t.Fatalf("adjust stock: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -461,7 +462,7 @@ func TestAdjustStockQuantizesAuditDiff(t *testing.T) {
 	}, "operator")
 	mock.ExpectCommit()
 
-	if err := svc.AdjustStock(20, 0.2, "operator"); err != nil {
+	if err := svc.AdjustStock(usecase.AdjustStockInput{PartID: 20, NewQty: 0.2, Operator: "operator"}); err != nil {
 		t.Fatalf("adjust stock: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

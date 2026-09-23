@@ -193,7 +193,7 @@ func (s *BatchScreen) setStatus(status int) {
 		if !ok {
 			return
 		}
-		if err := s.svc.UpdateBatchStatus(b.ID, status, auth.OperatorName()); err != nil {
+		if err := s.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: b.ID, Status: status, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "操作失败", err)
 			return
 		}
@@ -519,7 +519,7 @@ func (s *BatchScreen) revokeBatch() {
 		if !ok {
 			return
 		}
-		if err := s.svc.RevokeBatch(b.ID, auth.OperatorName()); err != nil {
+		if err := s.svc.RevokeBatch(usecase.RevokeBatchInput{ID: b.ID, Operator: auth.OperatorName()}); err != nil {
 			showError(s.window, "撤销失败", err)
 			return
 		}

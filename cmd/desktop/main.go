@@ -113,7 +113,16 @@ func main() {
 	a.SetIcon(ui.AppLogo())
 
 	// D3：首启选定运行模式并持久化；之后不再询问。
+	// v1.1 及更早只有「本机 + MySQL」：已有配置视为 Local，避免升级后误弹选型。
 	if !cfg.ModeChosen() {
+		if cfg.Loaded() {
+			if err := cfg.SetRunMode(config.ModeLocal, ""); err != nil {
+				log.Printf("auto local mode: %v", err)
+			}
+			enterAfterMode(a, cfg, config.ModeLocal)
+			a.Run()
+			return
+		}
 		ui.ShowRunModePicker(a, cfg, func(mode string) {
 			enterAfterMode(a, config.Load(), mode)
 		})

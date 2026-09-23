@@ -12,11 +12,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type PartScreen struct {
-	svc        *service.Service
+	svc        usecase.Applications
 	window     fyne.Window
 	data       []model.Part
 	table      *widget.Table
@@ -26,7 +26,7 @@ type PartScreen struct {
 	filterSel  *widget.Select
 }
 
-func NewPartScreen(svc *service.Service, w fyne.Window) *PartScreen {
+func NewPartScreen(svc usecase.Applications, w fyne.Window) *PartScreen {
 	return &PartScreen{svc: svc, window: w}
 }
 

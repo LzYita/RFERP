@@ -8,11 +8,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"app/internal/auth"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type App struct {
-	svc       *service.Service
+	svc       usecase.Applications
 	window    fyne.Window
 	onLogout  func()
 	dashboard *DashboardScreen
@@ -44,7 +44,7 @@ type pageDef struct {
 	refresh func()
 }
 
-func NewApp(svc *service.Service, w fyne.Window, onLogout func()) *App {
+func NewApp(svc usecase.Applications, w fyne.Window, onLogout func()) *App {
 	a := &App{svc: svc, window: w, selected: 0, onLogout: onLogout}
 	a.dashboard = NewDashboardScreen(svc, w)
 	a.stats = NewStatsScreen(svc, w)

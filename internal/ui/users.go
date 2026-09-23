@@ -12,11 +12,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type UsersScreen struct {
-	svc      *service.Service
+	svc      usecase.Applications
 	window   fyne.Window
 	data     []model.User
 	table    *widget.Table
@@ -24,7 +24,7 @@ type UsersScreen struct {
 	selected int
 }
 
-func NewUsersScreen(svc *service.Service, w fyne.Window) *UsersScreen {
+func NewUsersScreen(svc usecase.Applications, w fyne.Window) *UsersScreen {
 	return &UsersScreen{svc: svc, window: w, selected: -1}
 }
 

@@ -24,6 +24,7 @@ import (
 	"app/internal/singleinstance"
 	"app/internal/ui"
 	"app/internal/update"
+	"app/internal/usecase"
 	"app/internal/winappid"
 	"app/internal/winmsg"
 )
@@ -147,7 +148,7 @@ func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
 	}
 
-	svc := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+	svc := assembleApps(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
 
 	if u, ok := ui.TryAutoLogin(svc); ok {
 		log.Printf("auto login: %s", u.Username)
@@ -160,7 +161,13 @@ func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	})
 }
 
-func launchMain(a fyne.App, cfg *config.Config, svc *service.Service) {
+// assembleApps 是应用组装点（A4）：UI 只见 usecase.Applications，
+// 具体 Service / Repository / 备份适配在此接线（D-013）。
+func assembleApps(repo *repository.Repository, dsn, backupTool string, cfg *config.Config) usecase.Applications {
+	return service.New(repo, dsn, backupTool, cfg)
+}
+
+func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {
 	w := a.NewWindow("RFERP-仁风仓库管理系统 v" + version)
 	w.SetIcon(ui.AppLogo())
 	w.Resize(fyne.NewSize(1360, 860))

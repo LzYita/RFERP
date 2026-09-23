@@ -3,8 +3,8 @@ module app
 go 1.26
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	fyne.io/fyne/v2 v2.4.5
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/jmoiron/sqlx v1.3.5
 	golang.org/x/sys v0.13.0

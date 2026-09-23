@@ -1,0 +1,5 @@
+.git
+dist
+rcedit-x64.exe
+*.exe
+*.log

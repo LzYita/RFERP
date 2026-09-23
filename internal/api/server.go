@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,6 +76,13 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// writeServerErr 把内部错误记入日志，只向客户端返回通用信息，
+// 避免把 SQL 语句、表名等内部细节泄露出去。
+func writeServerErr(w http.ResponseWriter, err error) {
+	log.Printf("api: internal error: %v", err)
+	writeErr(w, http.StatusInternalServerError, "internal error")
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -153,14 +161,18 @@ func (s *Server) auth(next http.HandlerFunc, opName string) http.HandlerFunc {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	u, _ := s.userFromRequest(r)
+	u, ok := s.userFromRequest(r)
+	if !ok || u == nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
 }
 
 func (s *Server) handleListParts(w http.ResponseWriter, _ *http.Request) {
 	parts, err := s.apps.ListParts()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeServerErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, parts)
@@ -212,7 +224,7 @@ func (s *Server) handleAdjustStock(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListBatches(w http.ResponseWriter, _ *http.Request) {
 	list, err := s.apps.ListBatches()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeServerErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -251,7 +263,7 @@ func (s *Server) handleRecentAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	logs, err := s.apps.ListRecentAuditLogs(limit)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeServerErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)

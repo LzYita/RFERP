@@ -18,11 +18,11 @@ import (
 	"app/internal/auth"
 	"app/internal/nativefiledialog"
 	"app/internal/paths"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type BackupScreen struct {
-	svc          *service.Service
+	svc          usecase.Applications
 	window       fyne.Window
 	backupPath   *widget.Entry
 	auditPath    *widget.Entry
@@ -38,7 +38,7 @@ type BackupScreen struct {
 	allHint      *widget.Label
 }
 
-func NewBackupScreen(svc *service.Service, w fyne.Window) *BackupScreen {
+func NewBackupScreen(svc usecase.Applications, w fyne.Window) *BackupScreen {
 	return &BackupScreen{svc: svc, window: w}
 }
 

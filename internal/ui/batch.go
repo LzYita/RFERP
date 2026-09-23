@@ -14,11 +14,11 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
-	"app/internal/service"
+	"app/internal/usecase"
 )
 
 type BatchScreen struct {
-	svc        *service.Service
+	svc        usecase.Applications
 	window     fyne.Window
 	data       []model.ProductBatch
 	table      *widget.Table
@@ -28,7 +28,7 @@ type BatchScreen struct {
 	selected   int
 }
 
-func NewBatchScreen(svc *service.Service, w fyne.Window) *BatchScreen {
+func NewBatchScreen(svc usecase.Applications, w fyne.Window) *BatchScreen {
 	return &BatchScreen{svc: svc, window: w}
 }
 

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -21,6 +23,13 @@ import (
 // the accelerator is unreachable.
 const DefaultUpdateURL = "https://ghfast.top/https://github.com/LzYita/RFERP/releases/latest/download/releases.json"
 
+const (
+	// ModeLocal 桌面直连业务内核（本机/已配 MySQL）。
+	ModeLocal = "local"
+	// ModeClient 连接局域网主机上的 API，不直连业务库。
+	ModeClient = "client"
+)
+
 type Config struct {
 	DB            DBConfig
 	Srv           ServerConfig
@@ -29,6 +38,10 @@ type Config struct {
 	MysqldumpPath string
 	UpdateURL     string
 	AutoUpdate    bool
+	// Mode 为 ModeLocal 或 ModeClient；空视为未选择（需首启）。
+	Mode string
+	// ServerURL 仅 ModeClient：API 根地址，如 http://192.168.1.10:8080
+	ServerURL string
 
 	path string
 }
@@ -59,6 +72,8 @@ type fileConfig struct {
 	MysqldumpPath string `json:"mysqldumpPath,omitempty"`
 	UpdateURL     string `json:"updateUrl,omitempty"`
 	AutoUpdate    *bool  `json:"autoUpdate,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	ServerURL     string `json:"serverUrl,omitempty"`
 }
 
 func Load() *Config {
@@ -124,6 +139,8 @@ func applyFile(cfg *Config, fc *fileConfig) {
 	cfg.MySQLService = fc.MySQLService
 	cfg.MysqldumpPath = fc.MysqldumpPath
 	cfg.UpdateURL = fc.UpdateURL
+	cfg.Mode = fc.Mode
+	cfg.ServerURL = fc.ServerURL
 	if fc.AutoUpdate != nil {
 		cfg.AutoUpdate = *fc.AutoUpdate
 	}
@@ -219,6 +236,8 @@ func writeEncrypted(path string, cfg *Config) error {
 		MysqldumpPath: cfg.MysqldumpPath,
 		UpdateURL:     cfg.UpdateURL,
 		AutoUpdate:    &cfg.AutoUpdate,
+		Mode:          cfg.Mode,
+		ServerURL:     cfg.ServerURL,
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -238,6 +257,30 @@ func writeEncrypted(path string, cfg *Config) error {
 
 func (c *Config) Loaded() bool {
 	return c.path != ""
+}
+
+// ModeChosen 是否已在首启选定运行模式（D3）。
+func (c *Config) ModeChosen() bool {
+	return c.Mode == ModeLocal || c.Mode == ModeClient
+}
+
+// SetRunMode 持久化运行模式。Client 模式保存服务器地址；Local 保留库配置。
+func (c *Config) SetRunMode(mode, serverURL string) error {
+	switch mode {
+	case ModeLocal:
+		c.Mode = ModeLocal
+		c.ServerURL = ""
+	case ModeClient:
+		u := strings.TrimSpace(serverURL)
+		if u == "" {
+			return fmt.Errorf("服务器地址不能为空")
+		}
+		c.Mode = ModeClient
+		c.ServerURL = strings.TrimRight(u, "/")
+	default:
+		return fmt.Errorf("未知运行模式: %s", mode)
+	}
+	return c.Save()
 }
 
 func (c *Config) SetDB(host string, port int, user, password, dbname string) {

@@ -21,6 +21,19 @@ type fakeApps struct {
 	stockErr  error
 }
 
+func testWarehouseUser() *model.User {
+	name := "仓管甲"
+	return &model.User{ID: 7, Username: "wh", Role: "warehouse", DisplayName: &name}
+}
+
+func testViewerUser() *model.User {
+	return &model.User{ID: 1, Username: "v", Role: "viewer"}
+}
+
+func stockInput() usecase.StockInInput {
+	return usecase.StockInInput{PartID: 20, Qty: 2, Operator: "ignored-by-api"}
+}
+
 func (f *fakeApps) Login(username, password string) (*model.User, error) {
 	if f.loginErr != nil {
 		return nil, f.loginErr

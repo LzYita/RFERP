@@ -49,6 +49,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/batches", s.auth(s.handleListBatches, "Production.ListBatches"))
 	mux.HandleFunc("POST /api/batches/status", s.auth(s.handleUpdateBatchStatus, "Production.UpdateBatchStatus"))
 	mux.HandleFunc("GET /api/audit/recent", s.auth(s.handleRecentAudit, "Audit.ListRecentAuditLogs"))
+	mux.HandleFunc("GET /api/users", s.auth(s.handleListUsers, "Identity.ListUsers"))
+	mux.HandleFunc("GET /api/users/count", s.auth(s.handleUserCount, "Identity.UserCount"))
+	mux.HandleFunc("POST /api/users", s.auth(s.handleCreateUser, "Identity.CreateUser"))
+	mux.HandleFunc("PUT /api/users", s.auth(s.handleUpdateUser, "Identity.UpdateUser"))
+	mux.HandleFunc("DELETE /api/users", s.auth(s.handleDeleteUser, "Identity.DeleteUser"))
+	mux.HandleFunc("POST /api/users/reset-password", s.auth(s.handleResetPassword, "Identity.ResetPassword"))
+	mux.HandleFunc("POST /api/users/change-password", s.auth(s.handleChangePassword, "Identity.ChangePassword"))
+	mux.HandleFunc("GET /api/products", s.auth(s.handleListProducts, "Catalog.ListProducts"))
+	mux.HandleFunc("POST /api/products", s.auth(s.handleCreateProduct, "Catalog.CreateProduct"))
+	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
+	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
 	return mux
 }
 

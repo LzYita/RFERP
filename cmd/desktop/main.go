@@ -14,6 +14,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
+	"app/internal/api"
 	"app/internal/config"
 	"app/internal/logging"
 	"app/internal/migrate"
@@ -111,6 +112,43 @@ func main() {
 	a.Settings().SetTheme(ui.NewTheme())
 	a.SetIcon(ui.AppLogo())
 
+	// D3：首启选定运行模式并持久化；之后不再询问。
+	if !cfg.ModeChosen() {
+		ui.ShowRunModePicker(a, cfg, func(mode string) {
+			enterAfterMode(a, config.Load(), mode)
+		})
+		a.Run()
+		return
+	}
+	enterAfterMode(a, cfg, cfg.Mode)
+	a.Run()
+}
+
+func enterAfterMode(a fyne.App, cfg *config.Config, mode string) {
+	if mode == config.ModeClient {
+		enterClientMode(a, cfg)
+		return
+	}
+	enterLocalMode(a, cfg)
+}
+
+func enterClientMode(a fyne.App, cfg *config.Config) {
+	log.Printf("run mode=client server=%s", cfg.ServerURL)
+	cli := api.NewClient(cfg.ServerURL)
+	var apps usecase.Applications = cli
+	if u, ok := ui.TryAutoLogin(apps); ok {
+		log.Printf("auto login: %s", u.Username)
+		launchMain(a, cfg, apps)
+		return
+	}
+	ui.ShowLogin(a, apps, func(u *model.User) {
+		log.Printf("login: %s (%s)", u.Username, u.Role)
+		launchMain(a, cfg, apps)
+	})
+}
+
+func enterLocalMode(a fyne.App, cfg *config.Config) {
+	log.Printf("run mode=local")
 	if cfg.Loaded() {
 		ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
 	}
@@ -120,18 +158,14 @@ func main() {
 		log.Printf("database connection failed: %v", err)
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
-			enterApp(a, newCfg, newDB)
+			enterLocalDB(a, newCfg, newDB)
 		})
-		a.Run()
 		return
 	}
-
-	enterApp(a, cfg, db)
-	a.Run()
+	enterLocalDB(a, cfg, db)
 }
 
-// enterApp 运行数据库迁移，然后进入登录流程（或自动登录）。
-func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
+func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
@@ -148,16 +182,16 @@ func enterApp(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
 	}
 
-	svc := assembleApps(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+	apps := assembleApps(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
 
-	if u, ok := ui.TryAutoLogin(svc); ok {
+	if u, ok := ui.TryAutoLogin(apps); ok {
 		log.Printf("auto login: %s", u.Username)
-		launchMain(a, cfg, svc)
+		launchMain(a, cfg, apps)
 		return
 	}
-	ui.ShowLogin(a, svc, func(u *model.User) {
+	ui.ShowLogin(a, apps, func(u *model.User) {
 		log.Printf("login: %s (%s)", u.Username, u.Role)
-		launchMain(a, cfg, svc)
+		launchMain(a, cfg, apps)
 	})
 }
 

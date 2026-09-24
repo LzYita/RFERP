@@ -22,7 +22,7 @@ func ShowRunModePicker(a fyne.App, cfg *config.Config, onReady func(mode string)
 	w.SetPadded(true)
 
 	title := widget.NewLabelWithStyle("首次启动：请选择运行模式", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	hint := widget.NewLabel("此选择会保存到本机配置，之后启动不再询问。\n一般无需切换；如需更换请使用设置中的「切换运行模式」。")
+	hint := widget.NewLabel("此选择会保存到本机配置，之后启动不再询问。")
 	hint.Wrapping = fyne.TextWrapWord
 
 	urlEntry := widget.NewEntry()

@@ -34,6 +34,14 @@ import (
 
 var version = "dev"
 
+// serverModeEnabled 控制「连接服务器」运行模式是否对用户开放。
+//
+// v1.2.0 未开放：服务器程序尚未随安装包发布，也没有应用内切换入口，
+// 用户一旦选中就会走进死胡同（地址填了也连不上、备份/恢复等功能不可用）。
+// 代码本身保留可用（cmd/server、api.Client 均可正常工作），待前置条件具备后
+// 把这里改为 true 即可重新开放。
+const serverModeEnabled = false
+
 func init() {
 	// TTC 字体 Fyne 可能不兼容，优先用 TTF
 	fonts := []string{
@@ -116,8 +124,10 @@ func main() {
 
 	// D3：首启选定运行模式并持久化；之后不再询问。
 	// v1.1 及更早只有「本机 + MySQL」：已有配置视为 Local，避免升级后误弹选型。
+	// v1.2.0：连接服务器模式尚未对用户开放（见 serverModeEnabled），
+	// 因此不再弹选型，全新安装也直接进入本机模式。
 	if !cfg.ModeChosen() {
-		if cfg.Loaded() {
+		if cfg.Loaded() || !serverModeEnabled {
 			if err := cfg.SetRunMode(config.ModeLocal, ""); err != nil {
 				log.Printf("auto local mode: %v", err)
 			}
@@ -144,6 +154,16 @@ func enterAfterMode(a fyne.App, cfg *config.Config, mode string) {
 }
 
 func enterClientMode(a fyne.App, cfg *config.Config) {
+	if !serverModeEnabled {
+		// 本版本未开放。不静默进入半可用状态（能登录，但备份/恢复等功能不可用），
+		// 而是明确告知后退出。只有手工改过 config.json 才会走到这里。
+		log.Printf("run mode=client refused: server mode is not enabled in this build")
+		winmsg.Error("RFERP",
+			"本版本未开放「连接服务器」模式。\n\n"+
+				"该功能尚未随安装包提供服务器程序，也没有应用内切换入口，暂不开放。\n"+
+				"请使用「本机」模式。")
+		return
+	}
 	log.Printf("run mode=client server=%s", cfg.ServerURL)
 	cli := api.NewClient(cfg.ServerURL)
 	var apps usecase.Applications = cli

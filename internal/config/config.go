@@ -30,6 +30,16 @@ const (
 	ModeClient = "client"
 )
 
+const (
+	// StorageMySQL Local 使用 MySQL（默认；v1.1 及更早唯一形态）。
+	StorageMySQL = "mysql"
+	// StorageSQLite Local 使用数据目录下的 SQLite 文件（Phase E / D-013）。
+	StorageSQLite = "sqlite"
+)
+
+// DefaultSQLiteFileName is the Local SQLite file name under DataDir.
+const DefaultSQLiteFileName = "rferp.db"
+
 type Config struct {
 	DB            DBConfig
 	Srv           ServerConfig
@@ -42,6 +52,11 @@ type Config struct {
 	Mode string
 	// ServerURL 仅 ModeClient：API 根地址，如 http://192.168.1.10:8080
 	ServerURL string
+	// Storage 为 StorageMySQL 或 StorageSQLite；空视为 MySQL（E6：不静默切库）。
+	// 仅 ModeLocal 使用。
+	Storage string
+	// SQLitePath 仅 StorageSQLite：数据库文件路径；空则用 DataDir/rferp.db。
+	SQLitePath string
 
 	path string
 }
@@ -74,6 +89,8 @@ type fileConfig struct {
 	AutoUpdate    *bool  `json:"autoUpdate,omitempty"`
 	Mode          string `json:"mode,omitempty"`
 	ServerURL     string `json:"serverUrl,omitempty"`
+	Storage       string `json:"storage,omitempty"`
+	SQLitePath    string `json:"sqlitePath,omitempty"`
 }
 
 func Load() *Config {
@@ -110,6 +127,7 @@ func Load() *Config {
 	if cfg.Srv.Addr == "" {
 		cfg.Srv.Addr = ":8080"
 	}
+	cfg.Storage = normalizeStorage(cfg.Storage)
 	cfg.DB.DSN = buildDSN(cfg.DB)
 	cfg.path = path
 
@@ -141,6 +159,8 @@ func applyFile(cfg *Config, fc *fileConfig) {
 	cfg.UpdateURL = fc.UpdateURL
 	cfg.Mode = fc.Mode
 	cfg.ServerURL = fc.ServerURL
+	cfg.Storage = normalizeStorage(fc.Storage)
+	cfg.SQLitePath = fc.SQLitePath
 	if fc.AutoUpdate != nil {
 		cfg.AutoUpdate = *fc.AutoUpdate
 	}
@@ -238,6 +258,8 @@ func writeEncrypted(path string, cfg *Config) error {
 		AutoUpdate:    &cfg.AutoUpdate,
 		Mode:          cfg.Mode,
 		ServerURL:     cfg.ServerURL,
+		Storage:       cfg.Storage,
+		SQLitePath:    cfg.SQLitePath,
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -290,6 +312,64 @@ func (c *Config) SetDB(host string, port int, user, password, dbname string) {
 	c.DB.Password = password
 	c.DB.DBName = dbname
 	c.DB.DSN = buildDSN(c.DB)
+}
+
+func normalizeStorage(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case StorageSQLite:
+		return StorageSQLite
+	case StorageMySQL, "":
+		return StorageMySQL
+	default:
+		return StorageMySQL
+	}
+}
+
+// StorageKind 返回 Local 存储类型。空/未知一律 MySQL（E6 禁止静默切库）。
+func (c *Config) StorageKind() string {
+	return normalizeStorage(c.Storage)
+}
+
+// IsSQLite 是否使用本地 SQLite 文件（仅 Local 形态）。
+func (c *Config) IsSQLite() bool {
+	return c.Mode != ModeClient && c.StorageKind() == StorageSQLite
+}
+
+// ResolveSQLitePath 返回 SQLite 文件完整路径；未配置时为 DataDir/rferp.db。
+// DataDir 与 sqlitePath 均为空时报错，绝不落到进程 CWD（D-002）。
+func (c *Config) ResolveSQLitePath() (string, error) {
+	if p := strings.TrimSpace(c.SQLitePath); p != "" {
+		return p, nil
+	}
+	base := strings.TrimSpace(c.DataDir)
+	if base == "" {
+		return "", fmt.Errorf("DataDir 未配置，无法确定 SQLite 路径（请设置 dataDir 或 sqlitePath）")
+	}
+	return filepath.Join(base, DefaultSQLiteFileName), nil
+}
+
+// SetStorage 显式切换 Local 存储（E6）。不迁移业务数据，仅改配置。
+// 从 MySQL 切到 SQLite 或反向都必须由用户在 UI 确认后调用本方法。
+func (c *Config) SetStorage(kind, sqlitePath string) error {
+	prevStorage, prevSQLitePath := c.Storage, c.SQLitePath
+	switch normalizeStorage(kind) {
+	case StorageSQLite:
+		c.Storage = StorageSQLite
+		if sqlitePath != "" {
+			c.SQLitePath = sqlitePath
+		}
+		if _, err := c.ResolveSQLitePath(); err != nil {
+			// 校验失败时回滚内存状态，避免与磁盘上的配置不一致。
+			c.Storage, c.SQLitePath = prevStorage, prevSQLitePath
+			return err
+		}
+	case StorageMySQL:
+		c.Storage = StorageMySQL
+		c.SQLitePath = ""
+	default:
+		return fmt.Errorf("未知存储类型: %s", kind)
+	}
+	return c.Save()
 }
 
 func (c *Config) Save() error {

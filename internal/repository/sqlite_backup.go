@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -78,4 +79,100 @@ func escapeSQLiteString(s string) string {
 		out = append(out, s[i])
 	}
 	return string(out)
+}
+
+// VerifySQLiteFile opens path and runs PRAGMA integrity_check. Callers use it to
+// reject a bad snapshot before touching the live database.
+func VerifySQLiteFile(path string) error {
+	db, err := OpenSQLite(path)
+	if err != nil {
+		return fmt.Errorf("open snapshot: %w", err)
+	}
+	defer db.Close()
+	if err := verifySQLiteDatabase(db); err != nil {
+		return fmt.Errorf("snapshot verification failed: %w", err)
+	}
+	return nil
+}
+
+// removeSQLiteSidecars deletes the -wal / -shm files belonging to the database
+// that was just replaced. A WAL left behind by an unclean shutdown would
+// otherwise be replayed against the freshly restored file and corrupt it.
+func removeSQLiteSidecars(dbPath string) {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		_ = os.Remove(dbPath + suffix)
+	}
+}
+
+// RestoreSQLiteFile replaces dbPath with the snapshot at snapshotPath (D-014
+// single full rollback, no merge). Steps:
+//  1. verify snapshot opens and passes integrity_check
+//  2. if dbPath exists, keep it as <dbPath>.before-restore-<ts>
+//  3. copy snapshot to dbPath via temp+rename, dropping stale WAL/SHM sidecars
+//  4. verify the restored file; on failure put the previous file back
+//
+// Caller must close any live handles on dbPath first (Windows file locks).
+func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, err error) {
+	if dbPath == "" || snapshotPath == "" {
+		return "", fmt.Errorf("db path and snapshot path are required")
+	}
+	// 1. verify snapshot independently
+	if err := VerifySQLiteFile(snapshotPath); err != nil {
+		return "", err
+	}
+
+	// 2. preserve current file
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		preRestoreBackup = fmt.Sprintf("%s.before-restore-%s", dbPath, time.Now().Format("20060102_150405"))
+		if err := copyFile(dbPath, preRestoreBackup); err != nil {
+			return "", fmt.Errorf("preserve current database: %w", err)
+		}
+	}
+
+	// 3. temp + rename replace, then drop sidecars from the old database
+	tmp := dbPath + ".restore-tmp"
+	if err := copyFile(snapshotPath, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return preRestoreBackup, fmt.Errorf("stage snapshot: %w", err)
+	}
+	if err := os.Rename(tmp, dbPath); err != nil {
+		_ = os.Remove(tmp)
+		return preRestoreBackup, fmt.Errorf("replace database file (close the app if it is running): %w", err)
+	}
+	removeSQLiteSidecars(dbPath)
+
+	// 4. verify restored file
+	rdb, err := OpenSQLite(dbPath)
+	if err != nil {
+		if preRestoreBackup != "" {
+			_ = copyFile(preRestoreBackup, dbPath)
+		}
+		return preRestoreBackup, fmt.Errorf("open restored database: %w", err)
+	}
+	verr := verifySQLiteDatabase(rdb)
+	rdb.Close()
+	if verr != nil {
+		if preRestoreBackup != "" {
+			_ = copyFile(preRestoreBackup, dbPath)
+		}
+		return preRestoreBackup, fmt.Errorf("restored database verification failed: %w", verr)
+	}
+	return preRestoreBackup, nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

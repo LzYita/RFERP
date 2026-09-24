@@ -244,6 +244,23 @@ func CleanupOld() {
 	os.Remove(exe + ".old")
 }
 
+// RestartApp launches a new instance of the current executable and returns.
+// The caller should os.Exit immediately afterwards so DB handles are released
+// before the new process opens the same files (used after SQLite restore).
+func RestartApp() error {
+	target, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		target = resolved
+	}
+	cmd := exec.Command(target)
+	// Reuse the update-restart lock wait so the old process can drop single-instance.
+	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
+	return cmd.Start()
+}
+
 func extractExe(zipPath, dest string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {

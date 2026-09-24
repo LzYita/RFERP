@@ -7,7 +7,7 @@
 
 A desktop **inventory & batch-traceability** application for small manufacturing — covering products, parts, BOM, production batches, stock, operation logs and data backup/export.
 
-Built with **Go + Fyne**; data is stored in **MySQL**; supports one-click install and auto-update.
+Built with **Go + Fyne**; data is stored in **MySQL 8** or in a local **SQLite** file; supports one-click install and auto-update.
 
 ## Preview
 
@@ -22,7 +22,7 @@ Built with **Go + Fyne**; data is stored in **MySQL**; supports one-click instal
 - **Batch traceability**: trace material source by product batch or part
 - **Inventory**: stock-in, stock-out, stocktaking, warning list
 - **Operation log**: structured view (type / action / object / changes) with a detail dialog
-- **Backup & export**: database backup (SQL) and per-table CSV export; data directory configurable
+- **Backup & export**: whole-database backup and restore (MySQL SQL dump, SQLite snapshot), per-table CSV export; data directory configurable
 
 ## Download & install
 
@@ -32,9 +32,23 @@ Built with **Go + Fyne**; data is stored in **MySQL**; supports one-click instal
 
 > Requires **Windows 10 / 11 (64-bit)**
 
+## Storage
+
+| Storage | When to use |
+|---|---|
+| **MySQL** (default) | Several people / several machines share one database. Requires MySQL 8 on the machine. |
+| **SQLite** | Single machine, no extra install. The whole database is one file: `<data directory>\rferp.db`. |
+
+- The **first-run wizard** offers both; you can also set `"storage": "sqlite"` in `config.json`.
+- A config with no `storage` key is always treated as **MySQL** — the app never switches silently.
+- **Switching storage only changes the configuration; it does not move data.** Export from the old storage and import into the new one yourself.
+- Backup/restore follows the storage: MySQL uses `.sql` dumps (append-style `INSERT` import), SQLite uses whole-file `.db` snapshots (full rollback, then the app restarts). The two are **not** interchangeable.
+
 ## First run
 
-**1) Database wizard**
+**1) Choose a storage** — MySQL or SQLite (see *Storage* above)
+
+**2) Database wizard (MySQL only)**
 
 1. Auto-detects a local MySQL (service name, port, `mysqldump` path)
 2. Enter connection info (host, port, user, password, database) and the **data directory**
@@ -43,7 +57,7 @@ Built with **Go + Fyne**; data is stored in **MySQL**; supports one-click instal
    - When connecting as root, creates a dedicated least-privilege account
    - Stores the connection info locally, encrypted with **Windows DPAPI**
 
-**2) Create the administrator account**
+**3) Create the administrator account**
 
 Once the database is ready, if there are no accounts yet, you are guided to create an **administrator** (username + password). On later launches a **login window** appears; tick "remember me" to sign in automatically.
 
@@ -106,7 +120,7 @@ Output: `dist\Setup-RFERP-<version>.exe`
 |---|---|
 | Language | Go |
 | Desktop UI | Fyne v2 |
-| Database | MySQL 8.0 |
+| Database | MySQL 8.0, or embedded SQLite (`modernc.org/sqlite`, pure Go, no CGO) |
 | Password hashing | PBKDF2-SHA256 |
 | Credential protection | Windows DPAPI |
 | Update signing | Ed25519 |

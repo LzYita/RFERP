@@ -3,12 +3,24 @@ package usecase
 // 适配端口：库差异与平台差异只出现在实现侧（MySQL / 将来 SQLite 等）。
 // Service 只依赖本文件中的接口，不依赖具体驱动或命令行工具。
 
+// 快照后端标识。Service 用 Kind 拒绝跨后端的恢复（不能把 MySQL dump 灌进
+// SQLite，也不能把 SQLite 整库快照当 SQL 备份追加导入）。
+const (
+	SnapshotKindMySQL  = "mysql"
+	SnapshotKindSQLite = "sqlite"
+)
+
 // SnapshotPort 备份快照端口。语义见 D-014：
 // 每次 Snapshot 产出某一时刻的独立完整快照；Restore 将目标恢复为该快照整库状态；
 // 不做新旧备份合成。
 type SnapshotPort interface {
 	// Snapshot 在 saveDir 下生成完整快照文件，返回其路径。
 	Snapshot(saveDir string) (path string, err error)
+	// Restore 将当前库整库替换为 snapshotPath 指向的快照（不合并）。
+	// 实现应在替换前保留当前状态，并在失败时回滚到替换前。
+	Restore(snapshotPath string) (preRestoreBackup string, err error)
+	// Kind 返回本端口对应的存储后端（SnapshotKindMySQL / SnapshotKindSQLite）。
+	Kind() string
 }
 
 // SessionPort 在“关闭外键/唯一检查”的会话中执行 operation，用于批量导入/清库。

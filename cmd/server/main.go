@@ -19,6 +19,9 @@ import (
 	"app/internal/service"
 )
 
+// version 由构建脚本用 -ldflags "-X main.version=..." 注入。
+var version = "dev"
+
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	flag.Parse()
@@ -42,10 +45,10 @@ func main() {
 	}
 
 	apps := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
-	srv := api.New(apps)
+	srv := api.New(apps, api.WithVersion(version))
 
-	log.Printf("RFERP API listening on %s (db %s@%s:%s/%s)",
-		*addr, cfg.DB.User, cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.DB.DBName)
+	log.Printf("RFERP API %s listening on %s (db %s@%s:%s/%s)",
+		version, *addr, cfg.DB.User, cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.DB.DBName)
 	// 公网部署前必须加 TLS（C4）；当前假设可信内网。
 	log.Fatal(http.ListenAndServe(*addr, srv.Handler()))
 }

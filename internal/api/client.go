@@ -466,3 +466,41 @@ func (c *Client) ExportAllDataCSV(saveDir string) (map[string]string, string, er
 	}
 	return out.Files, out.Dir, nil
 }
+
+// Describe 报告当前连接的服务器所使用的数据库身份（D-016）。
+func (c *Client) Describe() (usecase.ServerInfo, error) {
+	var out usecase.ServerInfo
+	if err := c.do(http.MethodGet, "/api/v1/serverinfo", nil, &out); err != nil {
+		return usecase.ServerInfo{}, err
+	}
+	return out, nil
+}
+
+// Probe 探测目标服务器并读取它的自描述信息（D-016）。
+//
+// 无需登录：切换运行模式前的预检要先问清"对面是谁、用的是哪个库"，
+// 此时还没有会话。地址写法与 NewClient 一致（可带尾部斜杠）。
+func Probe(baseURL string) (usecase.ServerInfo, error) {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return usecase.ServerInfo{}, fmt.Errorf("服务器地址为空")
+	}
+	req, err := http.NewRequest(http.MethodGet, base+"/api/v1/serverinfo", nil)
+	if err != nil {
+		return usecase.ServerInfo{}, err
+	}
+	hc := &http.Client{Timeout: 8 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return usecase.ServerInfo{}, fmt.Errorf("无法连接服务器：%w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return usecase.ServerInfo{}, fmt.Errorf("服务器返回 %s", resp.Status)
+	}
+	var out usecase.ServerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return usecase.ServerInfo{}, fmt.Errorf("解析服务器信息失败：%w", err)
+	}
+	return out, nil
+}

@@ -89,6 +89,12 @@ type Store interface {
 	UpdateUserPassword(id int64, hash string) error
 	DeleteUser(id int64) error
 	TouchUserLogin(id int64) error
+
+	// Database identity / schema version（D-016 接入服务器前期准备）。
+	// GetDatabaseID 返回 db_identity 里的稳定标识；缺失时返回空串而非报错。
+	GetDatabaseID() (string, error)
+	// GetSchemaVersion 返回已应用的最高迁移版本。
+	GetSchemaVersion() (int, error)
 }
 
 var (

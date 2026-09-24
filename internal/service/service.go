@@ -15,6 +15,7 @@ import (
 
 	"app/internal/auth"
 	"app/internal/config"
+	"app/internal/dbfile"
 	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/repository"
@@ -1057,7 +1058,7 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 	// 备份类型必须与当前存储后端一致。类型按文件内容判断（不是扩展名），
 	// 与 UI 的确认文案 / 是否需要重启保持同一口径。
 	sqliteBackend := s.snapshots != nil && s.snapshots.Kind() == usecase.SnapshotKindSQLite
-	if IsSQLiteSnapshot(filePath) {
+	if dbfile.IsSQLiteSnapshot(filePath) {
 		if !sqliteBackend {
 			return 0, 0, fmt.Errorf("当前使用 MySQL 存储，无法应用 SQLite 整库快照（.db）；请导入 .sql 备份")
 		}
@@ -1869,19 +1870,4 @@ func strPtrOrNil(v string) *string {
 		return nil
 	}
 	return &v
-}
-
-// IsSQLiteSnapshot 判断 path 是否为 SQLite 数据库文件。
-// 只读 16 字节文件头，绝不把整份备份读进内存。
-func IsSQLiteSnapshot(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	var head [16]byte
-	if _, err := io.ReadFull(f, head[:]); err != nil {
-		return false
-	}
-	return string(head[:]) == "SQLite format 3\x00"
 }

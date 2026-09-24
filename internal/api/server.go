@@ -23,6 +23,13 @@ import (
 type Server struct {
 	apps usecase.Applications
 
+	// desc 供 /api/v1/serverinfo 使用。默认与 apps 相同，单独成字段是为了让该
+	// 端点只依赖 ServerDescriptor —— 便于测试替换，也明确它不碰业务数据。
+	desc usecase.ServerDescriptor
+
+	// version 由进程注入（ldflags），用于 /api/v1/serverinfo 自报版本（D-016）。
+	version string
+
 	mu       sync.Mutex
 	sessions map[string]*session
 
@@ -37,15 +44,30 @@ type session struct {
 	ExpiresAt time.Time
 }
 
+// Option 用于可选装配（保持 New 的旧调用点不变）。
+type Option func(*Server)
+
+// WithVersion 让服务端在 /api/v1/serverinfo 里自报版本。
+func WithVersion(v string) Option {
+	return func(s *Server) { s.version = v }
+}
+
 // New 用给定用例实现构造 API。
-func New(apps usecase.Applications) *Server {
-	return &Server{apps: apps, sessions: make(map[string]*session)}
+func New(apps usecase.Applications, opts ...Option) *Server {
+	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session)}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Handler 返回根路由。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// 未登录可读的服务端自描述（D-016）：供"接入服务器"预检使用。
+	// 只暴露版本与数据库身份，不含任何业务数据。
+	mux.HandleFunc("GET /api/v1/serverinfo", s.handleServerInfo)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)
@@ -130,6 +152,27 @@ func writeServerErr(w http.ResponseWriter, err error) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
+	writeServerInfo(w, s.desc, s.version)
+}
+
+// writeServerInfo 是 handleServerInfo 的可测核心：只依赖 ServerDescriptor，
+// 因此测试可以传入极小的假实现，不必构造整套 Applications。
+func writeServerInfo(w http.ResponseWriter, desc usecase.ServerDescriptor, version string) {
+	if desc == nil {
+		writeErr(w, http.StatusServiceUnavailable, "server descriptor unavailable")
+		return
+	}
+	info, err := desc.Describe()
+	if err != nil {
+		writeServerErr(w, err)
+		return
+	}
+	// 版本由进程自报；数据库事实由用例层回答（D-016）。
+	info.AppVersion = version
+	writeJSON(w, http.StatusOK, info)
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

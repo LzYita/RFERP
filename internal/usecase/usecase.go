@@ -117,4 +117,5 @@ type Applications interface {
 	Audit
 	Stats
 	Backup
+	ServerDescriptor
 }

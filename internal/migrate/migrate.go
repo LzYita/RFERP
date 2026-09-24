@@ -60,7 +60,7 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 			pending = append(pending, m)
 		}
 	}
-		if len(pending) == 0 {
+	if len(pending) == 0 {
 		res.ToVersion = cur
 		if err := applyStepMigrations(db, cur, &res); err != nil {
 			return res, err
@@ -93,7 +93,7 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 		}
 		res.Applied = append(res.Applied, m.Version)
 	}
-		res.ToVersion = pending[len(pending)-1].Version
+	res.ToVersion = pending[len(pending)-1].Version
 	// v12+ portable steps (dual MySQL/SQLite). Snapshot before these when DB is non-empty.
 	if err := applyStepMigrations(db, cur, &res); err != nil {
 		return res, err
@@ -507,4 +507,3 @@ func applyStepMigrations(db *sqlx.DB, from int, res *Result) error {
 	}
 	return nil
 }
-

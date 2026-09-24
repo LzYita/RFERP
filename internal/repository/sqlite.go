@@ -25,7 +25,7 @@ type SQLiteStore struct {
 }
 
 // SQLiteTx is the SQLite transaction handle implementing TxOps.
-// The zero field q is a *sqlx.Conn that has BEGIN IMMEDIATE open.
+// q is the queryer bound to the dedicated *sqlx.Conn that has BEGIN IMMEDIATE open.
 type SQLiteTx struct {
 	q queryer
 }
@@ -41,7 +41,7 @@ func OpenSQLite(path string) (*sqlx.DB, error) {
 		}
 	}
 	dsn := "file:" + filepath.ToSlash(path) +
-		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&parseTime=true"
+		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sqlx.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func (t *SQLiteTx) UpdateProduct(p *model.Product) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -162,7 +162,7 @@ func (t *SQLiteTx) UpdatePart(p *model.Part) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }

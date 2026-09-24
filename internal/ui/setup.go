@@ -199,13 +199,8 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 	hint.Wrapping = fyne.TextWrapWord
 
 	// E5/E6 storage choice: empty/legacy stays MySQL; SQLite is explicit only.
-	storageSel := widget.NewRadioGroup([]string{"MySQL（多人/高级）", "SQLite（单机零安装）"}, func(string) {})
+	storageSel := widget.NewRadioGroup([]string{"MySQL（多人/高级）", "SQLite（单机零安装）"}, nil)
 	storageSel.Horizontal = true
-	if base.IsSQLite() {
-		storageSel.SetSelected("SQLite（单机零安装）")
-	} else {
-		storageSel.SetSelected("MySQL（多人/高级）")
-	}
 	e6Note := widget.NewLabel("选择 SQLite 不会自动迁移 MySQL 中的已有数据；切换存储仅改配置，数据需自行导出/导入。")
 	e6Note.Wrapping = fyne.TextWrapWord
 
@@ -238,28 +233,59 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 	})
 	useSQLiteBtn.Importance = widget.HighImportance
 
-	form := widget.NewForm(
+	// Shared data directory (used by both storage modes).
+	dataDirForm := widget.NewForm(
+		widget.NewFormItem("数据目录", container.NewBorder(nil, nil, nil, dataDirBrowse, dataDir)),
+	)
+
+	mysqlForm := widget.NewForm(
 		widget.NewFormItem("主机", host),
 		widget.NewFormItem("端口", portE),
 		widget.NewFormItem("用户名", user),
 		widget.NewFormItem("密码", pass),
 		widget.NewFormItem("数据库", dbname),
-		widget.NewFormItem("数据目录", container.NewBorder(nil, nil, nil, dataDirBrowse, dataDir)),
 	)
+
+	mysqlSection := container.NewVBox(
+		widget.NewLabelWithStyle("MySQL 连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		hint,
+		detectLabel,
+		container.NewHBox(useLocalBtn, startBtn, redetectBtn, downloadBtn),
+		mysqlForm,
+		dedicated,
+		container.NewHBox(testBtn, initBtn),
+	)
+
+	sqliteSection := container.NewVBox(
+		widget.NewLabelWithStyle("SQLite 本地库", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		useSQLiteBtn,
+	)
+
+	// Radio drives which storage panel is visible (E6 explicit choice).
+	// Hidden objects in a VBox collapse, so only one panel occupies space.
+	storageSel.OnChanged = func(sel string) {
+		if strings.Contains(sel, "SQLite") {
+			mysqlSection.Hide()
+			sqliteSection.Show()
+		} else {
+			sqliteSection.Hide()
+			mysqlSection.Show()
+		}
+		status.SetText("")
+	}
+	if base.IsSQLite() {
+		storageSel.SetSelected("SQLite（单机零安装）")
+	} else {
+		storageSel.SetSelected("MySQL（多人/高级）")
+	}
 
 	content := container.NewPadded(container.NewVBox(
 		widget.NewLabelWithStyle("首次运行配置", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		storageSel,
 		e6Note,
-		useSQLiteBtn,
-		widget.NewSeparator(),
-		widget.NewLabelWithStyle("MySQL 连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		hint,
-		detectLabel,
-		container.NewHBox(useLocalBtn, startBtn, redetectBtn, downloadBtn),
-		form,
-		dedicated,
-		container.NewHBox(testBtn, initBtn),
+		dataDirForm,
+		mysqlSection,
+		sqliteSection,
 		status,
 	))
 	w.SetContent(content)

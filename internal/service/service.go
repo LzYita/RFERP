@@ -1056,16 +1056,7 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
 	if err == nil && isSQLiteFile(data) {
-		// D-014: single full snapshot rollback via file replace (no merge).
-		pre, rerr := s.snapshots.Restore(filePath)
-		if rerr != nil {
-			return 0, 0, rerr
-		}
-		if pre != "" {
-			// Caller should prompt restart; pre-restore copy is kept beside the DB file.
-			_ = pre
-		}
-		return 1, 0, nil
+		return 0, 0, fmt.Errorf("SQLite 备份是 .db 快照，当前版本不支持应用内回退；请关闭应用后用快照替换 rferp.db（D-014 整库回退）")
 	}
 	if err != nil {
 		return 0, 0, fmt.Errorf("read file: %w", err)

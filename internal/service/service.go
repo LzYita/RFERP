@@ -23,7 +23,7 @@ import (
 
 // Service 实现 usecase.Applications。业务规则在此；库方言不在此。
 type Service struct {
-	repo      *repository.Repository
+	repo      repository.Store
 	snapshots usecase.SnapshotPort
 	dsn       string
 	cfg       *config.Config
@@ -41,7 +41,7 @@ var (
 	_ usecase.Backup     = (*Service)(nil)
 )
 
-func New(repo *repository.Repository, dsn string, backupTool string, cfg *config.Config) *Service {
+func New(repo repository.Store, dsn string, backupTool string, cfg *config.Config) *Service {
 	return &Service{
 		repo:      repo,
 		snapshots: newMySQLSnapshotPort(dsn, backupTool),

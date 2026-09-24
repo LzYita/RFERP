@@ -18,12 +18,14 @@ import (
 type PartScreen struct {
 	svc        usecase.Applications
 	window     fyne.Window
+	all        []model.Part
 	data       []model.Part
 	table      *widget.Table
 	label      *widget.Label
 	selected   int
 	filterType string
 	filterSel  *widget.Select
+	query      string
 }
 
 func NewPartScreen(svc usecase.Applications, w fyne.Window) *PartScreen {
@@ -38,7 +40,7 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 	s.filterType = "全部"
 	s.filterSel = widget.NewSelect([]string{}, func(t string) {
 		s.filterType = t
-		s.Refresh()
+		s.applyFilter()
 	})
 	s.filterSel.PlaceHolder = "全部"
 
@@ -56,7 +58,11 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 		btns = append(btns, withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.delete), widget.DangerImportance))
 	}
 	btns = append(btns, widget.NewSeparator(), widget.NewLabel("分类:"), s.filterSel)
-	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...))
+	search := newSearchEntry("输入编码/名称/规格筛选", func(q string) {
+		s.query = q
+		s.applyFilter()
+	})
+	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...), search)
 
 	s.label = widget.NewLabel("共 0 条记录")
 
@@ -210,9 +216,18 @@ func (s *PartScreen) Refresh() {
 		showError(s.window, "查询失败", err)
 		return
 	}
-	// 收集所有分类
+	s.all = list
+	s.syncTypeFilter()
+	s.applyFilter()
+}
+
+// syncTypeFilter 依据当前数据重建"分类"下拉项，并保证已选分类仍然有效。
+func (s *PartScreen) syncTypeFilter() {
+	if s.filterSel == nil {
+		return
+	}
 	typeSet := make(map[string]bool)
-	for _, p := range list {
+	for _, p := range s.all {
 		if p.PartType != nil && *p.PartType != "" {
 			typeSet[*p.PartType] = true
 		}
@@ -222,43 +237,51 @@ func (s *PartScreen) Refresh() {
 		typeList = append(typeList, t)
 	}
 	sort.Strings(typeList[1:])
-	if s.filterSel != nil {
-		s.filterSel.Options = typeList
-		if s.filterType != "全部" {
-			found := false
-			for _, t := range typeList {
-				if t == s.filterType {
-					found = true
-					break
-				}
-			}
-			if !found {
-				s.filterType = "全部"
-			}
-		}
-		s.filterSel.Selected = s.filterType
-		s.filterSel.Refresh()
-	}
-	// 应用筛选
 	if s.filterType != "全部" {
-		var filtered []model.Part
-		for _, p := range list {
-			if p.PartType != nil && *p.PartType == s.filterType {
-				filtered = append(filtered, p)
+		found := false
+		for _, t := range typeList {
+			if t == s.filterType {
+				found = true
+				break
 			}
 		}
-		list = filtered
+		if !found {
+			s.filterType = "全部"
+		}
 	}
-	sort.Slice(list, func(i, j int) bool {
-		wi := isLowStock(list[i])
-		wj := isLowStock(list[j])
+	s.filterSel.Options = typeList
+	s.filterSel.Selected = s.filterType
+	s.filterSel.Refresh()
+}
+
+// applyFilter 按分类 + 查询关键字筛选（编码 / 名称 / 规格 / 分类联动），不重新查询数据库。
+func (s *PartScreen) applyFilter() {
+	filtered := make([]model.Part, 0, len(s.all))
+	for _, p := range s.all {
+		if s.filterType != "全部" {
+			if p.PartType == nil || *p.PartType != s.filterType {
+				continue
+			}
+		}
+		hay := p.Code + " " + p.Name + " " + nullStr(p.PartType)
+		if containsFold(hay, s.query) {
+			filtered = append(filtered, p)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		wi := isLowStock(filtered[i])
+		wj := isLowStock(filtered[j])
 		if wi != wj {
 			return wi
 		}
-		return list[i].Code < list[j].Code
+		return filtered[i].Code < filtered[j].Code
 	})
-	s.data = list
-	s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
+	s.data = filtered
+	if s.query == "" {
+		s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
+	} else {
+		s.label.SetText(fmt.Sprintf("匹配 %d / 共 %d 条记录", len(s.data), len(s.all)))
+	}
 	if s.table != nil {
 		s.selected = -1
 		s.table.Refresh()

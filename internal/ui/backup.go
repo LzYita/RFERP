@@ -86,10 +86,10 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 		s.backupPath = backupPath
 	}
 
-	backupBtn := widget.NewButtonWithIcon("一键备份 (mysqldump)", theme.DownloadIcon(), s.doBackup)
+	backupBtn := widget.NewButtonWithIcon("一键备份", theme.DownloadIcon(), s.doBackup)
 	backupBtn.Importance = widget.HighImportance
 
-	s.backupHint = widget.NewLabel(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir()))
+	s.backupHint = widget.NewLabel(fmt.Sprintf("备份当前数据库，文件保存到 %s", paths.BackupDir()))
 	s.backupHint.Wrapping = fyne.TextWrapWord
 	backupBox := container.NewVBox(
 		widget.NewLabelWithStyle("一 键 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
@@ -111,7 +111,7 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 
 	importBox := container.NewVBox(
 		widget.NewLabelWithStyle("导 入 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("从备份的 SQL 文件中提取 INSERT 语句追加导入（不会覆盖已有数据）"),
+		widget.NewLabel("SQLite 数据库快照（.db）会整库恢复并重启应用；MySQL SQL 备份（.sql）仅追加 INSERT，不覆盖已有数据。"),
 		container.NewBorder(nil, nil, nil, browseBtn, importPath),
 		importBtn,
 	)
@@ -236,7 +236,7 @@ func (s *BackupScreen) refreshPaths() {
 		s.dataDirLabel.SetText(s.svc.DataDir())
 	}
 	if s.backupHint != nil {
-		s.backupHint.SetText(fmt.Sprintf("将整个数据库导出为 SQL 文件，保存到 %s", paths.BackupDir()))
+		s.backupHint.SetText(fmt.Sprintf("备份当前数据库，文件保存到 %s", paths.BackupDir()))
 	}
 	if s.auditHint != nil {
 		s.auditHint.SetText(fmt.Sprintf("按日期范围导出操作记录（CSV），可用 Excel 打开，保存到 %s", filepath.Join(paths.ExportDir(), "audit_log")))

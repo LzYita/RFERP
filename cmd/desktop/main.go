@@ -160,7 +160,7 @@ func enterClientMode(a fyne.App, cfg *config.Config) {
 
 func enterLocalMode(a fyne.App, cfg *config.Config) {
 	if cfg.IsSQLite() {
-		log.Printf("run mode=local storage=sqlite path=%s", cfg.ResolveSQLitePath())
+		log.Printf("run mode=local storage=sqlite")
 		enterLocalSQLite(a, cfg)
 		return
 	}
@@ -182,7 +182,12 @@ func enterLocalMode(a fyne.App, cfg *config.Config) {
 }
 
 func enterLocalSQLite(a fyne.App, cfg *config.Config) {
-	path := cfg.ResolveSQLitePath()
+	path, pathErr := cfg.ResolveSQLitePath()
+	if pathErr != nil {
+		log.Printf("sqlite path: %v", pathErr)
+		winmsg.Error("RFERP 无法确定本机数据库路径", pathErr.Error())
+		return
+	}
 	db, err := repository.OpenSQLite(path)
 	if err != nil {
 		log.Printf("sqlite open failed: %v", err)

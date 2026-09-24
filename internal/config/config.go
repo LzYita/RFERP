@@ -336,15 +336,16 @@ func (c *Config) IsSQLite() bool {
 }
 
 // ResolveSQLitePath 返回 SQLite 文件完整路径；未配置时为 DataDir/rferp.db。
-func (c *Config) ResolveSQLitePath() string {
+// DataDir 与 sqlitePath 均为空时报错，绝不落到进程 CWD（D-002）。
+func (c *Config) ResolveSQLitePath() (string, error) {
 	if p := strings.TrimSpace(c.SQLitePath); p != "" {
-		return p
+		return p, nil
 	}
 	base := strings.TrimSpace(c.DataDir)
 	if base == "" {
-		base = "."
+		return "", fmt.Errorf("DataDir 未配置，无法确定 SQLite 路径（请设置 dataDir 或 sqlitePath）")
 	}
-	return filepath.Join(base, DefaultSQLiteFileName)
+	return filepath.Join(base, DefaultSQLiteFileName), nil
 }
 
 // SetStorage 显式切换 Local 存储（E6）。不迁移业务数据，仅改配置。
@@ -356,8 +357,8 @@ func (c *Config) SetStorage(kind, sqlitePath string) error {
 		if sqlitePath != "" {
 			c.SQLitePath = sqlitePath
 		}
-		if c.ResolveSQLitePath() == "" {
-			return fmt.Errorf("SQLite 路径不能为空")
+		if _, err := c.ResolveSQLitePath(); err != nil {
+			return err
 		}
 	case StorageMySQL:
 		c.Storage = StorageMySQL

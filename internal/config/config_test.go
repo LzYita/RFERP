@@ -88,8 +88,9 @@ func TestStorageDefaultsToMySQLAndE6NoSilentSwitch(t *testing.T) {
 	if !cfg2.IsSQLite() {
 		t.Fatal("explicit storage=sqlite should be SQLite")
 	}
-	if got := cfg2.ResolveSQLitePath(); got != filepath.Join(`E:\data`, DefaultSQLiteFileName) {
-		t.Fatalf("sqlite path = %q", got)
+	got, pathErr := cfg2.ResolveSQLitePath()
+	if pathErr != nil || got != filepath.Join(`E:\data`, DefaultSQLiteFileName) {
+		t.Fatalf("sqlite path = %q err=%v", got, pathErr)
 	}
 
 	// Client mode never counts as local SQLite.

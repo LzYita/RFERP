@@ -120,6 +120,7 @@ func (s *UsersScreen) Refresh() {
 		return
 	}
 	s.data = list
+	s.fitColumns()
 	if s.label != nil {
 		s.label.SetText(fmt.Sprintf("共 %d 个用户", len(s.data)))
 	}

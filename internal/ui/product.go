@@ -17,10 +17,12 @@ import (
 type ProductScreen struct {
 	svc      usecase.Applications
 	window   fyne.Window
+	all      []model.Product
 	data     []model.Product
 	table    *widget.Table
 	label    *widget.Label
 	selected int
+	query    string
 }
 
 func NewProductScreen(svc usecase.Applications, w fyne.Window) *ProductScreen {
@@ -36,7 +38,11 @@ func (s *ProductScreen) Build() fyne.CanvasObject {
 			withImportance(widget.NewButtonWithIcon("删除", theme.DeleteIcon(), s.delete), widget.DangerImportance),
 		)
 	}
-	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...))
+	search := newSearchEntry("输入编码/名称/规格筛选", func(q string) {
+		s.query = q
+		s.applyFilter()
+	})
+	topBar := container.NewBorder(nil, nil, nil, container.NewHBox(btns...), search)
 
 	s.label = widget.NewLabel("共 0 条记录")
 
@@ -119,8 +125,25 @@ func (s *ProductScreen) Refresh() {
 		showError(s.window, "查询失败", err)
 		return
 	}
-	s.data = list
-	s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
+	s.all = list
+	s.applyFilter()
+}
+
+// applyFilter 按查询关键字筛选（编码 / 名称 / 规格联动），不重新查询数据库。
+func (s *ProductScreen) applyFilter() {
+	filtered := make([]model.Product, 0, len(s.all))
+	for _, p := range s.all {
+		if containsFold(p.Code+" "+p.Name+" "+nullStr(p.Spec), s.query) {
+			filtered = append(filtered, p)
+		}
+	}
+	s.data = filtered
+	s.fitColumns()
+	if s.query == "" {
+		s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
+	} else {
+		s.label.SetText(fmt.Sprintf("匹配 %d / 共 %d 条记录", len(s.data), len(s.all)))
+	}
 	if s.table != nil {
 		s.selected = -1
 		s.table.Refresh()

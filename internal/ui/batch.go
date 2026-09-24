@@ -208,6 +208,7 @@ func (s *BatchScreen) Refresh() {
 		return
 	}
 	s.data = list
+	s.fitColumns()
 	s.label.SetText(fmt.Sprintf("共 %d 批", len(s.data)))
 	if s.table != nil {
 		s.selected = -1

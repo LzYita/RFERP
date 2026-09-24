@@ -57,8 +57,8 @@ func applyMySQLProductsCodeUnique(db *sqlx.DB) error {
 }
 
 func assertSQLiteProductsCodeUnique(db *sqlx.DB) error {
-	// 基线已声明 code UNIQUE；空库探测不可靠时接受列定义。
-	// 有数据则试插重复编码，必须失败。
+	// Baseline already declares code UNIQUE. Probe with a duplicate insert and
+	// roll back so a failed assert never leaves a row behind.
 	var n int
 	if err := db.Get(&n, `SELECT COUNT(*) FROM products`); err != nil {
 		return err
@@ -70,10 +70,17 @@ func assertSQLiteProductsCodeUnique(db *sqlx.DB) error {
 	if err := db.Get(&code, `SELECT code FROM products LIMIT 1`); err != nil {
 		return err
 	}
-	_, err := db.Exec(`INSERT INTO products (code,name) VALUES (?, 'dup-probe')`, code)
+	tx, err := db.Beginx()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO products (code,name) VALUES (?, 'dup-probe')`, code)
 	if err == nil {
+		_ = tx.Rollback()
 		return errUniqueNotEnforced
 	}
+	// UNIQUE fired as required; discard the aborted probe.
+	_ = tx.Rollback()
 	return nil
 }
 

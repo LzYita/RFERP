@@ -191,7 +191,7 @@ func (r *Repository) CreateProduct(p *model.Product) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -220,7 +220,7 @@ func (r *Repository) UpdateProduct(p *model.Product) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -238,7 +238,7 @@ func (r *Repository) CreatePart(p *model.Part) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -267,7 +267,7 @@ func (r *Repository) UpdatePart(p *model.Part) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -285,7 +285,7 @@ func (r *Repository) CreateBOMItem(b *model.BOMItem) (int64, error) {
 		b.ProductID, b.PartID, b.Quantity, b.LossRate, b.Remark, b.Operator, b.Replaceable, b.UseMode,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -368,7 +368,7 @@ func (r *Repository) CreateBatch(b *model.ProductBatch) (int64, error) {
 		b.BatchNo, b.ProductID, b.PlanQty, b.Status, b.Operator, b.Customer,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -419,7 +419,7 @@ func (r *Repository) UpdateBatchStatus(id int64, status int, operator string) (i
 		status, operator, id,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -442,7 +442,7 @@ func (t *Tx) CreateBatch(b *model.ProductBatch) (int64, error) {
 		b.BatchNo, b.ProductID, b.PlanQty, b.Status, b.Operator, b.Customer,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -477,7 +477,7 @@ func (t *Tx) CreateProduct(p *model.Product) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -488,7 +488,7 @@ func (t *Tx) UpdateProduct(p *model.Product) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -504,7 +504,7 @@ func (t *Tx) CreatePart(p *model.Part) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -515,7 +515,7 @@ func (t *Tx) UpdatePart(p *model.Part) (int64, error) {
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.RowsAffected()
 }
@@ -542,7 +542,7 @@ func (t *Tx) CreateBOMItem(b *model.BOMItem) (int64, error) {
 		b.ProductID, b.PartID, b.Quantity, b.LossRate, b.Remark, b.Operator, b.Replaceable, b.UseMode,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -613,7 +613,7 @@ func (t *Tx) CreateAuditLog(log *model.AuditLog) error {
 		`INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)`,
 		log.TableName, log.RecordID, log.Action, oldJSON, newJSON, log.Operator,
 	)
-	return err
+	return TranslateError(err)
 }
 
 func (t *Tx) CreateBatchConsumption(c *model.BatchConsumption) error {
@@ -621,7 +621,7 @@ func (t *Tx) CreateBatchConsumption(c *model.BatchConsumption) error {
 		`INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)`,
 		c.BatchID, c.PartID, c.ConsumedQty,
 	)
-	return err
+	return TranslateError(err)
 }
 
 func (t *Tx) CreateTrace(trace *model.BatchTrace) (int64, error) {
@@ -630,7 +630,7 @@ func (t *Tx) CreateTrace(trace *model.BatchTrace) (int64, error) {
 		trace.BatchID, trace.PartID, trace.PartBatchNo, trace.UsedQty, trace.Supplier, trace.Operator,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -653,7 +653,7 @@ func (r *Repository) ListAllBatchConsumptions() ([]model.BatchConsumption, error
 
 func (t *Tx) AddSkipPart(batchID, partID int64) error {
 	_, err := t.tx.Exec(`INSERT IGNORE INTO batch_skip_parts (batch_id,part_id) VALUES (?,?)`, batchID, partID)
-	return err
+	return TranslateError(err)
 }
 
 func (t *Tx) RemoveSkipPart(batchID, partID int64) error {
@@ -669,7 +669,7 @@ func (r *Repository) CreateTrace(t *model.BatchTrace) (int64, error) {
 		t.BatchID, t.PartID, t.PartBatchNo, t.UsedQty, t.Supplier, t.Operator,
 	)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }
@@ -760,7 +760,7 @@ func (r *Repository) CreateAuditLog(log *model.AuditLog) error {
 		`INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)`,
 		log.TableName, log.RecordID, log.Action, oldJSON, newJSON, log.Operator,
 	)
-	return err
+	return TranslateError(err)
 }
 
 func toRawJSON(m *map[string]any) []byte {
@@ -887,7 +887,7 @@ func (r *Repository) CreateUser(u *model.User) (int64, error) {
 		`INSERT INTO users (username,password_hash,display_name,role,status) VALUES (?,?,?,?,?)`,
 		u.Username, u.PasswordHash, u.DisplayName, u.Role, u.Status)
 	if err != nil {
-		return 0, err
+		return 0, TranslateError(err)
 	}
 	return res.LastInsertId()
 }

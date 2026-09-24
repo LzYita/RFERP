@@ -620,7 +620,7 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 			return fmt.Errorf("update batch status: %w", err)
 		}
 		if affected == 0 {
-			return fmt.Errorf("batch state changed, please refresh and retry")
+			return repository.ErrOptimisticLock
 		}
 		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "UPDATE_STATUS", oldMap, map[string]any{"status": status}, operator}); err != nil {
 			return err
@@ -684,7 +684,7 @@ func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
 			return fmt.Errorf("update batch status: %w", err)
 		}
 		if affected == 0 {
-			return fmt.Errorf("batch state changed, please refresh and retry")
+			return repository.ErrOptimisticLock
 		}
 		if err := s.writeAuditTx(tx, auditEntry{"product_batches", id, "REVOKE", batch, map[string]any{
 			"batch_no":     batch.BatchNo,

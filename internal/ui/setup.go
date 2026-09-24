@@ -215,18 +215,20 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 			status.SetText("请先填写数据目录（SQLite 文件默认放在该目录下）。")
 			return
 		}
+		// E6: never persist the switch until the user confirms.
 		cfg := *base
 		cfg.DataDir = dd
-		if err := cfg.SetStorage(config.StorageSQLite, filepath.Join(dd, config.DefaultSQLiteFileName)); err != nil {
-			status.SetText("保存 SQLite 配置失败：" + err.Error())
-			return
-		}
+		sqlitePath := filepath.Join(dd, config.DefaultSQLiteFileName)
 		dialog.NewConfirm("确认切换到 SQLite",
 			"切换到 SQLite 本地库不会自动迁移已有 MySQL 数据。\n"+
-				"数据库文件：\n"+filepath.Join(dd, config.DefaultSQLiteFileName)+"\n\n"+
+				"数据库文件：\n"+sqlitePath+"\n\n"+
 				"确定使用 SQLite 单机模式启动吗？",
 			func(ok bool) {
 				if !ok {
+					return
+				}
+				if err := cfg.SetStorage(config.StorageSQLite, sqlitePath); err != nil {
+					status.SetText("保存 SQLite 配置失败：" + err.Error())
 					return
 				}
 				paths.SetDataDir(dd)

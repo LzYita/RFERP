@@ -60,7 +60,6 @@ func RunSQLite(db *sqlx.DB) (Result, error) {
 	}
 
 	// 已在 v11 的库继续应用 v12+ steps（不再要求 cur==CurrentSchemaVersion）。
-	// 已在 v11 的库继续应用 v12+ steps（不再要求 cur==CurrentSchemaVersion）。
 	var pending []Step
 	for _, s := range steps {
 		if s.Version > cur && s.SQLite != nil {

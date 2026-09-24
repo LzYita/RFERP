@@ -101,13 +101,25 @@ jobs:
         shell: pwsh
         run: go vet ./...
 
+      - name: Build all packages
+        shell: pwsh
+        run: |
+          # Compile every package (cmd/desktop, cmd/server, keygen, signmanifest, internal/...)
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test
         shell: pwsh
-        run: go test ./... -count=1
+        run: |
+          # Integration tests skip without RFERP_TEST_DSN (local isolated MySQL); CI stays mock-only.
+          go test ./... -count=1 -shuffle=on -timeout 5m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Race test
         shell: pwsh
-        run: go test -race ./... -count=1
+        run: |
+          go test -race ./... -count=1 -shuffle=on -timeout 10m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows GUI executable
         shell: pwsh

@@ -21,11 +21,11 @@ import (
 func strPtr(s string) *string { return &s }
 
 // TestAPIStockInFlowIntegration 连独立开发库跑通登录→入库→审计（C5）。
-// 需设置 RFERP_TEST_DSN，例如：
+// 需设置 RFERP_TEST_DSN，例如（go-sql-driver 需要 user:pass@tcp，空密码保留冒号）：
 //
-//	rferp_test:tcp(127.0.0.1:33306)/rferp_dev_api?parseTime=true
+//	rferp_test:@tcp(127.0.0.1:33306)/rferp_dev_api?parseTime=true
 //
-// 使用隔离测试实例（私有 mysql-test），禁止指向业务库。
+// 使用隔离测试实例（私有 mysql-test），禁止指向业务库。该测试会清空目标库中的业务表。
 func TestAPIStockInFlowIntegration(t *testing.T) {
 	dsn := os.Getenv("RFERP_TEST_DSN")
 	if dsn == "" {

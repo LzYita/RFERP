@@ -8,15 +8,16 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// RunSQLite 将 SQLite 库迁到 CurrentSchemaVersion。
+// RunSQLite 将 SQLite 库迁到目标版本。
 //
 // 策略（D-015）：
 //   - 空库：应用 v11 终态基线，并记 schema_migrations = 1..11
-//   - 已在 v11：无事可做
 //   - 低于 v11 且已有业务表：不支持从历史半成品升级（Local 新库路径专用），明确报错
 //   - 高于 11 的 pending：按 steps 双端描述执行
 //
-// 不做 mysqldump 备份；文件级快照由 SnapshotPort（PR3）负责。
+// 备份策略（与 AGENTS 对齐）：空库基线不需要升级前快照；一旦 steps 非空且
+// 当前版本有 pending，**应在调用前**用 SnapshotPort（SQLite=VACUUM INTO）保留
+// 当前文件。本函数暂不自动快照，由装配层（cmd/desktop）在 pending 时负责。
 func RunSQLite(db *sqlx.DB) (Result, error) {
 	var res Result
 	if err := execAll(db, []string{sqliteSchemaMigrationsDDL}); err != nil {
@@ -45,6 +46,10 @@ func RunSQLite(db *sqlx.DB) (Result, error) {
 				res.Applied = append(res.Applied, v.Version)
 			}
 			res.ToVersion = CurrentSchemaVersion
+			// Apply v12+ steps on top of the baseline (usually no-ops).
+			if err := applySQLiteSteps(db, CurrentSchemaVersion, &res); err != nil {
+				return res, err
+			}
 			return res, nil
 		}
 		return res, fmt.Errorf("sqlite: database has tables but schema_migrations is empty; refuse to guess history")
@@ -54,6 +59,8 @@ func RunSQLite(db *sqlx.DB) (Result, error) {
 		return res, fmt.Errorf("sqlite: version %d is below baseline %d and is not a supported upgrade path; use a new file or export/import", cur, CurrentSchemaVersion)
 	}
 
+	// 已在 v11 的库继续应用 v12+ steps（不再要求 cur==CurrentSchemaVersion）。
+	// 已在 v11 的库继续应用 v12+ steps（不再要求 cur==CurrentSchemaVersion）。
 	var pending []Step
 	for _, s := range steps {
 		if s.Version > cur && s.SQLite != nil {
@@ -76,6 +83,29 @@ func RunSQLite(db *sqlx.DB) (Result, error) {
 		res.ToVersion = cur
 	}
 	return res, nil
+}
+
+func applySQLiteSteps(db *sqlx.DB, from int, res *Result) error {
+	for _, s := range steps {
+		if s.Version <= from || s.SQLite == nil {
+			continue
+		}
+		var exists int
+		_ = db.Get(&exists, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, s.Version)
+		if exists > 0 {
+			continue
+		}
+		log.Printf("migrate/sqlite: applying v%d %s", s.Version, s.Name)
+		if err := s.SQLite(db); err != nil {
+			return fmt.Errorf("migration v%d (%s) failed: %w", s.Version, s.Name, err)
+		}
+		if err := recordVersionSQL(db, s.Version, s.Name); err != nil {
+			return fmt.Errorf("record v%d: %w", s.Version, err)
+		}
+		res.Applied = append(res.Applied, s.Version)
+		res.ToVersion = s.Version
+	}
+	return nil
 }
 
 func applySQLiteBaseline(db *sqlx.DB) error {

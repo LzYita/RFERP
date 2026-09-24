@@ -62,6 +62,9 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 	}
 	if len(pending) == 0 {
 		res.ToVersion = cur
+		if err := applyStepMigrations(db, cur, &res); err != nil {
+			return res, err
+		}
 		return res, nil
 	}
 
@@ -91,6 +94,10 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 		res.Applied = append(res.Applied, m.Version)
 	}
 	res.ToVersion = pending[len(pending)-1].Version
+	// v12+ portable steps (dual MySQL/SQLite). Snapshot before these when DB is non-empty.
+	if err := applyStepMigrations(db, cur, &res); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -216,6 +223,12 @@ func applyBOMReplaceableUseMode(db *sqlx.DB) error {
 	return nil
 }
 
+// applyProductsDropCodeIndex 放开 products.code 唯一约束（仅对老库生效）。
+//
+// 背景：v1 曾声明 code UNIQUE，但真实业务里编码是产品系列号，同系列多颜色共用
+// 同一编码（同系列不同颜色/规格的变体共用编码），唯一约束无法成立，故 v4 起放开。
+// v1 的建表语句已同步去掉 UNIQUE，因此本步骤只对「老库仍带该索引」的情况做清理；
+// 索引名沿用 MySQL 为列级 UNIQUE 自动生成的 `code`。
 func applyProductsDropCodeIndex(db *sqlx.DB) error {
 	ok, err := indexExists(db, "products", "code")
 	if err != nil || !ok {
@@ -395,7 +408,7 @@ func applyBatchConsumptionChecks(db *sqlx.DB) error {
 var baseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-		code        VARCHAR(50)  NOT NULL UNIQUE COMMENT '产品编码',
+		code        VARCHAR(50)  NOT NULL COMMENT '产品编码',
 		name        VARCHAR(200) NOT NULL COMMENT '产品名称',
 		spec        VARCHAR(500)          COMMENT '规格型号',
 		unit        VARCHAR(20)  NOT NULL DEFAULT '个' COMMENT '单位',
@@ -405,6 +418,8 @@ var baseSchema = []string{
 		updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		operator    VARCHAR(50)          COMMENT '最后操作人'
 	) COMMENT '产品档案'`,
+	// 注意：parts.code 保持 UNIQUE（零件编码必须唯一，真实数据中无重复）。
+	// 这与 products.code 不同 —— 产品编码是系列号，允许重复。
 	`CREATE TABLE IF NOT EXISTS parts (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
 		code        VARCHAR(50)  NOT NULL UNIQUE COMMENT '零件编码',
@@ -474,4 +489,29 @@ var baseSchema = []string{
 		INDEX idx_table_record (table_name, record_id),
 		INDEX idx_created (created_at)
 	) COMMENT '审计日志-记录所有数据变更'`,
+}
+
+// applyStepMigrations applies v12+ dual-end steps on MySQL.
+func applyStepMigrations(db *sqlx.DB, from int, res *Result) error {
+	for _, s := range steps {
+		if s.Version <= from || s.MySQL == nil {
+			continue
+		}
+		// Also skip if already recorded (idempotent re-run).
+		var exists int
+		_ = db.Get(&exists, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, s.Version)
+		if exists > 0 {
+			continue
+		}
+		log.Printf("migrate: applying v%d %s", s.Version, s.Name)
+		if err := s.MySQL(db); err != nil {
+			return fmt.Errorf("migration v%d (%s) failed: %w", s.Version, s.Name, err)
+		}
+		if err := recordVersion(db, s.Version, s.Name); err != nil {
+			return fmt.Errorf("record v%d: %w", s.Version, err)
+		}
+		res.Applied = append(res.Applied, s.Version)
+		res.ToVersion = s.Version
+	}
+	return nil
 }

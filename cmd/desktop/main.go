@@ -28,6 +28,8 @@ import (
 	"app/internal/usecase"
 	"app/internal/winappid"
 	"app/internal/winmsg"
+
+	_ "modernc.org/sqlite"
 )
 
 var version = "dev"
@@ -157,7 +159,12 @@ func enterClientMode(a fyne.App, cfg *config.Config) {
 }
 
 func enterLocalMode(a fyne.App, cfg *config.Config) {
-	log.Printf("run mode=local")
+	if cfg.IsSQLite() {
+		log.Printf("run mode=local storage=sqlite")
+		enterLocalSQLite(a, cfg)
+		return
+	}
+	log.Printf("run mode=local storage=mysql")
 	if cfg.Loaded() {
 		ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
 	}
@@ -167,14 +174,47 @@ func enterLocalMode(a fyne.App, cfg *config.Config) {
 		log.Printf("database connection failed: %v", err)
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
-			enterLocalDB(a, newCfg, newDB)
+			if newCfg.IsSQLite() {
+				enterLocalSQLite(a, newCfg)
+				return
+			}
+			enterLocalMySQL(a, newCfg, newDB)
 		})
 		return
 	}
-	enterLocalDB(a, cfg, db)
+	enterLocalMySQL(a, cfg, db)
 }
 
-func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
+func enterLocalSQLite(a fyne.App, cfg *config.Config) {
+	path, pathErr := cfg.ResolveSQLitePath()
+	if pathErr != nil {
+		log.Printf("sqlite path: %v", pathErr)
+		winmsg.Error("RFERP 无法确定本机数据库路径", pathErr.Error())
+		return
+	}
+	db, err := repository.OpenSQLite(path)
+	if err != nil {
+		log.Printf("sqlite open failed: %v", err)
+		winmsg.Error("RFERP 无法打开本机数据库", err.Error())
+		return
+	}
+	res, err := migrate.RunSQLite(db)
+	if err != nil {
+		log.Printf("sqlite migration failed: %v", err)
+		_ = db.Close()
+		winmsg.Error("RFERP 数据库升级失败", err.Error())
+		return
+	}
+	if len(res.Applied) > 0 {
+		log.Printf("sqlite migration applied: %v", res.Applied)
+	}
+	store := repository.NewSQLite(db)
+	closer := func() error { return db.Close() }
+	apps := service.NewWithSnapshot(store, service.NewSQLiteSnapshotPort(path, closer), cfg)
+	launchLocalUI(a, cfg, apps)
+}
+
+func enterLocalMySQL(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
@@ -191,8 +231,11 @@ func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
 	}
 
-	apps := assembleApps(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+	apps := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
+	launchLocalUI(a, cfg, apps)
+}
 
+func launchLocalUI(a fyne.App, cfg *config.Config, apps usecase.Applications) {
 	if u, ok := ui.TryAutoLogin(apps); ok {
 		log.Printf("auto login: %s", u.Username)
 		launchMain(a, cfg, apps)
@@ -202,12 +245,6 @@ func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 		log.Printf("login: %s (%s)", u.Username, u.Role)
 		launchMain(a, cfg, apps)
 	})
-}
-
-// assembleApps 是应用组装点（A4）：UI 只见 usecase.Applications，
-// 具体 Service / Repository / 备份适配在此接线（D-013）。
-func assembleApps(repo *repository.Repository, dsn, backupTool string, cfg *config.Config) usecase.Applications {
-	return service.New(repo, dsn, backupTool, cfg)
 }
 
 func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {

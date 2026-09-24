@@ -3,11 +3,13 @@ package ui
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/jmoiron/sqlx"
@@ -196,23 +198,94 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 	hint := widget.NewLabel("连接信息将使用 Windows DPAPI 加密后保存在本机。")
 	hint.Wrapping = fyne.TextWrapWord
 
-	form := widget.NewForm(
+	// E5/E6 storage choice: empty/legacy stays MySQL; SQLite is explicit only.
+	storageSel := widget.NewRadioGroup([]string{"MySQL（多人/高级）", "SQLite（单机零安装）"}, nil)
+	storageSel.Horizontal = true
+	e6Note := widget.NewLabel("选择 SQLite 不会自动迁移 MySQL 中的已有数据；切换存储仅改配置，数据需自行导出/导入。")
+	e6Note.Wrapping = fyne.TextWrapWord
+
+	useSQLiteBtn := widget.NewButton("使用 SQLite 本地库", func() {
+		dd := strings.TrimSpace(dataDir.Text)
+		if dd == "" {
+			status.SetText("请先填写数据目录（SQLite 文件默认放在该目录下）。")
+			return
+		}
+		// E6: never persist the switch until the user confirms.
+		cfg := *base
+		cfg.DataDir = dd
+		sqlitePath := filepath.Join(dd, config.DefaultSQLiteFileName)
+		dialog.NewConfirm("确认切换到 SQLite",
+			"切换到 SQLite 本地库不会自动迁移已有 MySQL 数据。\n"+
+				"数据库文件：\n"+sqlitePath+"\n\n"+
+				"确定使用 SQLite 单机模式启动吗？",
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				if err := cfg.SetStorage(config.StorageSQLite, sqlitePath); err != nil {
+					status.SetText("保存 SQLite 配置失败：" + err.Error())
+					return
+				}
+				paths.SetDataDir(dd)
+				onReady(&cfg, nil)
+				w.Close()
+			}, w).Show()
+	})
+	useSQLiteBtn.Importance = widget.HighImportance
+
+	// Shared data directory (used by both storage modes).
+	dataDirForm := widget.NewForm(
+		widget.NewFormItem("数据目录", container.NewBorder(nil, nil, nil, dataDirBrowse, dataDir)),
+	)
+
+	mysqlForm := widget.NewForm(
 		widget.NewFormItem("主机", host),
 		widget.NewFormItem("端口", portE),
 		widget.NewFormItem("用户名", user),
 		widget.NewFormItem("密码", pass),
 		widget.NewFormItem("数据库", dbname),
-		widget.NewFormItem("数据目录", container.NewBorder(nil, nil, nil, dataDirBrowse, dataDir)),
 	)
 
-	content := container.NewPadded(container.NewVBox(
-		widget.NewLabelWithStyle("首次运行配置", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+	mysqlSection := container.NewVBox(
+		widget.NewLabelWithStyle("MySQL 连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		hint,
 		detectLabel,
 		container.NewHBox(useLocalBtn, startBtn, redetectBtn, downloadBtn),
-		form,
+		mysqlForm,
 		dedicated,
 		container.NewHBox(testBtn, initBtn),
+	)
+
+	sqliteSection := container.NewVBox(
+		widget.NewLabelWithStyle("SQLite 本地库", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		useSQLiteBtn,
+	)
+
+	// Radio drives which storage panel is visible (E6 explicit choice).
+	// Hidden objects in a VBox collapse, so only one panel occupies space.
+	storageSel.OnChanged = func(sel string) {
+		if strings.Contains(sel, "SQLite") {
+			mysqlSection.Hide()
+			sqliteSection.Show()
+		} else {
+			sqliteSection.Hide()
+			mysqlSection.Show()
+		}
+		status.SetText("")
+	}
+	if base.IsSQLite() {
+		storageSel.SetSelected("SQLite（单机零安装）")
+	} else {
+		storageSel.SetSelected("MySQL（多人/高级）")
+	}
+
+	content := container.NewPadded(container.NewVBox(
+		widget.NewLabelWithStyle("首次运行配置", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		storageSel,
+		e6Note,
+		dataDirForm,
+		mysqlSection,
+		sqliteSection,
 		status,
 	))
 	w.SetContent(content)

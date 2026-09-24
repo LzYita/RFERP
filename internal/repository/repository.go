@@ -100,13 +100,13 @@ type sessionChecks struct {
 // WithBulkLoad runs operation on one physical connection with MySQL session
 // checks disabled (FK/UNIQUE), then restores them. Dialect stays in this
 // adapter; Service must not issue these statements.
-func (r *Repository) WithBulkLoad(operation func(*Tx) error) error {
+func (r *Repository) WithBulkLoad(operation func(TxOps) error) error {
 	return r.WithConn(func(conn *Conn) error {
 		return withMySQLChecksDisabled(conn, operation)
 	})
 }
 
-func withMySQLChecksDisabled(conn *Conn, operation func(*Tx) error) (retErr error) {
+func withMySQLChecksDisabled(conn *Conn, operation func(TxOps) error) (retErr error) {
 	var previous sessionChecks
 	if err := conn.Get(&previous, "SELECT @@FOREIGN_KEY_CHECKS AS foreign_key_checks, @@UNIQUE_CHECKS AS unique_checks"); err != nil {
 		return fmt.Errorf("read MySQL session checks: %w", err)
@@ -153,7 +153,7 @@ func withMySQLChecksDisabled(conn *Conn, operation func(*Tx) error) (retErr erro
 // WithTx runs fn in a transaction and commits only when fn succeeds. Callers
 // use the transaction for every read-modify-write and audit operation that
 // must share one commit boundary.
-func (r *Repository) WithTx(fn func(*Tx) error) error {
+func (r *Repository) WithTx(fn func(TxOps) error) error {
 	tx, err := r.db.Beginx()
 	if err != nil {
 		return err
@@ -318,14 +318,8 @@ func (r *Repository) DeleteBatch(id int64) error {
 	return err
 }
 
-func (r *Repository) GetAllSkippedParts() ([]struct {
-	BatchID int64 `db:"batch_id"`
-	PartID  int64 `db:"part_id"`
-}, error) {
-	var rows []struct {
-		BatchID int64 `db:"batch_id"`
-		PartID  int64 `db:"part_id"`
-	}
+func (r *Repository) GetAllSkippedParts() ([]SkipPartRow, error) {
+	var rows []SkipPartRow
 	err := r.db.Select(&rows, `SELECT batch_id, part_id FROM batch_skip_parts ORDER BY batch_id`)
 	return rows, err
 }
@@ -337,7 +331,7 @@ func (r *Repository) GetSkippedParts(batchID int64) ([]int64, error) {
 }
 
 func (r *Repository) AddSkipPart(batchID, partID int64) error {
-	return r.WithTx(func(tx *Tx) error {
+	return r.WithTx(func(tx TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
 			return err
@@ -353,7 +347,7 @@ func (r *Repository) AddSkipPart(batchID, partID int64) error {
 }
 
 func (r *Repository) RemoveSkipPart(batchID, partID int64) error {
-	return r.WithTx(func(tx *Tx) error {
+	return r.WithTx(func(tx TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
 			return err
@@ -402,7 +396,7 @@ func (r *Repository) ListBatches() ([]model.ProductBatch, error) {
 }
 
 func (r *Repository) UpdatePartStock(partID int64, newQty float64) error {
-	return r.WithTx(func(tx *Tx) error {
+	return r.WithTx(func(tx TxOps) error {
 		part, err := tx.GetPartForUpdate(partID)
 		if err != nil {
 			return err

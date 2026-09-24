@@ -23,7 +23,7 @@ import (
 
 // Service 实现 usecase.Applications。业务规则在此；库方言不在此。
 type Service struct {
-	repo      *repository.Repository
+	repo      repository.Store
 	snapshots usecase.SnapshotPort
 	dsn       string
 	cfg       *config.Config
@@ -41,11 +41,20 @@ var (
 	_ usecase.Backup     = (*Service)(nil)
 )
 
-func New(repo *repository.Repository, dsn string, backupTool string, cfg *config.Config) *Service {
+func New(repo repository.Store, dsn string, backupTool string, cfg *config.Config) *Service {
 	return &Service{
 		repo:      repo,
 		snapshots: newMySQLSnapshotPort(dsn, backupTool),
 		dsn:       dsn,
+		cfg:       cfg,
+	}
+}
+
+// NewWithSnapshot assembles Service with an explicit SnapshotPort (SQLite / tests).
+func NewWithSnapshot(repo repository.Store, snapshots usecase.SnapshotPort, cfg *config.Config) *Service {
+	return &Service{
+		repo:      repo,
+		snapshots: snapshots,
 		cfg:       cfg,
 	}
 }
@@ -175,7 +184,7 @@ func (s *Service) writeAudit(e auditEntry) error {
 	return nil
 }
 
-func (s *Service) writeAuditTx(tx *repository.Tx, e auditEntry) error {
+func (s *Service) writeAuditTx(tx repository.TxOps, e auditEntry) error {
 	oldJSON, err := toJSON(e.OldData)
 	if err != nil {
 		return fmt.Errorf("marshal audit old data: %w", err)
@@ -222,7 +231,7 @@ func (s *Service) CreateProduct(p *model.Product) (*model.Product, error) {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	p.Version = 1
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		id, err := tx.CreateProduct(p)
 		if err != nil {
 			return fmt.Errorf("create product: %w", err)
@@ -248,7 +257,7 @@ func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
 	if p == nil {
 		return nil, fmt.Errorf("产品不能为空")
 	}
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetProductForUpdate(p.ID)
 		if err != nil {
 			return err
@@ -273,7 +282,7 @@ func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
 }
 
 func (s *Service) DeleteProduct(id int64, operator string) error {
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetProductForUpdate(id)
 		if err != nil {
 			return err
@@ -294,7 +303,7 @@ func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
 	if err := validatePartQuantities(p); err != nil {
 		return nil, err
 	}
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		id, err := tx.CreatePart(p)
 		if err != nil {
 			return fmt.Errorf("create part: %w", err)
@@ -320,7 +329,7 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 	if err := validatePartQuantities(p); err != nil {
 		return nil, err
 	}
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(p.ID)
 		if err != nil {
 			return err
@@ -345,7 +354,7 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 }
 
 func (s *Service) DeletePart(id int64, operator string) error {
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(id)
 		if err != nil {
 			return err
@@ -364,7 +373,7 @@ func (s *Service) StockIn(in usecase.StockInInput) error {
 	if err := validatePositiveQuantity("入库数量", in.Qty); err != nil {
 		return err
 	}
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
@@ -389,7 +398,7 @@ func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
 		return err
 	}
 	newQty := quantizeQuantity(in.NewQty)
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
@@ -414,7 +423,7 @@ func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 	if err := validateBOMItem(b); err != nil {
 		return nil, err
 	}
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		// 校验产品和零件存在，并锁定零件避免并发删除。
 		prod, err := tx.GetProduct(b.ProductID)
 		if err != nil {
@@ -448,7 +457,7 @@ func (s *Service) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 }
 
 func (s *Service) RemoveBOMItem(id int64, operator string) error {
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		if err := tx.DeleteBOMItem(id); err != nil {
 			return err
 		}
@@ -465,7 +474,7 @@ func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error
 	if err := validatePlanQty(b.PlanQty); err != nil {
 		return nil, err
 	}
-	err := s.repo.WithTx(func(tx *repository.Tx) error {
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		prod, err := tx.GetProduct(b.ProductID)
 		if err != nil {
 			return err
@@ -500,7 +509,7 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 
 func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 	id, status, operator := in.ID, in.Status, in.Operator
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
 			return fmt.Errorf("get batch: %w", err)
@@ -622,7 +631,7 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 
 func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
 	id, operator := in.ID, in.Operator
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
 			return fmt.Errorf("get batch: %w", err)
@@ -941,7 +950,7 @@ func numVal(v any) float64 {
 }
 
 func (s *Service) AddSkipPart(batchID, partID int64) error {
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
 			return fmt.Errorf("get batch: %w", err)
@@ -960,7 +969,7 @@ func (s *Service) AddSkipPart(batchID, partID int64) error {
 }
 
 func (s *Service) RemoveSkipPart(batchID, partID int64) error {
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
 			return fmt.Errorf("get batch: %w", err)
@@ -1007,7 +1016,7 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 			return fmt.Errorf("第%d条投料记录无效: %w", i+1, err)
 		}
 	}
-	return s.repo.WithTx(func(tx *repository.Tx) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
 		for i, trace := range traces {
 			id, err := tx.CreateTrace(trace)
 			if err != nil {
@@ -1053,7 +1062,7 @@ func (s *Service) RestoreDatabase(filePath string) (success, failed int, err err
 	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
 	lines := strings.Split(content, "\n")
 
-	err = s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+	err = s.repo.WithBulkLoad(func(tx repository.TxOps) error {
 		var buf strings.Builder
 		inInsert := false
 		for _, line := range lines {
@@ -1681,7 +1690,7 @@ func (s *Service) ClearDatabase() error {
 		"DELETE FROM products",
 		"DELETE FROM audit_log",
 	}
-	return s.repo.WithBulkLoad(func(tx *repository.Tx) error {
+	return s.repo.WithBulkLoad(func(tx repository.TxOps) error {
 		for _, stmt := range stmts {
 			if _, err := tx.Exec(stmt); err != nil {
 				return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
@@ -1843,3 +1852,4 @@ func strPtrOrNil(v string) *string {
 	}
 	return &v
 }
+

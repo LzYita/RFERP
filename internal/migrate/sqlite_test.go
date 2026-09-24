@@ -12,7 +12,7 @@ func openSQLiteTest(t *testing.T) *sqlx.DB {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "rferp_test.db")
 	// parseTime 扫入 time.Time；foreign_keys 与产品路径一致。
-	db, err := sqlx.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&parseTime=1")
+	db, err := sqlx.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&parseTime=true")
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

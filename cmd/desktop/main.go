@@ -213,7 +213,7 @@ func assembleApps(repo *repository.Repository, dsn, backupTool string, cfg *conf
 func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {
 	w := a.NewWindow("RFERP-仁风仓库管理系统 v" + version)
 	w.SetIcon(ui.AppLogo())
-	w.Resize(fyne.NewSize(1600, 1000))
+	w.Resize(fyne.NewSize(1360, 860))
 	w.CenterOnScreen()
 	w.SetPadded(true)
 

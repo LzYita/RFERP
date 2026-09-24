@@ -15,15 +15,13 @@ type Step struct {
 
 // steps 为 v12+ 的双端迁移队列。新增迁移时两边都要填（D-015）。
 //
-// v12：恢复 MySQL products.code 唯一约束（v4 误删）。SQLite 基线已带 UNIQUE。
-var steps = []Step{
-	{
-		Version: 12,
-		Name:    "products_code_unique",
-		MySQL:   applyMySQLProductsCodeUnique,
-		SQLite:  assertSQLiteProductsCodeUnique,
-	},
-}
+// 目前为空。曾计划用 v12 products_code_unique 恢复 MySQL products.code 唯一约束，
+// 但真实数据证明产品编码**不唯一**：编码是产品系列号，同系列多颜色共用同一编码
+// （例：EB01-F1 = 打蛋器 绿/粉/白，EB01-Q2 = 打蛋器 粉/绿/白/杏/蓝）。
+// 生产库 70 行产品只有 19 个不同编码，加唯一索引会以
+// ERROR 1062 (Duplicate entry) 失败，而迁移失败会直接阻断应用启动。
+// 因此撤销该计划：products.code 保持「允许重复」，与 v4 之后的 MySQL 行为一致。
+var steps []Step
 
 // nextVersion 是下一条应新增迁移的版本号。
 func nextVersion() int {
@@ -35,57 +33,3 @@ func nextVersion() int {
 	}
 	return v + 1
 }
-
-func applyMySQLProductsCodeUnique(db *sqlx.DB) error {
-	// v1 曾有 UNIQUE KEY `code`，v4 DROP INDEX code 删除了它。此处恢复。
-	ok, err := indexExists(db, "products", "uq_products_code")
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
-	ok, err = indexExists(db, "products", "code")
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
-	_, err = db.Exec(`ALTER TABLE products ADD UNIQUE KEY uq_products_code (code)`)
-	return err
-}
-
-func assertSQLiteProductsCodeUnique(db *sqlx.DB) error {
-	// Baseline already declares code UNIQUE. Probe with a duplicate insert and
-	// roll back so a failed assert never leaves a row behind.
-	var n int
-	if err := db.Get(&n, `SELECT COUNT(*) FROM products`); err != nil {
-		return err
-	}
-	if n == 0 {
-		return nil
-	}
-	var code string
-	if err := db.Get(&code, `SELECT code FROM products LIMIT 1`); err != nil {
-		return err
-	}
-	tx, err := db.Beginx()
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(`INSERT INTO products (code,name) VALUES (?, 'dup-probe')`, code)
-	if err == nil {
-		_ = tx.Rollback()
-		return errUniqueNotEnforced
-	}
-	// UNIQUE fired as required; discard the aborted probe.
-	_ = tx.Rollback()
-	return nil
-}
-
-var errUniqueNotEnforced = errUnique("products.code UNIQUE is not enforced")
-
-type errUnique string
-
-func (e errUnique) Error() string { return string(e) }

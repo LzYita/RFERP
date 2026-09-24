@@ -5,15 +5,17 @@ package migrate
 //
 // 约定：
 //   - 自增：INTEGER PRIMARY KEY（rowid 别名）
-//   - 时间：DATETIME 存 RFC3339 UTC（strftime），可被 parseTime 扫入 time.Time
+//   - 时间：DATETIME 存 RFC3339 UTC（strftime）；modernc.org/sqlite 按列的
+//     声明类型（DATETIME）自动转 time.Time，无需 go-sqlite3 的 parseTime 参数
 //   - JSON 列：TEXT
 //   - DECIMAL：NUMERIC（量化规则在 Service）
 //   - updated_at 不做 ON UPDATE 自动更新，由写路径显式赋值（与部分 MySQL 路径一致）
 //
-// products.code 唯一性（评审结论）：**保留 UNIQUE**。目录编码必须唯一。
-// MySQL v1 曾有 UNIQUE，v4 applyProductsDropCodeIndex 误删了该唯一约束；
-// 历史库可能已出现重复编码。双端契约按「code 唯一」执行；MySQL 侧用 v12
-// 恢复唯一索引（见 steps），SQLite 基线直接带上 UNIQUE。
+// products.code 不唯一（与 MySQL 终态一致）：编码是产品系列号，同系列多颜色
+// 共用同一编码（例：EB01-F1 = 打蛋器 绿/粉/白）。MySQL v1 曾声明 UNIQUE，
+// v4 applyProductsDropCodeIndex 已按真实业务放开；基线与此保持一致，
+// **不要**给 products.code 加 UNIQUE（会让空库建表与 MySQL 终态背离，
+// 并导致同系列产品无法录入）。parts.code 则始终唯一，见下方 parts 表。
 
 const sqliteSchemaMigrationsDDL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -26,7 +28,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 var sqliteBaselineV11 = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 	id         INTEGER PRIMARY KEY,
-	code       TEXT    NOT NULL UNIQUE,
+	code       TEXT    NOT NULL,
 	name       TEXT    NOT NULL,
 	spec       TEXT,
 	unit       TEXT    NOT NULL DEFAULT '个',

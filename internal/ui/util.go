@@ -26,6 +26,7 @@ var (
 func makeCellTmpl() fyne.CanvasObject {
 	bg := canvas.NewRectangle(transparent)
 	label := widget.NewLabel("X")
+	label.Truncation = fyne.TextTruncateEllipsis
 	return container.NewStack(bg, label)
 }
 
@@ -40,6 +41,7 @@ func updateCellEx(cellObj fyne.CanvasObject, text string, bold bool, bgColor col
 	lbl := s.Objects[1].(*widget.Label)
 	bg.FillColor = bgColor
 	bg.Refresh()
+	lbl.Truncation = fyne.TextTruncateEllipsis
 	lbl.SetText(text)
 	lbl.Alignment = fyne.TextAlignCenter
 	if badge || bold {

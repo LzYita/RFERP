@@ -300,6 +300,7 @@ func (s *StatsScreen) buildRankPanel(title string, rows []rankRow, barColor colo
 
 		nameLbl := widget.NewLabel(r.name)
 		nameLbl.Truncation = fyne.TextTruncateEllipsis
+		nameLbl.Truncation = fyne.TextTruncateEllipsis
 
 		valLbl := widget.NewLabel(fmt.Sprintf("%.0f %s", r.value, unit))
 		valLbl.Alignment = fyne.TextAlignTrailing

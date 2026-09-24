@@ -94,12 +94,18 @@ func newSearchSelect(all []searchOption, placeholder string) *searchSelect {
 
 	s.list = widget.NewList(
 		func() int { return len(s.matches) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
+		func() fyne.CanvasObject {
+			l := widget.NewLabel("")
+			l.Truncation = fyne.TextTruncateEllipsis
+			return l
+		},
 		func(i widget.ListItemID, o fyne.CanvasObject) {
 			if i < 0 || i >= len(s.matches) {
 				return
 			}
-			o.(*widget.Label).SetText(s.matches[i].Label)
+			l := o.(*widget.Label)
+			l.Truncation = fyne.TextTruncateEllipsis
+			l.SetText(s.matches[i].Label)
 		},
 	)
 	s.list.OnSelected = func(i widget.ListItemID) {
@@ -192,9 +198,25 @@ func (s *searchSelect) showDropdown() {
 	}
 	s.list.Refresh()
 	s.list.ScrollToTop()
-	s.popUp.Resize(fyne.NewSize(s.entry.Size().Width, searchSelectHeight))
+	s.popUp.Resize(fyne.NewSize(s.dropdownWidth(), searchSelectHeight))
 	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(s.entry)
 	s.popUp.ShowAtPosition(pos.Add(fyne.NewPos(0, s.entry.Size().Height)))
+}
+
+// dropdownWidth 让浮层至少与输入框同宽，并尽量容纳最长的候选项（设上限，避免超宽）。
+func (s *searchSelect) dropdownWidth() float32 {
+	w := s.entry.Size().Width
+	textSize := theme.TextSize()
+	for _, m := range s.matches {
+		if tw := fyne.MeasureText(m.Label, textSize, fyne.TextStyle{}).Width + 4*theme.Padding(); tw > w {
+			w = tw
+		}
+	}
+	const maxWidth = 760
+	if w > maxWidth {
+		w = maxWidth
+	}
+	return w
 }
 
 func (s *searchSelect) hideDropdown() {

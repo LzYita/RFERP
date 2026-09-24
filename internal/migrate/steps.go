@@ -15,13 +15,19 @@ type Step struct {
 
 // steps 为 v12+ 的双端迁移队列。新增迁移时两边都要填（D-015）。
 //
-// 目前为空。曾计划用 v12 products_code_unique 恢复 MySQL products.code 唯一约束，
-// 但真实数据证明产品编码**不唯一**：编码是产品系列号，同系列多颜色共用同一编码
-// （同一编码下可有多个颜色/规格变体）。
-// 真实数据里同一编码对应多行产品，加唯一索引会以
+// 曾计划用 v12 products_code_unique 恢复 MySQL products.code 唯一约束，
+// 但真实数据证明产品编码**不唯一**：编码是产品系列号，同系列多颜色/规格共用
+// 同一编码（同一编码对应多行产品）。加唯一索引会以
 // ERROR 1062 (Duplicate entry) 失败，而迁移失败会直接阻断应用启动。
 // 因此撤销该计划：products.code 保持「允许重复」，与 v4 之后的 MySQL 行为一致。
-var steps []Step
+var steps = []Step{
+	{
+		Version: 13,
+		Name:    "db_identity",
+		MySQL:   applyDBIdentityMySQL,
+		SQLite:  applyDBIdentitySQLite,
+	},
+}
 
 // nextVersion 是下一条应新增迁移的版本号。
 func nextVersion() int {

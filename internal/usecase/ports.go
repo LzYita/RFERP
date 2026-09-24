@@ -41,3 +41,25 @@ type MigratorPort interface {
 	// Run 应用待执行迁移；升级前备份策略由实现或调用方保证。
 	Run() error
 }
+
+// ServerInfo 描述「当前绑定的数据库是谁」（D-016）。
+// 本机模式由本机库回答，客户端模式由服务器回答；两者用同一结构，才能互相比较。
+type ServerInfo struct {
+	AppVersion    string `json:"appVersion"`
+	APIVersion    int    `json:"apiVersion"`
+	SchemaVersion int    `json:"schemaVersion"`
+	DatabaseID    string `json:"databaseId"`
+	Storage       string `json:"storage"`
+}
+
+// ServerDescriptor 让「我当前绑定的数据库」可被自描述。
+//
+// 用途（本机 → 服务器的前期准备，D-016）：
+//   - 接入服务器前预检：比较本机库与目标服务器库是不是同一个
+//     （同一个 → 切运行模式不必迁移数据；不同 → 必须先搬数据）
+//   - 备份/恢复校验快照归属
+//
+// 实现不得依赖登录态：客户端模式下也应当能问出来。
+type ServerDescriptor interface {
+	Describe() (ServerInfo, error)
+}

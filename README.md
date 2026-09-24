@@ -136,6 +136,7 @@ cmd/
 internal/
   auth/          users, roles, permissions, password hashing, remember-me
   config/        config loading and encrypted storage
+  dbfile/        local database file sniffing (SQLite magic)
   secret/        DPAPI encrypt/decrypt
   repository/    data access
   service/       business logic
@@ -148,6 +149,7 @@ internal/
 setup.iss        installer script
 build*.bat       build scripts
 release.bat      release script
+docs/decisions/  decision records (D-xxx)
 ```
 
 ## License

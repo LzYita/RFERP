@@ -60,10 +60,21 @@ func TestRunSQLiteBaselineOnEmptyDatabase(t *testing.T) {
 	if len(versions) < CurrentSchemaVersion {
 		t.Fatalf("schema_migrations rows=%v, want at least 1..%d", versions, CurrentSchemaVersion)
 	}
+	// 版本号必须严格递增且覆盖基线；允许跳号（撤销 v12 后 12 不再存在）。
+	seen := map[int]bool{}
 	for i, v := range versions {
-		if v != i+1 {
-			t.Fatalf("schema_migrations[%d]=%d, want %d", i, v, i+1)
+		if i > 0 && v <= versions[i-1] {
+			t.Fatalf("schema_migrations not strictly increasing: %v", versions)
 		}
+		seen[v] = true
+	}
+	for v := 1; v <= CurrentSchemaVersion; v++ {
+		if !seen[v] {
+			t.Fatalf("schema_migrations missing v%d (got %v)", v, versions)
+		}
+	}
+	if last := versions[len(versions)-1]; last < CurrentSchemaVersion {
+		t.Fatalf("last version=%d, want >= %d", last, CurrentSchemaVersion)
 	}
 }
 

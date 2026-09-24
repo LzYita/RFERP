@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"app/internal/dbfile"
 	"app/internal/service"
 )
 
@@ -19,7 +20,7 @@ func TestIsSQLiteSnapshotUsesFileHeaderNotExtension(t *testing.T) {
 	if err := os.WriteFile(snapshot, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !service.IsSQLiteSnapshot(snapshot) {
+	if !dbfile.IsSQLiteSnapshot(snapshot) {
 		t.Fatal("SQLite magic with a .sql name must still be detected as a snapshot")
 	}
 
@@ -28,11 +29,11 @@ func TestIsSQLiteSnapshotUsesFileHeaderNotExtension(t *testing.T) {
 	if err := os.WriteFile(dump, []byte("INSERT INTO products VALUES (1);\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if service.IsSQLiteSnapshot(dump) {
+	if dbfile.IsSQLiteSnapshot(dump) {
 		t.Fatal("a SQL dump named .db must not be treated as a snapshot")
 	}
 
-	if service.IsSQLiteSnapshot(filepath.Join(dir, "missing.db")) {
+	if dbfile.IsSQLiteSnapshot(filepath.Join(dir, "missing.db")) {
 		t.Fatal("a missing file must not be treated as a snapshot")
 	}
 }

@@ -16,9 +16,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"app/internal/auth"
+	"app/internal/dbfile"
 	"app/internal/nativefiledialog"
 	"app/internal/paths"
-	"app/internal/service"
 	"app/internal/update"
 	"app/internal/usecase"
 )
@@ -326,7 +326,7 @@ func (s *BackupScreen) doImport() {
 	}
 	// D-014: snapshot restore is whole-DB rollback, never a merge.
 	// 类型按文件内容判断（与 Service.RestoreDatabase 同一口径），不看扩展名。
-	isSnapshot := service.IsSQLiteSnapshot(filePath)
+	isSnapshot := dbfile.IsSQLiteSnapshot(filePath)
 	msg := fmt.Sprintf("即将从以下备份恢复：\n%s\n\n", filePath)
 	if isSnapshot {
 		msg += "这是 SQLite 整库快照。恢复=整库回到该备份时刻，不会与当前数据合并。\n" +

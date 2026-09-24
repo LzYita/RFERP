@@ -137,6 +137,7 @@ cmd/
 internal/
   auth/          用户、角色、权限、密码哈希、记住登录
   config/        配置加载与加密保存
+  dbfile/        本地数据库文件识别（SQLite 魔数）
   secret/        DPAPI 加解密
   repository/    数据访问
   service/       业务逻辑
@@ -149,6 +150,7 @@ internal/
 setup.iss        安装包脚本
 build*.bat       构建脚本
 release.bat      发布脚本
+docs/decisions/  决策记录（D-xxx）
 ```
 
 ## 许可证

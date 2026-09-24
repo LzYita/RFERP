@@ -152,6 +152,23 @@ func contractCases(t *testing.T, open storeFactory) {
 			t.Fatalf("admins=%d err=%v", n, err)
 		}
 	})
+
+	// D-016：数据库身份必须可读且稳定（"接入服务器"预检的依据）。
+	t.Run("database_identity", func(t *testing.T) {
+		s, _ := open(t)
+		id, err := s.GetDatabaseID()
+		if err != nil || id == "" {
+			t.Fatalf("database id=%q err=%v", id, err)
+		}
+		again, err := s.GetDatabaseID()
+		if err != nil || again != id {
+			t.Fatalf("database id not stable: %q -> %q (err=%v)", id, again, err)
+		}
+		ver, err := s.GetSchemaVersion()
+		if err != nil || ver < 13 {
+			t.Fatalf("schema version=%d err=%v, want >= 13", ver, err)
+		}
+	})
 }
 
 func TestSQLiteStoreContract(t *testing.T) {

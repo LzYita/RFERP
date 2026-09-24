@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -613,4 +614,28 @@ func (s *SQLiteStore) DeleteUser(id int64) error {
 func (s *SQLiteStore) TouchUserLogin(id int64) error {
 	_, err := s.db.Exec(`UPDATE users SET last_login_at=(strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=?`, id)
 	return err
+}
+
+// ---- 数据库身份（D-016 接入服务器前期准备）----
+
+// GetDatabaseID 返回 db_identity 的稳定标识；表/行缺失时返回空串（不报错）。
+func (s *SQLiteStore) GetDatabaseID() (string, error) {
+	var id string
+	err := s.db.Get(&id, `SELECT id FROM db_identity LIMIT 1`)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// GetSchemaVersion 返回 schema_migrations 里的最高版本。
+func (s *SQLiteStore) GetSchemaVersion() (int, error) {
+	var v sql.NullInt64
+	if err := s.db.Get(&v, `SELECT MAX(version) FROM schema_migrations`); err != nil {
+		return 0, err
+	}
+	if !v.Valid {
+		return 0, nil
+	}
+	return int(v.Int64), nil
 }

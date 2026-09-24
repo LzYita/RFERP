@@ -7,7 +7,8 @@ import (
 	"app/internal/model"
 )
 
-// SkipPartRow is one batch-skip-part edge (exported for Store contracts).
+// SkipPartRow is one batch-skip-part edge. Field db tags are part of the
+// Store contract ABI — adapters must not reshape them casually.
 type SkipPartRow struct {
 	BatchID int64 `db:"batch_id"`
 	PartID  int64 `db:"part_id"`

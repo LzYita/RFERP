@@ -417,18 +417,43 @@ func (s *SQLiteStore) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
 	return list, err
 }
 
+const sqliteAuditDateRangePredicate = `(
+	(substr(created_at, 11, 1) = 'T' AND created_at >= ? AND created_at < ?)
+	OR (substr(created_at, 11, 1) = ' ' AND created_at >= ? AND created_at < ?)
+)`
+
+// Native SQLite dates use UTC RFC3339 text; imported MySQL DATETIME values are
+// naive local wall time, so each representation needs matching range bounds.
+func sqliteAuditDateRangeArgs(start, end time.Time) []any {
+	return []any{
+		ceilSQLiteDateBound(start, time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z"),
+		ceilSQLiteDateBound(end, time.Millisecond).UTC().Format("2006-01-02T15:04:05.000Z"),
+		ceilSQLiteDateBound(start, time.Second).In(time.Local).Format("2006-01-02 15:04:05"),
+		ceilSQLiteDateBound(end, time.Second).In(time.Local).Format("2006-01-02 15:04:05"),
+	}
+}
+
+// ceilSQLiteDateBound rounds up to the stored precision so inclusive-start and
+// exclusive-end ranges remain correct for the discrete timestamps on disk.
+func ceilSQLiteDateBound(t time.Time, precision time.Duration) time.Time {
+	bound := t.Truncate(precision)
+	if bound.Before(t) {
+		return bound.Add(precision)
+	}
+	return bound
+}
+
 func (s *SQLiteStore) ListStockLogsByDate(start, end time.Time, actions []string) ([]model.AuditLog, error) {
 	if len(actions) == 0 {
 		return nil, nil
 	}
 	ph := make([]string, len(actions))
-	args := make([]any, 0, len(actions)+2)
-	args = append(args, start, end)
+	args := sqliteAuditDateRangeArgs(start, end)
 	for i, a := range actions {
 		ph[i] = "?"
 		args = append(args, a)
 	}
-	q := `SELECT * FROM audit_log WHERE created_at >= ? AND created_at < ? AND action IN (` +
+	q := `SELECT * FROM audit_log WHERE ` + sqliteAuditDateRangePredicate + ` AND action IN (` +
 		strings.Join(ph, ",") + `) ORDER BY id ASC`
 	var rows []auditLogRow
 	if err := s.db.Select(&rows, q, args...); err != nil {
@@ -444,7 +469,8 @@ func (s *SQLiteStore) ListStockLogsByDate(start, end time.Time, actions []string
 func (s *SQLiteStore) ListAuditLogsByDate(start, end time.Time) ([]model.AuditLog, error) {
 	var rows []auditLogRow
 	err := s.db.Select(&rows,
-		`SELECT * FROM audit_log WHERE created_at >= ? AND created_at < ? ORDER BY id DESC`, start, end)
+		`SELECT * FROM audit_log WHERE `+sqliteAuditDateRangePredicate+` ORDER BY id DESC`,
+		sqliteAuditDateRangeArgs(start, end)...)
 	if err != nil {
 		return nil, err
 	}

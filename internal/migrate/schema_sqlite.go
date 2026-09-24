@@ -12,7 +12,7 @@ package migrate
 //   - updated_at 不做 ON UPDATE 自动更新，由写路径显式赋值（与部分 MySQL 路径一致）
 //
 // products.code 不唯一（与 MySQL 终态一致）：编码是产品系列号，同系列多颜色
-// 共用同一编码（例：EB01-F1 = 打蛋器 绿/粉/白）。MySQL v1 曾声明 UNIQUE，
+// 共用同一编码（同系列不同颜色/规格）。MySQL v1 曾声明 UNIQUE，
 // v4 applyProductsDropCodeIndex 已按真实业务放开；基线与此保持一致，
 // **不要**给 products.code 加 UNIQUE（会让空库建表与 MySQL 终态背离，
 // 并导致同系列产品无法录入）。parts.code 则始终唯一，见下方 parts 表。

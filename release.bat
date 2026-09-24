@@ -3,6 +3,10 @@ setlocal enabledelayedexpansion
 cd /d "%~dp0"
 call tools-env.bat || exit /b 1
 
+rem NOTE: keep this file ASCII-only. cmd.exe reads .bat files with the console
+rem code page (936 on Chinese Windows), so UTF-8 Chinese in comments can be
+rem split mid-character and executed as a command, printing spurious errors.
+
 set "REPO=LzYita/RFERP"
 set "KEY=%USERPROFILE%\.rferp\update-signing.key"
 
@@ -20,8 +24,9 @@ if "%NOTES_FILE%"=="" set "NOTES_FILE=release-notes.txt"
 set "TAG=v%VERSION%"
 set "ASSET_BASE=https://github.com/%REPO%/releases/download/%TAG%"
 
-rem 更新包下载地址的加速前缀（国内访问 GitHub 慢/不稳时使用）。
-rem 留空则直接用 GitHub 原始地址；也可用环境变量 MIRROR 覆盖。
+rem Accelerator prefix for the update-package download URL (helps when GitHub
+rem is slow or unstable). Leave empty to use the plain GitHub URL; can also be
+rem overridden with the MIRROR environment variable.
 if not defined MIRROR set "MIRROR=https://ghfast.top/"
 set "PKG_URL=%MIRROR%%ASSET_BASE%/RFERP-%VERSION%.zip"
 
@@ -107,8 +112,10 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-rem 组合发行说明：手写要点 + 自动 PR 列表（.github/release.yml 分组）+ 直推提交
-rem 结果写入 release-notes.full.md（已 gitignore）；手写要点仍用于更新清单 signmanifest
+rem Assemble the release body: hand-written highlights + the PR list GitHub
+rem generates from .github/release.yml + commits pushed straight to main.
+rem The result goes to release-notes.full.md (gitignored); the hand-written
+rem highlights are still what the update manifest (signmanifest) receives.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0changelog.ps1" -Version %VERSION% -Repo %REPO% -Highlights "!NOTES_FILE!" -Out "release-notes.full.md"
 if errorlevel 1 (
     echo   Changelog generation failed.

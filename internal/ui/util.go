@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -93,14 +92,13 @@ func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW
 }
 
 // cellWidget 是表格单元格：背景 + 文本。
-// 文本超宽时以省略号截断；鼠标悬停且确实被截断时，弹出浮层显示完整内容。
+// 文本超宽时以省略号截断（列宽已按内容自适应，只有极长内容才会被截断）。
 type cellWidget struct {
 	widget.BaseWidget
 	bg       *canvas.Rectangle
 	label    *widget.Label
 	fullText string
 	bold     bool
-	tip      *widget.PopUp
 }
 
 func newCellWidget() *cellWidget {
@@ -130,53 +128,6 @@ func (c *cellWidget) set(text string, bold bool, bgColor color.Color) {
 	} else {
 		c.label.TextStyle = fyne.TextStyle{}
 	}
-}
-
-// MouseIn / MouseMoved / MouseOut 实现 desktop.Hoverable：悬停显示完整内容。
-func (c *cellWidget) MouseIn(_ *desktop.MouseEvent)    { c.showTipIfClipped() }
-func (c *cellWidget) MouseMoved(_ *desktop.MouseEvent) { c.showTipIfClipped() }
-func (c *cellWidget) MouseOut()                        { c.hideTip() }
-
-func (c *cellWidget) hideTip() {
-	if c.tip != nil {
-		c.tip.Hide()
-	}
-}
-
-func (c *cellWidget) showTipIfClipped() {
-	if c.fullText == "" || c.Size().Width <= 0 {
-		return
-	}
-	if textWidth(c.fullText, c.bold)+2*theme.Padding() <= c.Size().Width {
-		c.hideTip() // 已经完整显示，无需提示
-		return
-	}
-	if c.tip != nil && c.tip.Visible() {
-		return
-	}
-	cvs := fyne.CurrentApp().Driver().CanvasForObject(c)
-	if cvs == nil {
-		return
-	}
-	const tipMaxWidth = 560
-	tw := textWidth(c.fullText, c.bold)
-	w := tw + 3*theme.Padding()
-	if w > tipMaxWidth {
-		w = tipMaxWidth
-	}
-	lines := 1
-	if tw > w {
-		lines = int(math.Ceil(float64(tw) / float64(w-2*theme.Padding())))
-	}
-	h := float32(lines)*theme.TextSize()*1.7 + 3*theme.Padding()
-
-	lbl := widget.NewLabel(c.fullText)
-	lbl.Wrapping = fyne.TextWrapWord
-	bg := canvas.NewRectangle(theme.BackgroundColor())
-	c.tip = widget.NewPopUp(container.NewStack(bg, container.NewPadded(lbl)), cvs)
-	c.tip.Resize(fyne.NewSize(w, h))
-	pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(c)
-	c.tip.ShowAtPosition(pos.Add(fyne.NewPos(0, c.Size().Height)))
 }
 
 func productStatusStyle(status int) (color.Color, color.Color) {

@@ -5,10 +5,15 @@ package migrate
 //
 // 约定：
 //   - 自增：INTEGER PRIMARY KEY（rowid 别名）
-//   - 时间：TEXT（UTC RFC3339 或 CURRENT_TIMESTAMP），由驱动 parseTime 扫入 time.Time
+//   - 时间：DATETIME 存 RFC3339 UTC（strftime），可被 parseTime 扫入 time.Time
 //   - JSON 列：TEXT
 //   - DECIMAL：NUMERIC（量化规则在 Service）
 //   - updated_at 不做 ON UPDATE 自动更新，由写路径显式赋值（与部分 MySQL 路径一致）
+//
+// products.code 唯一性（评审结论）：**保留 UNIQUE**。目录编码必须唯一。
+// MySQL v1 曾有 UNIQUE，v4 applyProductsDropCodeIndex 误删了该唯一约束；
+// 历史库可能已出现重复编码。双端契约按「code 唯一」执行；MySQL 侧用 v12
+// 恢复唯一索引（见 steps），SQLite 基线直接带上 UNIQUE。
 
 const sqliteSchemaMigrationsDDL = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -161,5 +166,6 @@ var sqliteBaselineVersions = []struct {
 	{11, "batch_consumption_checks"},
 }
 
-// CurrentSchemaVersion 与 MySQL 迁移表保持一致的最新版本号。
+// CurrentSchemaVersion 与 MySQL 迁移表保持一致的最新基线版本号。
+// v12+ 请走 steps（双端）；基线版本只在空库一次落地时使用。
 const CurrentSchemaVersion = 11

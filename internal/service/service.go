@@ -234,7 +234,7 @@ func (s *Service) CreateProduct(p *model.Product) (*model.Product, error) {
 	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		id, err := tx.CreateProduct(p)
 		if err != nil {
-			return fmt.Errorf("create product: %w", err)
+			return fmt.Errorf("create product: %w", repository.TranslateError(err))
 		}
 		p.ID = id
 		return s.writeAuditTx(tx, auditEntry{"products", id, "INSERT", nil, p, *p.Operator})
@@ -270,7 +270,7 @@ func (s *Service) UpdateProduct(p *model.Product) (*model.Product, error) {
 			return fmt.Errorf("update product: %w", err)
 		}
 		if affected == 0 {
-			return fmt.Errorf("product version conflict, please refresh and retry")
+			return repository.OptimisticLockError(err)
 		}
 		p.Version = old.Version + 1
 		return s.writeAuditTx(tx, auditEntry{"products", p.ID, "UPDATE", old, p, *p.Operator})
@@ -306,7 +306,7 @@ func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
 	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		id, err := tx.CreatePart(p)
 		if err != nil {
-			return fmt.Errorf("create part: %w", err)
+			return fmt.Errorf("create part: %w", repository.TranslateError(err))
 		}
 		p.ID = id
 		return s.writeAuditTx(tx, auditEntry{"parts", id, "INSERT", nil, p, *p.Operator})
@@ -342,7 +342,7 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 			return fmt.Errorf("update part: %w", err)
 		}
 		if affected == 0 {
-			return fmt.Errorf("part version conflict, please refresh and retry")
+			return repository.OptimisticLockError(err)
 		}
 		p.Version = old.Version + 1
 		return s.writeAuditTx(tx, auditEntry{"parts", p.ID, "UPDATE", old, p, *p.Operator})
@@ -1055,6 +1055,9 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
 	data, err := os.ReadFile(filePath)
+	if err == nil && isSQLiteFile(data) {
+		return 0, 0, fmt.Errorf("SQLite 备份是 .db 快照，当前版本不支持应用内回退；请关闭应用后用快照替换 rferp.db（D-014 整库回退）")
+	}
 	if err != nil {
 		return 0, 0, fmt.Errorf("read file: %w", err)
 	}
@@ -1851,4 +1854,8 @@ func strPtrOrNil(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func isSQLiteFile(data []byte) bool {
+	return len(data) >= 15 && string(data[:15]) == "SQLite format 3"
 }

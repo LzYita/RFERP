@@ -60,8 +60,11 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 			pending = append(pending, m)
 		}
 	}
-	if len(pending) == 0 {
+		if len(pending) == 0 {
 		res.ToVersion = cur
+		if err := applyStepMigrations(db, cur, &res); err != nil {
+			return res, err
+		}
 		return res, nil
 	}
 
@@ -90,7 +93,11 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 		}
 		res.Applied = append(res.Applied, m.Version)
 	}
-	res.ToVersion = pending[len(pending)-1].Version
+		res.ToVersion = pending[len(pending)-1].Version
+	// v12+ portable steps (dual MySQL/SQLite). Snapshot before these when DB is non-empty.
+	if err := applyStepMigrations(db, cur, &res); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
@@ -475,3 +482,29 @@ var baseSchema = []string{
 		INDEX idx_created (created_at)
 	) COMMENT '审计日志-记录所有数据变更'`,
 }
+
+// applyStepMigrations applies v12+ dual-end steps on MySQL.
+func applyStepMigrations(db *sqlx.DB, from int, res *Result) error {
+	for _, s := range steps {
+		if s.Version <= from || s.MySQL == nil {
+			continue
+		}
+		// Also skip if already recorded (idempotent re-run).
+		var exists int
+		_ = db.Get(&exists, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, s.Version)
+		if exists > 0 {
+			continue
+		}
+		log.Printf("migrate: applying v%d %s", s.Version, s.Name)
+		if err := s.MySQL(db); err != nil {
+			return fmt.Errorf("migration v%d (%s) failed: %w", s.Version, s.Name, err)
+		}
+		if err := recordVersion(db, s.Version, s.Name); err != nil {
+			return fmt.Errorf("record v%d: %w", s.Version, err)
+		}
+		res.Applied = append(res.Applied, s.Version)
+		res.ToVersion = s.Version
+	}
+	return nil
+}
+

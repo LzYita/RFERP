@@ -41,7 +41,7 @@ func contractCases(t *testing.T, open storeFactory) {
 	})
 
 	// products.code is intentionally NOT unique: a code is a product-family
-	// number shared by colour variants (EB01-F1 = 打蛋器 绿/粉/白). Both
+	// number shared by colour/spec variants. Both
 	// adapters must accept that. parts.code IS unique, so the conflict case
 	// is asserted there instead.
 	t.Run("duplicate_product_code_allowed", func(t *testing.T) {

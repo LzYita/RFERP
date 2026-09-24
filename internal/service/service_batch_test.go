@@ -20,7 +20,7 @@ var (
 	batchSelectForUpdate = regexp.QuoteMeta("SELECT * FROM product_batches WHERE id=? FOR UPDATE")
 	partSelectForUpdate  = regexp.QuoteMeta("SELECT * FROM parts WHERE id=? FOR UPDATE")
 	auditInsert          = regexp.QuoteMeta("INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)")
-	statusUpdate         = regexp.QuoteMeta("UPDATE product_batches SET status=?, operator=?, version=version+1 WHERE id=? AND status=?")
+	statusUpdate         = regexp.QuoteMeta("UPDATE product_batches SET status=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND status=?")
 )
 
 func newMockService(t *testing.T) (*Service, sqlmock.Sqlmock) {
@@ -154,7 +154,7 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(3)).WillReturnResult(sqlmock.NewResult(1, 1))
@@ -165,9 +165,9 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 		"new_stock":        float64(0),
 		"batch_id":         int64(1),
 	}, "operator")
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=? WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?")).
 		WithArgs(4, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET consumption_recorded=1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET consumption_recorded=1, updated_at=NOW() WHERE id=?")).
 		WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM products WHERE id=?")).
 		WithArgs(int64(10)).WillReturnRows(productRows(now))
@@ -207,7 +207,7 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.98), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(0.02)).WillReturnResult(sqlmock.NewResult(1, 1))
@@ -218,9 +218,9 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 		"new_stock":        float64(0.98),
 		"batch_id":         int64(1),
 	}, "operator")
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=? WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?")).
 		WithArgs(1, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET consumption_recorded=1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET consumption_recorded=1, updated_at=NOW() WHERE id=?")).
 		WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM products WHERE id=?")).
 		WithArgs(int64(10)).WillReturnRows(productRows(now))
@@ -255,7 +255,7 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(3)).WillReturnResult(sqlmock.NewResult(1, 1))
@@ -282,7 +282,7 @@ func TestRevokeBatchReversesRecordedActualConsumptionAndAuditsStatusFour(t *test
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id, consumed_qty FROM batch_consumptions WHERE batch_id=? ORDER BY part_id")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id", "consumed_qty"}).AddRow(20, 3.0))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(4), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(1),
@@ -322,7 +322,7 @@ func TestRevokeBatchQuantizesRestoredStockBeforePersistence(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id, consumed_qty FROM batch_consumptions WHERE batch_id=? ORDER BY part_id")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id", "consumed_qty"}).AddRow(20, 0.2))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.1))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.3), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(0.1),
@@ -405,7 +405,7 @@ func TestStockInUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(5), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_IN", map[string]any{
 		"old_stock": float64(3),
@@ -429,7 +429,7 @@ func TestAdjustStockUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(8), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(3),
@@ -453,7 +453,7 @@ func TestAdjustStockQuantizesAuditDiff(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.3))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?")).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(0.2, int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": 0.3,

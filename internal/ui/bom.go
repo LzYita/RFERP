@@ -417,6 +417,7 @@ func (s *BOMScreen) loadBOM(productID int64) {
 		return
 	}
 	s.bomData = list
+	s.fitColumns()
 	s.label.SetText(fmt.Sprintf("共 %d 个零件", len(list)))
 	if s.table != nil {
 		s.selected = -1

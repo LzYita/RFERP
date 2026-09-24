@@ -138,6 +138,7 @@ func (s *ProductScreen) applyFilter() {
 		}
 	}
 	s.data = filtered
+	s.fitColumns()
 	if s.query == "" {
 		s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
 	} else {

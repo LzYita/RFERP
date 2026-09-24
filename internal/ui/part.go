@@ -277,6 +277,7 @@ func (s *PartScreen) applyFilter() {
 		return filtered[i].Code < filtered[j].Code
 	})
 	s.data = filtered
+	s.fitColumns()
 	if s.query == "" {
 		s.label.SetText(fmt.Sprintf("共 %d 条记录", len(s.data)))
 	} else {
@@ -286,6 +287,21 @@ func (s *PartScreen) applyFilter() {
 		s.selected = -1
 		s.table.Refresh()
 	}
+}
+
+// fitColumns 按当前数据调整列宽，让内容尽量完整显示。
+func (s *PartScreen) fitColumns() {
+	headers := []string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "选择"}
+	rows := make([][]string, 0, len(s.data))
+	for _, p := range s.data {
+		_, _, status := partStatusStyle(isLowStock(p), p.Status)
+		rows = append(rows, []string{
+			p.Code, p.Name, nullStr(p.Spec), nullStr(p.PartType),
+			fmt.Sprintf("%.2f", p.StockQty), fmt.Sprintf("%.2f", p.WarnQty),
+			status, nullStr(p.Supplier), "☐",
+		})
+	}
+	autofitColumns(s.table, headers, rows, 90, 320)
 }
 
 func (s *PartScreen) add() {

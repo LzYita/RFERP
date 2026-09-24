@@ -54,11 +54,14 @@ func (d *DashboardScreen) Build() fyne.CanvasObject {
 	d.warnList = widget.NewList(
 		func() int { return len(d.warnData) },
 		func() fyne.CanvasObject {
-			return widget.NewLabel("XXXXXXXXXXXXXXXXXXXX")
+			l := widget.NewLabel("XXXXXXXXXXXXXXXXXXXX")
+			l.Truncation = fyne.TextTruncateEllipsis
+			return l
 		},
 		func(id widget.ListItemID, o fyne.CanvasObject) {
 			p := d.warnData[id]
 			lbl := o.(*widget.Label)
+			lbl.Truncation = fyne.TextTruncateEllipsis
 			lbl.TextStyle = fyne.TextStyle{}
 			lbl.Alignment = fyne.TextAlignCenter
 			lbl.SetText(fmt.Sprintf("[%s] %s   库存:%.2f / 预警:%.2f",
@@ -71,9 +74,14 @@ func (d *DashboardScreen) Build() fyne.CanvasObject {
 	logHeader := widget.NewLabelWithStyle("最近操作记录", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	d.logTable = widget.NewTable(
 		func() (int, int) { return len(d.logData) + 1, 4 },
-		func() fyne.CanvasObject { return widget.NewLabel("XXXXXXXXXXXXXXXXXXXX") },
+		func() fyne.CanvasObject {
+			l := widget.NewLabel("XXXXXXXXXXXXXXXXXXXX")
+			l.Truncation = fyne.TextTruncateEllipsis
+			return l
+		},
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
 			cell := o.(*widget.Label)
+			cell.Truncation = fyne.TextTruncateEllipsis
 			if tci.Row == 0 {
 				headers := []string{"时间", "对象", "操作", "内容"}
 				cell.SetText(headers[tci.Col])

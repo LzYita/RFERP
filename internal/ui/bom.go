@@ -18,6 +18,7 @@ import (
 type BOMScreen struct {
 	svc      usecase.Applications
 	window   fyne.Window
+	picker   *searchSelect
 	nameSel  *widget.Select
 	codeSel  *widget.Select
 	specSel  *widget.Select
@@ -29,6 +30,7 @@ type BOMScreen struct {
 	selected int
 	addBtn   *widget.Button
 	delBtn   *widget.Button
+	suppress bool // 程序化清空联动选择时抑制其回调
 }
 
 func NewBOMScreen(svc usecase.Applications, w fyne.Window) *BOMScreen {
@@ -36,6 +38,7 @@ func NewBOMScreen(svc usecase.Applications, w fyne.Window) *BOMScreen {
 }
 
 func (s *BOMScreen) Build() fyne.CanvasObject {
+	// 方式一（保留）：联动选择 —— 名称 → 编码 → 规格
 	s.nameSel = widget.NewSelect([]string{}, nil)
 	s.nameSel.PlaceHolder = "名称"
 	s.codeSel = widget.NewSelect([]string{}, nil)
@@ -47,6 +50,9 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 
 	s.loadProducts()
 	s.nameSel.OnChanged = func(n string) {
+		if s.suppress {
+			return
+		}
 		codeSet := make(map[string]bool)
 		for _, p := range s.products {
 			if p.Name == n {
@@ -64,9 +70,13 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 		s.specSel.Options = nil
 		s.specSel.Selected = ""
 		s.specSel.Disable()
+		s.syncPickerFromCascade()
 		s.onProductChanged()
 	}
 	s.codeSel.OnChanged = func(c string) {
+		if s.suppress {
+			return
+		}
 		specSet := make(map[string]bool)
 		for _, p := range s.products {
 			if p.Name == s.nameSel.Selected && p.Code == c && p.Spec != nil && *p.Spec != "" {
@@ -74,8 +84,8 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 			}
 		}
 		var specs []string
-		for s := range specSet {
-			specs = append(specs, s)
+		for v := range specSet {
+			specs = append(specs, v)
 		}
 		if len(specs) > 0 {
 			sort.Strings(specs)
@@ -87,13 +97,25 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 			s.specSel.Selected = ""
 			s.specSel.Disable()
 		}
+		s.syncPickerFromCascade()
 		s.onProductChanged()
 	}
 	s.specSel.OnChanged = func(_ string) {
+		if s.suppress {
+			return
+		}
+		s.syncPickerFromCascade()
 		s.onProductChanged()
 	}
 
-	selRow := container.NewGridWithColumns(3,
+	// 方式二（新增）：查询下拉，输入片段后弹出浮层（覆盖内容、不挤压布局）
+	s.picker = newSearchSelect(productOptions(s.products), "输入编码/名称查询")
+	s.picker.OnSelect = func() {
+		s.syncCascadeFromPicker()
+		s.onProductChanged()
+	}
+
+	cascadeRow := container.NewGridWithColumns(3,
 		container.NewBorder(nil, nil, nil, nil, s.nameSel),
 		container.NewBorder(nil, nil, nil, nil, s.codeSel),
 		container.NewBorder(nil, nil, nil, nil, s.specSel),
@@ -109,7 +131,7 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 	btnRow := container.NewHBox(btns...)
 	topBar := container.NewBorder(nil, nil,
 		widget.NewLabel("选择产品: "), nil,
-		container.NewVBox(selRow, btnRow),
+		container.NewVBox(s.picker.object(), cascadeRow, btnRow),
 	)
 
 	s.label = widget.NewLabel("请先选择产品")
@@ -227,15 +249,10 @@ func (s *BOMScreen) loadProducts() {
 }
 
 func (s *BOMScreen) onProductChanged() {
-	ready := false
-	if s.nameSel.Selected != "" && s.codeSel.Selected != "" {
-		if s.specSel.Disabled() || s.specSel.Selected != "" {
-			ready = true
-		}
-	}
-	if !ready {
+	pid, ok := s.resolveProductID()
+	if !ok {
 		s.bomData = nil
-		s.label.SetText("请先选择完整产品信息（名称+编码）")
+		s.label.SetText("请先选择产品")
 		if s.table != nil {
 			s.table.Refresh()
 		}
@@ -245,24 +262,152 @@ func (s *BOMScreen) onProductChanged() {
 		}
 		return
 	}
+	s.loadBOM(pid)
+	if auth.CanWrite(auth.ModuleBOM) {
+		s.addBtn.Enable()
+		s.delBtn.Enable()
+	}
+}
+
+// resolveProductID 优先采用查询下拉的选择，其次用"名称 + 编码 (+ 规格)"联动选择。
+func (s *BOMScreen) resolveProductID() (int64, bool) {
+	if s.picker != nil {
+		if opt, ok := s.picker.value(); ok {
+			return opt.ID, true
+		}
+	}
+	return s.resolveCascadeID()
+}
+
+// resolveCascadeID 只按联动选择（名称 + 编码 + 可选规格）解析产品。
+func (s *BOMScreen) resolveCascadeID() (int64, bool) {
+	if s.nameSel == nil || s.nameSel.Selected == "" || s.codeSel.Selected == "" {
+		return 0, false
+	}
+	if !s.specSel.Disabled() && s.specSel.Selected == "" {
+		return 0, false
+	}
 	for _, p := range s.products {
-		if p.Name == s.nameSel.Selected && p.Code == s.codeSel.Selected {
-			if !s.specSel.Disabled() && s.specSel.Selected != "" {
-				if p.Spec == nil || *p.Spec != s.specSel.Selected {
-					continue
-				}
-			}
-			if s.specSel.Disabled() && p.Spec != nil && *p.Spec != "" {
+		if p.Name != s.nameSel.Selected || p.Code != s.codeSel.Selected {
+			continue
+		}
+		if !s.specSel.Disabled() && s.specSel.Selected != "" {
+			if p.Spec == nil || *p.Spec != s.specSel.Selected {
 				continue
 			}
-			s.loadBOM(p.ID)
-			if auth.CanWrite(auth.ModuleBOM) {
-				s.addBtn.Enable()
-				s.delBtn.Enable()
-			}
+		}
+		if s.specSel.Disabled() && p.Spec != nil && *p.Spec != "" {
+			continue
+		}
+		return p.ID, true
+	}
+	return 0, false
+}
+
+// syncPickerFromCascade 让查询框同步显示联动选择选中的产品（保持两者一致）。
+func (s *BOMScreen) syncPickerFromCascade() {
+	if s.picker == nil {
+		return
+	}
+	pid, ok := s.resolveCascadeID()
+	if !ok {
+		return
+	}
+	for _, p := range s.products {
+		if p.ID == pid {
+			s.picker.setValue(productOptions([]model.Product{p})[0])
 			return
 		}
 	}
+}
+
+// syncCascadeFromPicker 让联动选择同步显示查询下拉选中的产品（保持两者一致）。
+func (s *BOMScreen) syncCascadeFromPicker() {
+	if s.picker == nil {
+		return
+	}
+	opt, ok := s.picker.value()
+	if !ok {
+		return
+	}
+	for _, p := range s.products {
+		if p.ID == opt.ID {
+			s.applyCascade(p)
+			return
+		}
+	}
+}
+
+// applyCascade 把某产品写入联动选择（名称/编码/规格），并重建下级候选。
+func (s *BOMScreen) applyCascade(p model.Product) {
+	s.suppress = true
+	s.nameSel.Selected = p.Name
+
+	codeSet := make(map[string]bool)
+	for _, q := range s.products {
+		if q.Name == p.Name {
+			codeSet[q.Code] = true
+		}
+	}
+	codes := make([]string, 0, len(codeSet))
+	for c := range codeSet {
+		codes = append(codes, c)
+	}
+	sort.Strings(codes)
+	s.codeSel.Options = codes
+	s.codeSel.Selected = p.Code
+	s.codeSel.Enable()
+
+	specSet := make(map[string]bool)
+	for _, q := range s.products {
+		if q.Name == p.Name && q.Code == p.Code && q.Spec != nil && *q.Spec != "" {
+			specSet[*q.Spec] = true
+		}
+	}
+	if len(specSet) > 0 {
+		specs := make([]string, 0, len(specSet))
+		for v := range specSet {
+			specs = append(specs, v)
+		}
+		sort.Strings(specs)
+		s.specSel.Options = specs
+		if p.Spec != nil && *p.Spec != "" {
+			s.specSel.Selected = *p.Spec
+		} else {
+			s.specSel.Selected = ""
+		}
+		s.specSel.Enable()
+	} else {
+		s.specSel.Options = nil
+		s.specSel.Selected = ""
+		s.specSel.Disable()
+	}
+	s.nameSel.Refresh()
+	s.codeSel.Refresh()
+	s.specSel.Refresh()
+	s.suppress = false
+}
+
+// clearPicker / clearCascade 让两种选择方式互斥：用了其一，就清掉另一个。
+func (s *BOMScreen) clearPicker() {
+	if s.picker != nil {
+		s.picker.clear()
+	}
+}
+
+func (s *BOMScreen) clearCascade() {
+	if s.nameSel == nil {
+		return
+	}
+	s.suppress = true
+	s.nameSel.Selected = ""
+	s.codeSel.Options = nil
+	s.codeSel.Selected = ""
+	s.codeSel.Disable()
+	s.specSel.Options = nil
+	s.specSel.Selected = ""
+	s.specSel.Disable()
+	s.suppress = false
 }
 
 func (s *BOMScreen) loadBOM(productID int64) {
@@ -272,6 +417,7 @@ func (s *BOMScreen) loadBOM(productID int64) {
 		return
 	}
 	s.bomData = list
+	s.fitColumns()
 	s.label.SetText(fmt.Sprintf("共 %d 个零件", len(list)))
 	if s.table != nil {
 		s.selected = -1
@@ -281,39 +427,25 @@ func (s *BOMScreen) loadBOM(productID int64) {
 
 func (s *BOMScreen) Refresh() {
 	s.loadProducts()
+	if s.picker != nil {
+		s.picker.setOptions(productOptions(s.products))
+	}
+	s.clearPicker()
+	s.clearCascade()
 	s.bomData = nil
 	s.label.SetText("请先选择产品")
-	if s.nameSel != nil {
-		s.nameSel.Selected = ""
-		s.codeSel.Options = nil
-		s.codeSel.Selected = ""
-		s.codeSel.Disable()
-		s.specSel.Options = nil
-		s.specSel.Selected = ""
-		s.specSel.Disable()
-	}
 	if s.table != nil {
 		s.table.Refresh()
 	}
 }
 
 func (s *BOMScreen) getSelectedProductID() (int64, bool) {
-	if s.nameSel.Selected == "" || s.codeSel.Selected == "" {
-		dialog.ShowInformation("提示", "请先选择产品（名称+编码）", s.window)
+	pid, ok := s.resolveProductID()
+	if !ok {
+		dialog.ShowInformation("提示", "请先选择产品", s.window)
 		return 0, false
 	}
-	for _, p := range s.products {
-		if p.Name == s.nameSel.Selected && p.Code == s.codeSel.Selected {
-			if s.specSel.Selected != "" {
-				if p.Spec == nil || *p.Spec != s.specSel.Selected {
-					continue
-				}
-			}
-			return p.ID, true
-		}
-	}
-	dialog.ShowInformation("提示", "未找到匹配的产品", s.window)
-	return 0, false
+	return pid, true
 }
 
 func (s *BOMScreen) addPart() {
@@ -322,8 +454,12 @@ func (s *BOMScreen) addPart() {
 		return
 	}
 
-	partCode := widget.NewEntry()
-	partCode.SetPlaceHolder("输入零件编码")
+	parts, err := s.svc.ListParts()
+	if err != nil {
+		showError(s.window, "查询零件失败", err)
+		return
+	}
+	picker := newSearchSelect(partOptions(parts), "输入编码/名称查询")
 
 	modeSel := widget.NewSelect([]string{"每台用N个零件", "每M台用1个零件（如包装箱）"}, nil)
 	modeSel.SetSelected("每台用N个零件")
@@ -346,7 +482,7 @@ func (s *BOMScreen) addPart() {
 	}
 
 	items := []*widget.FormItem{
-		widget.NewFormItem("零件编码", partCode),
+		widget.NewFormItem("零件（编码/名称）", picker.object()),
 		widget.NewFormItem("用量模式", modeSel),
 		{Text: "", Widget: qtyLabel},
 		{Text: "", Widget: qty},
@@ -359,21 +495,10 @@ func (s *BOMScreen) addPart() {
 		if !ok {
 			return
 		}
-		// 根据编码查找零件
-		parts, err := s.svc.ListParts()
-		if err != nil {
-			showError(s.window, "查询零件失败", err)
-			return
-		}
-		var found *model.Part
-		for _, p := range parts {
-			if p.Code == partCode.Text {
-				found = &p
-				break
-			}
-		}
-		if found == nil {
-			dialog.ShowInformation("提示", fmt.Sprintf("未找到零件编码: %s", partCode.Text), s.window)
+		// 零件来自"输入即筛选"的下拉选择器（编码/名称/规格联动）
+		found, ok := picker.value()
+		if !ok {
+			dialog.ShowInformation("提示", "请从下拉列表中点选一个零件", s.window)
 			return
 		}
 
@@ -411,8 +536,7 @@ func (s *BOMScreen) addPart() {
 			Replaceable: rep,
 			UseMode:     useMode,
 		}
-		_, err = s.svc.AddBOMItem(b)
-		if err != nil {
+		if _, err := s.svc.AddBOMItem(b); err != nil {
 			showError(s.window, "添加BOM失败", err)
 			return
 		}

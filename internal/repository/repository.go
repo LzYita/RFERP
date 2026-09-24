@@ -318,14 +318,8 @@ func (r *Repository) DeleteBatch(id int64) error {
 	return err
 }
 
-func (r *Repository) GetAllSkippedParts() ([]struct {
-	BatchID int64 `db:"batch_id"`
-	PartID  int64 `db:"part_id"`
-}, error) {
-	var rows []struct {
-		BatchID int64 `db:"batch_id"`
-		PartID  int64 `db:"part_id"`
-	}
+func (r *Repository) GetAllSkippedParts() ([]SkipPartRow, error) {
+	var rows []SkipPartRow
 	err := r.db.Select(&rows, `SELECT batch_id, part_id FROM batch_skip_parts ORDER BY batch_id`)
 	return rows, err
 }

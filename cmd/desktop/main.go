@@ -206,7 +206,7 @@ func enterLocalDB(a fyne.App, cfg *config.Config, db *sqlx.DB) {
 
 // assembleApps 是应用组装点（A4）：UI 只见 usecase.Applications，
 // 具体 Service / Repository / 备份适配在此接线（D-013）。
-func assembleApps(repo *repository.Repository, dsn, backupTool string, cfg *config.Config) usecase.Applications {
+func assembleApps(repo repository.Store, dsn, backupTool string, cfg *config.Config) usecase.Applications {
 	return service.New(repo, dsn, backupTool, cfg)
 }
 

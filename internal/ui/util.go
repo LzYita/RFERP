@@ -65,7 +65,7 @@ func textWidth(s string, bold bool) float32 {
 }
 
 // autofitColumns 依据表头与各列文本调整列宽，让内容尽量完整显示。
-// minW/maxW 为列宽下限/上限；超过上限的列由单元格截断 + 悬停兜底。
+// minW/maxW 为列宽下限/上限；超过上限的列由单元格以省略号截断。
 func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW, maxW float32) {
 	if t == nil {
 		return
@@ -95,10 +95,8 @@ func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW
 // 文本超宽时以省略号截断（列宽已按内容自适应，只有极长内容才会被截断）。
 type cellWidget struct {
 	widget.BaseWidget
-	bg       *canvas.Rectangle
-	label    *widget.Label
-	fullText string
-	bold     bool
+	bg    *canvas.Rectangle
+	label *widget.Label
 }
 
 func newCellWidget() *cellWidget {
@@ -116,8 +114,6 @@ func (c *cellWidget) CreateRenderer() fyne.WidgetRenderer {
 }
 
 func (c *cellWidget) set(text string, bold bool, bgColor color.Color) {
-	c.fullText = text
-	c.bold = bold
 	c.bg.FillColor = bgColor
 	c.bg.Refresh()
 	c.label.Truncation = fyne.TextTruncateEllipsis

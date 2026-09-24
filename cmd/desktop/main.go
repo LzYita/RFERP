@@ -201,6 +201,7 @@ func enterLocalSQLite(a fyne.App, cfg *config.Config) {
 	res, err := migrate.RunSQLite(db)
 	if err != nil {
 		log.Printf("sqlite migration failed: %v", err)
+		_ = db.Close()
 		winmsg.Error("RFERP 数据库升级失败", err.Error())
 		return
 	}

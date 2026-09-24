@@ -21,7 +21,16 @@ func (p *sqliteSnapshotPort) Snapshot(saveDir string) (string, error) {
 	return repository.SnapshotSQLiteFile(p.dbPath, saveDir)
 }
 
+func (p *sqliteSnapshotPort) Kind() string {
+	return usecase.SnapshotKindSQLite
+}
+
 func (p *sqliteSnapshotPort) Restore(snapshotPath string) (string, error) {
+	// Verify the snapshot BEFORE dropping the live handle: a bad snapshot must
+	// leave the running session intact, not hand back a closed database.
+	if err := repository.VerifySQLiteFile(snapshotPath); err != nil {
+		return "", err
+	}
 	if p.closer != nil {
 		if err := p.closer(); err != nil {
 			return "", err

@@ -223,6 +223,12 @@ func applyBOMReplaceableUseMode(db *sqlx.DB) error {
 	return nil
 }
 
+// applyProductsDropCodeIndex 放开 products.code 唯一约束（仅对老库生效）。
+//
+// 背景：v1 曾声明 code UNIQUE，但真实业务里编码是产品系列号，同系列多颜色共用
+// 同一编码（例：EB01-F1 = 打蛋器 绿/粉/白），唯一约束无法成立，故 v4 起放开。
+// v1 的建表语句已同步去掉 UNIQUE，因此本步骤只对「老库仍带该索引」的情况做清理；
+// 索引名沿用 MySQL 为列级 UNIQUE 自动生成的 `code`。
 func applyProductsDropCodeIndex(db *sqlx.DB) error {
 	ok, err := indexExists(db, "products", "code")
 	if err != nil || !ok {
@@ -402,7 +408,7 @@ func applyBatchConsumptionChecks(db *sqlx.DB) error {
 var baseSchema = []string{
 	`CREATE TABLE IF NOT EXISTS products (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-		code        VARCHAR(50)  NOT NULL UNIQUE COMMENT '产品编码',
+		code        VARCHAR(50)  NOT NULL COMMENT '产品编码',
 		name        VARCHAR(200) NOT NULL COMMENT '产品名称',
 		spec        VARCHAR(500)          COMMENT '规格型号',
 		unit        VARCHAR(20)  NOT NULL DEFAULT '个' COMMENT '单位',
@@ -412,6 +418,8 @@ var baseSchema = []string{
 		updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		operator    VARCHAR(50)          COMMENT '最后操作人'
 	) COMMENT '产品档案'`,
+	// 注意：parts.code 保持 UNIQUE（零件编码必须唯一，生产库 210 行全部满足）。
+	// 这与 products.code 不同 —— 产品编码是系列号，允许重复。
 	`CREATE TABLE IF NOT EXISTS parts (
 		id          BIGINT AUTO_INCREMENT PRIMARY KEY,
 		code        VARCHAR(50)  NOT NULL UNIQUE COMMENT '零件编码',

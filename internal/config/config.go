@@ -351,6 +351,7 @@ func (c *Config) ResolveSQLitePath() (string, error) {
 // SetStorage 显式切换 Local 存储（E6）。不迁移业务数据，仅改配置。
 // 从 MySQL 切到 SQLite 或反向都必须由用户在 UI 确认后调用本方法。
 func (c *Config) SetStorage(kind, sqlitePath string) error {
+	prevStorage, prevSQLitePath := c.Storage, c.SQLitePath
 	switch normalizeStorage(kind) {
 	case StorageSQLite:
 		c.Storage = StorageSQLite
@@ -358,6 +359,8 @@ func (c *Config) SetStorage(kind, sqlitePath string) error {
 			c.SQLitePath = sqlitePath
 		}
 		if _, err := c.ResolveSQLitePath(); err != nil {
+			// 校验失败时回滚内存状态，避免与磁盘上的配置不一致。
+			c.Storage, c.SQLitePath = prevStorage, prevSQLitePath
 			return err
 		}
 	case StorageMySQL:

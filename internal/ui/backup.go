@@ -18,6 +18,7 @@ import (
 	"app/internal/auth"
 	"app/internal/nativefiledialog"
 	"app/internal/paths"
+	"app/internal/service"
 	"app/internal/update"
 	"app/internal/usecase"
 )
@@ -324,10 +325,12 @@ func (s *BackupScreen) doImport() {
 		return
 	}
 	// D-014: snapshot restore is whole-DB rollback, never a merge.
+	// 类型按文件内容判断（与 Service.RestoreDatabase 同一口径），不看扩展名。
+	isSnapshot := service.IsSQLiteSnapshot(filePath)
 	msg := fmt.Sprintf("即将从以下备份恢复：\n%s\n\n", filePath)
-	if isSQLiteSnapshotPath(filePath) {
+	if isSnapshot {
 		msg += "这是 SQLite 整库快照。恢复=整库回到该备份时刻，不会与当前数据合并。\n" +
-			"操作前会自动保留当前状态。\n\n" +
+			"操作前会把当前数据库另存为 <数据库文件>.before-restore-<时间戳>。\n\n" +
 			"完成后应用将自动重启，请确认现在继续。"
 	} else {
 		msg += "即将从以下文件追加导入数据（仅执行 INSERT 语句）："
@@ -342,12 +345,13 @@ func (s *BackupScreen) doImport() {
 				showError(s.window, "恢复失败", err)
 				return
 			}
-			if isSQLiteSnapshotPath(filePath) {
+			if isSnapshot {
 				// File is replaced and handles are closed — relaunch so the next
 				// start opens the restored DB cleanly (avoids a half-dead session).
 				if rerr := update.RestartApp(); rerr != nil {
 					dialog.ShowInformation("已整库回退，请手动重启",
 						"已整库回到所选备份时刻（未与当前数据合并）。\n"+
+							"恢复前的数据库已另存为 <数据库文件>.before-restore-<时间戳>。\n"+
 							"自动重启失败："+rerr.Error()+"\n\n"+
 							"请关闭并重新打开 RFERP 后再继续操作。",
 						s.window)
@@ -363,10 +367,6 @@ func (s *BackupScreen) doImport() {
 			msg += fmt.Sprintf("\n文件：%s", filePath)
 			dialog.ShowInformation("导入完成", msg, s.window)
 		}, s.window).Show()
-}
-
-func isSQLiteSnapshotPath(p string) bool {
-	return strings.EqualFold(filepath.Ext(p), ".db")
 }
 
 func (s *BackupScreen) doExportAudit() {

@@ -44,16 +44,38 @@ func contractCases(t *testing.T, open storeFactory) {
 		}
 	})
 
-	t.Run("unique_conflict_on_product_code", func(t *testing.T) {
+	// products.code is intentionally NOT unique: a code is a product-family
+	// number shared by colour variants (EB01-F1 = 打蛋器 绿/粉/白). Both
+	// adapters must accept that. parts.code IS unique, so the conflict case
+	// is asserted there instead.
+	t.Run("duplicate_product_code_allowed", func(t *testing.T) {
+		s, _ := open(t)
+		for _, name := range []string{"绿", "粉", "白"} {
+			if _, err := withTxRet(s, func(tx TxOps) (int64, error) {
+				return tx.CreateProduct(&model.Product{Code: "FAM-1", Name: name, Unit: "台", Status: 1})
+			}); err != nil {
+				t.Fatalf("create product %s: %v", name, err)
+			}
+		}
+		list, err := s.ListProducts()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 3 {
+			t.Fatalf("products=%d, want 3 rows sharing one code", len(list))
+		}
+	})
+
+	t.Run("unique_conflict_on_part_code", func(t *testing.T) {
 		s, _ := open(t)
 		_, err := withTxRet(s, func(tx TxOps) (int64, error) {
-			return tx.CreateProduct(&model.Product{Code: "DUP", Name: "A", Unit: "u", Status: 1})
+			return tx.CreatePart(&model.Part{Code: "DUP", Name: "A", Unit: "u", Status: 1})
 		})
 		if err != nil {
 			t.Fatalf("first create: %v", err)
 		}
 		_, err = withTxRet(s, func(tx TxOps) (int64, error) {
-			return tx.CreateProduct(&model.Product{Code: "DUP", Name: "B", Unit: "u", Status: 1})
+			return tx.CreatePart(&model.Part{Code: "DUP", Name: "B", Unit: "u", Status: 1})
 		})
 		if err == nil {
 			t.Fatal("expected unique conflict")

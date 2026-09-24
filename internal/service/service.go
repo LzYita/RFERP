@@ -1054,19 +1054,25 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 // ---- 备份与导出 ----
 
 func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
-	data, err := os.ReadFile(filePath)
-	if err == nil && isSQLiteFile(data) {
-		// D-014: single full snapshot rollback via file replace (no merge).
-		pre, rerr := s.snapshots.Restore(filePath)
-		if rerr != nil {
-			return 0, 0, rerr
+	// 备份类型必须与当前存储后端一致。类型按文件内容判断（不是扩展名），
+	// 与 UI 的确认文案 / 是否需要重启保持同一口径。
+	sqliteBackend := s.snapshots != nil && s.snapshots.Kind() == usecase.SnapshotKindSQLite
+	if IsSQLiteSnapshot(filePath) {
+		if !sqliteBackend {
+			return 0, 0, fmt.Errorf("当前使用 MySQL 存储，无法应用 SQLite 整库快照（.db）；请导入 .sql 备份")
 		}
-		if pre != "" {
-			// Caller should prompt restart; pre-restore copy is kept beside the DB file.
-			_ = pre
+		// D-014: single full snapshot rollback via file replace (no merge).
+		// 恢复前会把当前库另存为 <数据库文件>.before-restore-<时间戳>。
+		if _, rerr := s.snapshots.Restore(filePath); rerr != nil {
+			return 0, 0, rerr
 		}
 		return 1, 0, nil
 	}
+	if sqliteBackend {
+		return 0, 0, fmt.Errorf("当前使用 SQLite 存储，不支持导入 MySQL 的 .sql 备份；请导入 .db 整库快照")
+	}
+
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read file: %w", err)
 	}
@@ -1865,6 +1871,17 @@ func strPtrOrNil(v string) *string {
 	return &v
 }
 
-func isSQLiteFile(data []byte) bool {
-	return len(data) >= 15 && string(data[:15]) == "SQLite format 3"
+// IsSQLiteSnapshot 判断 path 是否为 SQLite 数据库文件。
+// 只读 16 字节文件头，绝不把整份备份读进内存。
+func IsSQLiteSnapshot(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var head [16]byte
+	if _, err := io.ReadFull(f, head[:]); err != nil {
+		return false
+	}
+	return string(head[:]) == "SQLite format 3\x00"
 }

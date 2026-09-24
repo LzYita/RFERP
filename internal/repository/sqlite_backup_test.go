@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -100,5 +101,46 @@ func TestRestoreSQLiteFileRollsBackToSnapshot(t *testing.T) {
 	}
 	if len(users) != 1 || users[0].Username != "p1" {
 		t.Fatalf("users=%v, want only p1 (D-014 no merge)", users)
+	}
+}
+
+// 陈旧 WAL/SHM 若残留，SQLite 会用旧日志回放刚替换进来的文件并造成损坏。
+func TestRestoreSQLiteFileRemovesStaleSidecars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "src.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := migrate.RunSQLite(db); err != nil {
+		db.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewSQLite(db)
+	if _, err := store.CreateUser(&model.User{Username: "p1", PasswordHash: "h", Role: "viewer", Status: 1}); err != nil {
+		db.Close()
+		t.Fatalf("seed: %v", err)
+	}
+	snapshot, err := SnapshotSQLiteFile(path, filepath.Join(dir, "backups"))
+	if err != nil {
+		db.Close()
+		t.Fatalf("snapshot: %v", err)
+	}
+	db.Close()
+
+	// 模拟上次非正常退出留下的 WAL/SHM
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.WriteFile(path+suffix, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := RestoreSQLiteFile(path, snapshot); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+			t.Fatalf("stale %s survived restore", suffix)
+		}
 	}
 }

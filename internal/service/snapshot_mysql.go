@@ -24,6 +24,10 @@ func (p *mysqlSnapshotPort) Snapshot(saveDir string) (string, error) {
 	return dbbackup.Backup(p.dsn, p.tool, saveDir)
 }
 
+func (p *mysqlSnapshotPort) Kind() string {
+	return usecase.SnapshotKindMySQL
+}
+
 // Restore is not used for MySQL SQL dumps: Service.RestoreDatabase executes
 // the dump's INSERT statements in one transaction. File-level replace does
 // not apply to a live mysqldump snapshot.

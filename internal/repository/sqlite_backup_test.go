@@ -50,3 +50,55 @@ func TestTranslateErrorUnique(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRestoreSQLiteFileRollsBackToSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "src.db")
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := migrate.RunSQLite(db); err != nil {
+		db.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewSQLite(db)
+	if _, err := store.CreateUser(&model.User{Username: "p1", PasswordHash: "h", Role: "viewer", Status: 1}); err != nil {
+		db.Close()
+		t.Fatalf("seed p1: %v", err)
+	}
+	saveDir := filepath.Join(dir, "backups")
+	p1, err := SnapshotSQLiteFile(path, saveDir)
+	if err != nil {
+		db.Close()
+		t.Fatalf("snapshot p1: %v", err)
+	}
+	if _, err := store.CreateUser(&model.User{Username: "p2", PasswordHash: "h", Role: "viewer", Status: 1}); err != nil {
+		db.Close()
+		t.Fatalf("seed p2: %v", err)
+	}
+	// Must close before replace (Windows file lock).
+	db.Close()
+
+	pre, err := RestoreSQLiteFile(path, p1)
+	if err != nil {
+		t.Fatalf("restore p1: %v", err)
+	}
+	if pre == "" {
+		t.Fatal("expected pre-restore backup path")
+	}
+
+	rdb, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer rdb.Close()
+	rstore := NewSQLite(rdb)
+	users, err := rstore.ListUsers()
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "p1" {
+		t.Fatalf("users=%v, want only p1 (D-014 no merge)", users)
+	}
+}

@@ -9,6 +9,9 @@ package usecase
 type SnapshotPort interface {
 	// Snapshot 在 saveDir 下生成完整快照文件，返回其路径。
 	Snapshot(saveDir string) (path string, err error)
+	// Restore 将当前库整库替换为 snapshotPath 指向的快照（不合并）。
+	// 实现应在替换前保留当前状态，并在失败时回滚到替换前。
+	Restore(snapshotPath string) (preRestoreBackup string, err error)
 }
 
 // SessionPort 在“关闭外键/唯一检查”的会话中执行 operation，用于批量导入/清库。

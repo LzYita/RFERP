@@ -2,15 +2,19 @@ package repository
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 
 	"app/internal/migrate"
 	"app/internal/model"
 )
 
-// Shared Store contract cases (D-013 / D-015). Run against SQLite file stores;
-// extend with MySQL (sqlmock / RFERP_TEST_DSN) as the second adapter.
+// Shared Store contract cases (D-013 / D-015). Run against SQLite file stores
+// always, and against MySQL when RFERP_TEST_DSN is set (second adapter).
 
 type storeFactory func(t *testing.T) (Store, string) // store, dbPath ("" if N/A)
 
@@ -140,6 +144,27 @@ func TestSQLiteStoreContract(t *testing.T) {
 			t.Fatalf("migrate: %v", err)
 		}
 		return NewSQLite(db), path
+	})
+}
+
+// TestMySQLStoreContract runs the same contract cases against the MySQL
+// adapter (D-013 one set of business semantics). Requires RFERP_TEST_DSN
+// pointing at a disposable database — the suite migrates and writes to it.
+func TestMySQLStoreContract(t *testing.T) {
+	dsn := os.Getenv("RFERP_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RFERP_TEST_DSN not set; skipping MySQL Store contract")
+	}
+	contractCases(t, func(t *testing.T) (Store, string) {
+		db, err := sqlx.Connect("mysql", dsn)
+		if err != nil {
+			t.Fatalf("connect mysql: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
+			t.Fatalf("migrate mysql: %v", err)
+		}
+		return New(db), ""
 	})
 }
 

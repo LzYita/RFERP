@@ -3,11 +3,13 @@ package ui
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/jmoiron/sqlx"
@@ -196,6 +198,44 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 	hint := widget.NewLabel("连接信息将使用 Windows DPAPI 加密后保存在本机。")
 	hint.Wrapping = fyne.TextWrapWord
 
+	// E5/E6 storage choice: empty/legacy stays MySQL; SQLite is explicit only.
+	storageSel := widget.NewRadioGroup([]string{"MySQL（多人/高级）", "SQLite（单机零安装）"}, func(string) {})
+	storageSel.Horizontal = true
+	if base.IsSQLite() {
+		storageSel.SetSelected("SQLite（单机零安装）")
+	} else {
+		storageSel.SetSelected("MySQL（多人/高级）")
+	}
+	e6Note := widget.NewLabel("选择 SQLite 不会自动迁移 MySQL 中的已有数据；切换存储仅改配置，数据需自行导出/导入。")
+	e6Note.Wrapping = fyne.TextWrapWord
+
+	useSQLiteBtn := widget.NewButton("使用 SQLite 本地库", func() {
+		dd := strings.TrimSpace(dataDir.Text)
+		if dd == "" {
+			status.SetText("请先填写数据目录（SQLite 文件默认放在该目录下）。")
+			return
+		}
+		cfg := *base
+		cfg.DataDir = dd
+		if err := cfg.SetStorage(config.StorageSQLite, filepath.Join(dd, config.DefaultSQLiteFileName)); err != nil {
+			status.SetText("保存 SQLite 配置失败：" + err.Error())
+			return
+		}
+		dialog.NewConfirm("确认切换到 SQLite",
+			"切换到 SQLite 本地库不会自动迁移已有 MySQL 数据。\n"+
+				"数据库文件：\n"+filepath.Join(dd, config.DefaultSQLiteFileName)+"\n\n"+
+				"确定使用 SQLite 单机模式启动吗？",
+			func(ok bool) {
+				if !ok {
+					return
+				}
+				paths.SetDataDir(dd)
+				onReady(&cfg, nil)
+				w.Close()
+			}, w).Show()
+	})
+	useSQLiteBtn.Importance = widget.HighImportance
+
 	form := widget.NewForm(
 		widget.NewFormItem("主机", host),
 		widget.NewFormItem("端口", portE),
@@ -207,6 +247,11 @@ func ShowSetup(a fyne.App, base *config.Config, onReady func(*config.Config, *sq
 
 	content := container.NewPadded(container.NewVBox(
 		widget.NewLabelWithStyle("首次运行配置", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		storageSel,
+		e6Note,
+		useSQLiteBtn,
+		widget.NewSeparator(),
+		widget.NewLabelWithStyle("MySQL 连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		hint,
 		detectLabel,
 		container.NewHBox(useLocalBtn, startBtn, redetectBtn, downloadBtn),

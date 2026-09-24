@@ -174,6 +174,10 @@ func enterLocalMode(a fyne.App, cfg *config.Config) {
 		log.Printf("database connection failed: %v", err)
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
+			if newCfg.IsSQLite() {
+				enterLocalSQLite(a, newCfg)
+				return
+			}
 			enterLocalMySQL(a, newCfg, newDB)
 		})
 		return
@@ -204,7 +208,8 @@ func enterLocalSQLite(a fyne.App, cfg *config.Config) {
 		log.Printf("sqlite migration applied: %v", res.Applied)
 	}
 	store := repository.NewSQLite(db)
-	apps := service.NewWithSnapshot(store, service.NewSQLiteSnapshotPort(path), cfg)
+	closer := func() error { return db.Close() }
+	apps := service.NewWithSnapshot(store, service.NewSQLiteSnapshotPort(path, closer), cfg)
 	launchLocalUI(a, cfg, apps)
 }
 

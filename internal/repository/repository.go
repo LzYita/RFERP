@@ -216,7 +216,7 @@ func (r *Repository) ListProducts() ([]model.Product, error) {
 
 func (r *Repository) UpdateProduct(p *model.Product) (int64, error) {
 	res, err := r.db.Exec(
-		`UPDATE products SET code=?,name=?,spec=?,unit=?,status=?,operator=?, version=version+1 WHERE id=? AND version=?`,
+		`UPDATE products SET code=?,name=?,spec=?,unit=?,status=?,operator=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
 	)
 	if err != nil {
@@ -263,7 +263,7 @@ func (r *Repository) ListParts() ([]model.Part, error) {
 
 func (r *Repository) UpdatePart(p *model.Part) (int64, error) {
 	res, err := r.db.Exec(
-		`UPDATE parts SET code=?,name=?,spec=?,unit=?,part_type=?,stock_qty=?,warn_qty=?,status=?,operator=?,supplier=?, version=version+1 WHERE id=? AND version=?`,
+		`UPDATE parts SET code=?,name=?,spec=?,unit=?,part_type=?,stock_qty=?,warn_qty=?,status=?,operator=?,supplier=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
 	)
 	if err != nil {
@@ -409,7 +409,7 @@ func (r *Repository) UpdatePartStock(partID int64, newQty float64) error {
 }
 
 func (r *Repository) UpdateBatchProduced(id int64, qty int) error {
-	_, err := r.db.Exec(`UPDATE product_batches SET produced_qty=? WHERE id=?`, qty, id)
+	_, err := r.db.Exec(`UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?`, qty, id)
 	return err
 }
 
@@ -484,7 +484,7 @@ func (t *Tx) CreateProduct(p *model.Product) (int64, error) {
 
 func (t *Tx) UpdateProduct(p *model.Product) (int64, error) {
 	res, err := t.tx.Exec(
-		`UPDATE products SET code=?,name=?,spec=?,unit=?,status=?,operator=?, version=version+1 WHERE id=? AND version=?`,
+		`UPDATE products SET code=?,name=?,spec=?,unit=?,status=?,operator=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
 		p.Code, p.Name, p.Spec, p.Unit, p.Status, p.Operator, p.ID, p.Version,
 	)
 	if err != nil {
@@ -511,7 +511,7 @@ func (t *Tx) CreatePart(p *model.Part) (int64, error) {
 
 func (t *Tx) UpdatePart(p *model.Part) (int64, error) {
 	res, err := t.tx.Exec(
-		`UPDATE parts SET code=?,name=?,spec=?,unit=?,part_type=?,stock_qty=?,warn_qty=?,status=?,operator=?,supplier=?, version=version+1 WHERE id=? AND version=?`,
+		`UPDATE parts SET code=?,name=?,spec=?,unit=?,part_type=?,stock_qty=?,warn_qty=?,status=?,operator=?,supplier=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
 		p.Code, p.Name, p.Spec, p.Unit, p.PartType, p.StockQty, p.WarnQty, p.Status, p.Operator, p.Supplier, p.ID, p.Version,
 	)
 	if err != nil {
@@ -571,7 +571,7 @@ func (t *Tx) GetPartForUpdate(id int64) (*model.Part, error) {
 }
 
 func (t *Tx) UpdatePartStock(partID int64, newQty float64) error {
-	_, err := t.tx.Exec(`UPDATE parts SET stock_qty=?, version=version+1 WHERE id=?`, newQty, partID)
+	_, err := t.tx.Exec(`UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?`, newQty, partID)
 	if err != nil {
 		return err
 	}
@@ -579,7 +579,7 @@ func (t *Tx) UpdatePartStock(partID int64, newQty float64) error {
 }
 
 func (t *Tx) UpdateBatchProduced(id int64, qty int) error {
-	_, err := t.tx.Exec(`UPDATE product_batches SET produced_qty=? WHERE id=?`, qty, id)
+	_, err := t.tx.Exec(`UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?`, qty, id)
 	if err != nil {
 		return err
 	}
@@ -587,13 +587,13 @@ func (t *Tx) UpdateBatchProduced(id int64, qty int) error {
 }
 
 func (t *Tx) MarkBatchConsumptionRecorded(id int64) error {
-	_, err := t.tx.Exec(`UPDATE product_batches SET consumption_recorded=1 WHERE id=?`, id)
+	_, err := t.tx.Exec(`UPDATE product_batches SET consumption_recorded=1, updated_at=NOW() WHERE id=?`, id)
 	return err
 }
 
 func (t *Tx) UpdateBatchStatusFrom(id int64, status int, operator string, fromStatus int) (int64, error) {
 	res, err := t.tx.Exec(
-		`UPDATE product_batches SET status=?, operator=?, version=version+1 WHERE id=? AND status=?`,
+		`UPDATE product_batches SET status=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND status=?`,
 		status, operator, id, fromStatus,
 	)
 	if err != nil {
@@ -894,13 +894,13 @@ func (r *Repository) CreateUser(u *model.User) (int64, error) {
 
 func (r *Repository) UpdateUser(u *model.User) error {
 	_, err := r.db.Exec(
-		`UPDATE users SET display_name=?, role=?, status=? WHERE id=?`,
+		`UPDATE users SET display_name=?, role=?, status=?, updated_at=NOW() WHERE id=?`,
 		u.DisplayName, u.Role, u.Status, u.ID)
 	return err
 }
 
 func (r *Repository) UpdateUserPassword(id int64, hash string) error {
-	_, err := r.db.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, id)
+	_, err := r.db.Exec(`UPDATE users SET password_hash=?, updated_at=NOW() WHERE id=?`, hash, id)
 	return err
 }
 

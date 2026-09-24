@@ -280,13 +280,14 @@ func (s *BackupScreen) doBrowse() {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(strings.ToLower(info.Name()), ".sql") {
+		name := strings.ToLower(info.Name())
+		if strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, ".db") {
 			files = append(files, p)
 		}
 		return nil
 	})
 	if len(files) == 0 {
-		dialog.ShowInformation("提示", fmt.Sprintf("在 %s 下未找到 .sql 备份文件", backupDir), s.window)
+		dialog.ShowInformation("提示", fmt.Sprintf("在 %s 下未找到 .sql / .db 备份文件", backupDir), s.window)
 		return
 	}
 	sort.Strings(files)
@@ -321,15 +322,28 @@ func (s *BackupScreen) doImport() {
 		dialog.ShowInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
 		return
 	}
-	dialog.NewConfirm("确认导入",
-		fmt.Sprintf("即将从以下文件追加导入数据（仅执行 INSERT 语句）：\n%s", filePath),
+	// D-014: snapshot restore is whole-DB rollback, never a merge.
+	msg := fmt.Sprintf("即将从以下备份恢复：\n%s\n\n", filePath)
+	if isSQLiteSnapshotPath(filePath) {
+		msg += "这是 SQLite 整库快照。恢复=整库回到该备份时刻，不会与当前数据合并。\n" +
+			"操作前会自动保留当前状态；完成后请立即重启应用。"
+	} else {
+		msg += "即将从以下文件追加导入数据（仅执行 INSERT 语句）："
+	}
+	dialog.NewConfirm("确认恢复", msg,
 		func(confirm bool) {
 			if !confirm {
 				return
 			}
 			success, failed, err := s.svc.RestoreDatabase(filePath)
 			if err != nil {
-				showError(s.window, "导入失败", err)
+				showError(s.window, "恢复失败", err)
+				return
+			}
+			if isSQLiteSnapshotPath(filePath) {
+				dialog.ShowInformation("已整库回退",
+					"已整库回到所选备份时刻（未与当前数据合并）。\n请立即重启应用后再继续操作。",
+					s.window)
 				return
 			}
 			msg := fmt.Sprintf("成功导入 %d 条记录", success)
@@ -339,6 +353,10 @@ func (s *BackupScreen) doImport() {
 			msg += fmt.Sprintf("\n文件：%s", filePath)
 			dialog.ShowInformation("导入完成", msg, s.window)
 		}, s.window).Show()
+}
+
+func isSQLiteSnapshotPath(p string) bool {
+	return strings.EqualFold(filepath.Ext(p), ".db")
 }
 
 func (s *BackupScreen) doExportAudit() {

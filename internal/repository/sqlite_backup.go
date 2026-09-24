@@ -79,3 +79,72 @@ func escapeSQLiteString(s string) string {
 	}
 	return string(out)
 }
+
+// RestoreSQLiteFile replaces dbPath with the snapshot at snapshotPath (D-014
+// single full rollback, no merge). Steps:
+//  1. verify snapshot opens and passes integrity_check
+//  2. if dbPath exists, keep it as <dbPath>.before-restore-<ts>
+//  3. copy snapshot to dbPath via temp+rename
+//  4. verify the restored file; on failure put the previous file back
+//
+// Caller must close any live handles on dbPath first (Windows file locks).
+func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, err error) {
+	if dbPath == "" || snapshotPath == "" {
+		return "", fmt.Errorf("db path and snapshot path are required")
+	}
+	// 1. verify snapshot independently
+	sdb, err := OpenSQLite(snapshotPath)
+	if err != nil {
+		return "", fmt.Errorf("open snapshot: %w", err)
+	}
+	if err := verifySQLiteDatabase(sdb); err != nil {
+		sdb.Close()
+		return "", fmt.Errorf("snapshot verification failed: %w", err)
+	}
+	sdb.Close()
+
+	// 2. preserve current file
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		preRestoreBackup = fmt.Sprintf("%s.before-restore-%s", dbPath, time.Now().Format("20060102_150405"))
+		if err := copyFile(dbPath, preRestoreBackup); err != nil {
+			return "", fmt.Errorf("preserve current database: %w", err)
+		}
+	}
+
+	// 3. temp + rename replace
+	tmp := dbPath + ".restore-tmp"
+	if err := copyFile(snapshotPath, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return preRestoreBackup, fmt.Errorf("stage snapshot: %w", err)
+	}
+	if err := os.Rename(tmp, dbPath); err != nil {
+		_ = os.Remove(tmp)
+		return preRestoreBackup, fmt.Errorf("replace database file (close the app if it is running): %w", err)
+	}
+
+	// 4. verify restored file
+	rdb, err := OpenSQLite(dbPath)
+	if err != nil {
+		if preRestoreBackup != "" {
+			_ = copyFile(preRestoreBackup, dbPath)
+		}
+		return preRestoreBackup, fmt.Errorf("open restored database: %w", err)
+	}
+	verr := verifySQLiteDatabase(rdb)
+	rdb.Close()
+	if verr != nil {
+		if preRestoreBackup != "" {
+			_ = copyFile(preRestoreBackup, dbPath)
+		}
+		return preRestoreBackup, fmt.Errorf("restored database verification failed: %w", verr)
+	}
+	return preRestoreBackup, nil
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
+}

@@ -91,6 +91,30 @@ func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW
 	}
 }
 
+// toggleTableRowSelection 切换表格的行选中态（第 0 行是表头，忽略）。
+//
+// 这里必须用 UnselectAll 清掉 Fyne 自身的选中态，**不能**用
+// Select(widget.TableCellID{Row: -1, Col: -1})：
+// Fyne 的 Table.Select 只校验上界（id.Row >= rows），负值会通过并调用
+// ScrollTo(-1, -1)，而 ScrollTo 会把该"单元格"（即 y=0）滚到可视区顶部——
+// 于是用户点选靠下的行时，表格会突然跳回顶部。
+// UnselectAll 只清选中状态，不改变滚动位置。
+//
+// 清状态是必要的：Fyne 对"同一个单元格再次 Select"会直接返回、不触发
+// OnSelected，那样同一行就无法再次点击（也就无法取消选中）。
+func toggleTableRowSelection(t *widget.Table, selected *int, row int) {
+	if t == nil || row <= 0 {
+		return
+	}
+	if *selected == row {
+		*selected = -1
+	} else {
+		*selected = row
+	}
+	t.Refresh()
+	t.UnselectAll()
+}
+
 // cellWidget 是表格单元格：背景 + 文本。
 // 文本超宽时以省略号截断（列宽已按内容自适应，只有极长内容才会被截断）。
 type cellWidget struct {

@@ -739,26 +739,44 @@ func (s *Service) GetStockStats(days int) (*StockStats, error) {
 
 	key := func(code, name string) string { return code + "|" + name }
 
-	// 出库关联批次，用于把零件消耗映射到客户/产品
+	// 出库关联批次，用于把零件消耗映射到客户/产品，并识别已撤销批次
+	// （Issue #40：status=4 的批次其扣减与回退日志两端都不计入统计）
 	batchIDSet := make(map[int64]bool)
 	for _, l := range logs {
-		if l.Action == "STOCK_DEDUCT" && l.NewData != nil {
-			if bid, ok := (*l.NewData)["batch_id"].(float64); ok && bid > 0 {
-				batchIDSet[int64(bid)] = true
-			}
+		if l.NewData == nil {
+			continue
+		}
+		if l.Action != "STOCK_DEDUCT" && l.Action != "STOCK_ADJUST" {
+			continue
+		}
+		if bid := int64(numVal((*l.NewData)["batch_id"])); bid > 0 {
+			batchIDSet[bid] = true
 		}
 	}
 	batchMap := make(map[int64]model.ProductBatch)
+	revokedBatchSet := make(map[int64]bool)
 	if len(batchIDSet) > 0 {
-		batches, _ := s.repo.ListBatches()
+		batches, err := s.repo.ListBatches()
+		if err != nil {
+			return nil, fmt.Errorf("list batches for stock stats: %w", err)
+		}
 		for _, b := range batches {
 			if batchIDSet[b.ID] {
 				batchMap[b.ID] = b
+				if b.Status == 4 {
+					revokedBatchSet[b.ID] = true
+				}
 			}
 		}
 	}
 
 	for _, l := range logs {
+		// 已撤销批次视为未发生：其 STOCK_DEDUCT 与撤销回退 STOCK_ADJUST 一并跳过
+		if l.NewData != nil && (l.Action == "STOCK_DEDUCT" || l.Action == "STOCK_ADJUST") {
+			if bid := int64(numVal((*l.NewData)["batch_id"])); bid > 0 && revokedBatchSet[bid] {
+				continue
+			}
+		}
 		day := l.CreatedAt.Format("01-02")
 		dp, ok := dailyMap[day]
 		if !ok {

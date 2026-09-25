@@ -692,6 +692,11 @@ func tableTypeStyle(table string) (color.Color, color.Color) {
 }
 
 func updateCellWrap(cellObj fyne.CanvasObject, text string, bgColor color.Color) {
+	if c, ok := cellObj.(*cellWidget); ok {
+		c.setWrapped(text, bgColor)
+		return
+	}
+	// 兼容旧的 Stack(bg,label) 单元格
 	s := cellObj.(*fyne.Container)
 	bg := s.Objects[0].(*canvas.Rectangle)
 	lbl := s.Objects[1].(*widget.Label)

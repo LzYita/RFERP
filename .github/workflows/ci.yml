@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # compare the checked-out PR merge/push against its actual base
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -92,7 +93,15 @@ jobs:
             $unformatted | ForEach-Object { Write-Host $_ }
             exit 1
           }
-          git diff --check
+          # PR checkout is the test merge commit; its first parent is the target branch.
+          # On push, check the entire pushed range, not only the last commit.
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+            $base = 'HEAD^1'
+          } else {
+            $event = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
+            $base = $event.before
+          }
+          git diff --check $base HEAD
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }

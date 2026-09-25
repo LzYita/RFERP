@@ -14,6 +14,17 @@ type Options struct {
 	DSN           string
 	MysqldumpPath string
 	BackupDir     string
+
+	// Backup 是升级前备份的实现，默认 dbbackup.Backup。
+	// 单独成字段是为了让测试能注入"备份失败"，验证 fail-closed 行为。
+	Backup func(dsn, mysqldumpPath, saveDir string) (string, error)
+}
+
+func (o Options) backup() func(dsn, mysqldumpPath, saveDir string) (string, error) {
+	if o.Backup != nil {
+		return o.Backup
+	}
+	return dbbackup.Backup
 }
 
 type Result struct {
@@ -60,27 +71,19 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 			pending = append(pending, m)
 		}
 	}
-	if len(pending) == 0 {
+	steps, err := pendingStepMigrations(db, cur)
+	if err != nil {
+		return res, err
+	}
+	if len(pending) == 0 && len(steps) == 0 {
 		res.ToVersion = cur
-		if err := applyStepMigrations(db, cur, &res); err != nil {
-			return res, err
-		}
 		return res, nil
 	}
 
-	empty, err := databaseEmpty(db)
-	if err != nil {
-		log.Printf("migrate: check empty failed: %v", err)
-		empty = true
-	}
-	if !empty && opts.BackupDir != "" {
-		path, err := dbbackup.Backup(opts.DSN, opts.MysqldumpPath, opts.BackupDir)
-		if err != nil {
-			log.Printf("migrate: pre-upgrade backup failed: %v", err)
-		} else {
-			res.BackupPath = path
-			log.Printf("migrate: pre-upgrade backup saved: %s", path)
-		}
+	// 非空库在改动结构前必须先备份；备份失败即中止，不留下"升级了一半"的库。
+	// 空库（全新安装）不需要备份。
+	if err := backupBeforeUpgrade(db, opts, &res, len(pending)+len(steps)); err != nil {
+		return res, err
 	}
 
 	for _, m := range pending {
@@ -93,12 +96,37 @@ func Run(db *sqlx.DB, opts Options) (Result, error) {
 		}
 		res.Applied = append(res.Applied, m.Version)
 	}
-	res.ToVersion = pending[len(pending)-1].Version
-	// v12+ portable steps (dual MySQL/SQLite). Snapshot before these when DB is non-empty.
+	if len(pending) > 0 {
+		res.ToVersion = pending[len(pending)-1].Version
+	}
+	// v12+ 可移植步骤（MySQL/SQLite 双端）。已在上方备份。
 	if err := applyStepMigrations(db, cur, &res); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+// backupBeforeUpgrade 在非空库上执行升级前备份。失败返回错误，调用方必须中止迁移。
+func backupBeforeUpgrade(db *sqlx.DB, opts Options, res *Result, changes int) error {
+	empty, err := databaseEmpty(db)
+	if err != nil {
+		// 判断不了是否为空时按"非空"处理：宁可多备份，也不做无备份升级。
+		log.Printf("migrate: check empty failed: %v", err)
+		empty = false
+	}
+	if empty {
+		return nil
+	}
+	if opts.BackupDir == "" {
+		return fmt.Errorf("数据库非空且有 %d 项待升级，但未配置备份目录；为避免无备份升级已中止", changes)
+	}
+	path, err := opts.backup()(opts.DSN, opts.MysqldumpPath, opts.BackupDir)
+	if err != nil {
+		return fmt.Errorf("升级前备份失败，已中止迁移: %w", err)
+	}
+	res.BackupPath = path
+	log.Printf("migrate: pre-upgrade backup saved: %s", path)
+	return nil
 }
 
 func ensureMigrationsTable(db *sqlx.DB) error {
@@ -491,18 +519,33 @@ var baseSchema = []string{
 	) COMMENT '审计日志-记录所有数据变更'`,
 }
 
-// applyStepMigrations applies v12+ dual-end steps on MySQL.
-func applyStepMigrations(db *sqlx.DB, from int, res *Result) error {
+// pendingStepMigrations 返回尚未应用的 v12+ 双端步骤（版本高于 from，且未记录在
+// schema_migrations）。调用方据此决定是否需要先备份。
+func pendingStepMigrations(db *sqlx.DB, from int) ([]Step, error) {
+	var out []Step
 	for _, s := range steps {
 		if s.Version <= from || s.MySQL == nil {
 			continue
 		}
-		// Also skip if already recorded (idempotent re-run).
 		var exists int
-		_ = db.Get(&exists, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, s.Version)
+		if err := db.Get(&exists, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, s.Version); err != nil {
+			return nil, err
+		}
 		if exists > 0 {
 			continue
 		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// applyStepMigrations applies v12+ dual-end steps on MySQL.
+func applyStepMigrations(db *sqlx.DB, from int, res *Result) error {
+	pending, err := pendingStepMigrations(db, from)
+	if err != nil {
+		return err
+	}
+	for _, s := range pending {
 		log.Printf("migrate: applying v%d %s", s.Version, s.Name)
 		if err := s.MySQL(db); err != nil {
 			return fmt.Errorf("migration v%d (%s) failed: %w", s.Version, s.Name, err)

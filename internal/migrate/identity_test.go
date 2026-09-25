@@ -4,7 +4,7 @@ import "testing"
 
 func TestDBIdentityCreatedOnceAndStable(t *testing.T) {
 	db := openSQLiteTest(t)
-	if _, err := RunSQLite(db); err != nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {
 		t.Fatalf("RunSQLite: %v", err)
 	}
 
@@ -17,7 +17,7 @@ func TestDBIdentityCreatedOnceAndStable(t *testing.T) {
 	}
 
 	// 幂等：再跑一次不新增行、不更换身份。
-	if _, err := RunSQLite(db); err != nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {
 		t.Fatalf("second RunSQLite: %v", err)
 	}
 	var n int
@@ -39,7 +39,7 @@ func TestDBIdentityCreatedOnceAndStable(t *testing.T) {
 // 已有库升级时只补行，不换身份；这里模拟"表在但行丢了"的库。
 func TestEnsureIdentityRowBackfillsMissingRow(t *testing.T) {
 	db := openSQLiteTest(t)
-	if _, err := RunSQLite(db); err != nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {
 		t.Fatalf("RunSQLite: %v", err)
 	}
 	if _, err := db.Exec(`DELETE FROM db_identity`); err != nil {

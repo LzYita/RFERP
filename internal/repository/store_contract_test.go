@@ -179,7 +179,7 @@ func TestSQLiteStoreContract(t *testing.T) {
 			t.Fatalf("open: %v", err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		if _, err := migrate.RunSQLite(db); err != nil {
+		if _, err := migrate.RunSQLite(db, migrate.SQLiteOptions{}); err != nil {
 			t.Fatalf("migrate: %v", err)
 		}
 		return NewSQLite(db), path
@@ -200,7 +200,13 @@ func TestMySQLStoreContract(t *testing.T) {
 			t.Fatalf("connect mysql: %v", err)
 		}
 		t.Cleanup(func() { _ = db.Close() })
-		if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
+		// 这个契约测试只关心 Store 行为，不验证备份；注入空实现，避免依赖 mysqldump
+		// （一次性测试库可能非空且有待升级步骤，此时迁移会要求先备份）。
+		if _, err := migrate.Run(db, migrate.Options{
+			DSN:       dsn,
+			BackupDir: t.TempDir(),
+			Backup:    func(string, string, string) (string, error) { return "test-backup", nil },
+		}); err != nil {
 			t.Fatalf("migrate mysql: %v", err)
 		}
 		return New(db), ""

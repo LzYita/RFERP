@@ -218,7 +218,13 @@ func enterLocalSQLite(a fyne.App, cfg *config.Config) {
 		winmsg.Error("RFERP 无法打开本机数据库", err.Error())
 		return
 	}
-	res, err := migrate.RunSQLite(db)
+	// 升级前快照：有 pending 步骤且库非空时，RunSQLite 会先 VACUUM INTO 一份并校验，
+	// 失败则中止迁移（不留"升级了一半"的库）。
+	res, err := migrate.RunSQLite(db, migrate.SQLiteOptions{
+		DBPath:      path,
+		SnapshotDir: paths.BackupDir(),
+		Snapshot:    repository.SnapshotSQLiteFile,
+	})
 	if err != nil {
 		log.Printf("sqlite migration failed: %v", err)
 		_ = db.Close()

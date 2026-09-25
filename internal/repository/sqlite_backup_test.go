@@ -17,7 +17,7 @@ func TestSQLiteVacuumIntoSnapshotVerified(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
-	if _, err := migrate.RunSQLite(db); err != nil {
+	if _, err := migrate.RunSQLite(db, migrate.SQLiteOptions{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := NewSQLite(db)
@@ -59,7 +59,7 @@ func TestRestoreSQLiteFileRollsBackToSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := migrate.RunSQLite(db); err != nil {
+	if _, err := migrate.RunSQLite(db, migrate.SQLiteOptions{}); err != nil {
 		db.Close()
 		t.Fatalf("migrate: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRestoreSQLiteFileRemovesStaleSidecars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if _, err := migrate.RunSQLite(db); err != nil {
+	if _, err := migrate.RunSQLite(db, migrate.SQLiteOptions{}); err != nil {
 		db.Close()
 		t.Fatalf("migrate: %v", err)
 	}

@@ -141,6 +141,7 @@ func (c *cellWidget) set(text string, bold bool, bgColor color.Color) {
 	c.bg.FillColor = bgColor
 	c.bg.Refresh()
 	c.label.Truncation = fyne.TextTruncateEllipsis
+	c.label.Wrapping = fyne.TextWrapOff
 	c.label.SetText(text)
 	c.label.Alignment = fyne.TextAlignCenter
 	if bold {
@@ -148,6 +149,18 @@ func (c *cellWidget) set(text string, bold bool, bgColor color.Color) {
 	} else {
 		c.label.TextStyle = fyne.TextStyle{}
 	}
+}
+
+// setWrapped 与 set 相同，但文本按词换行（用于「变更明细」这类多行单元格，
+// 行高由调用方按估算的行数设置）。
+func (c *cellWidget) setWrapped(text string, bgColor color.Color) {
+	c.bg.FillColor = bgColor
+	c.bg.Refresh()
+	c.label.Truncation = fyne.TextTruncateOff
+	c.label.Wrapping = fyne.TextWrapWord
+	c.label.SetText(text)
+	c.label.Alignment = fyne.TextAlignCenter
+	c.label.TextStyle = fyne.TextStyle{}
 }
 
 func productStatusStyle(status int) (color.Color, color.Color) {

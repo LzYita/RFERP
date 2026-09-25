@@ -26,7 +26,7 @@ func openSQLiteTest(t *testing.T) *sqlx.DB {
 func TestRunSQLiteBaselineOnEmptyDatabase(t *testing.T) {
 	db := openSQLiteTest(t)
 
-	res, err := RunSQLite(db)
+	res, err := RunSQLite(db, SQLiteOptions{})
 	if err != nil {
 		t.Fatalf("RunSQLite: %v", err)
 	}
@@ -80,10 +80,10 @@ func TestRunSQLiteBaselineOnEmptyDatabase(t *testing.T) {
 
 func TestRunSQLiteIsIdempotentAtBaseline(t *testing.T) {
 	db := openSQLiteTest(t)
-	if _, err := RunSQLite(db); err != nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {
 		t.Fatalf("first RunSQLite: %v", err)
 	}
-	res, err := RunSQLite(db)
+	res, err := RunSQLite(db, SQLiteOptions{})
 	if err != nil {
 		t.Fatalf("second RunSQLite: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRunSQLiteRejectsPartialHistoryWithoutVersionRows(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE products (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("seed table: %v", err)
 	}
-	if _, err := RunSQLite(db); err == nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err == nil {
 		t.Fatal("expected error for tables without schema_migrations history")
 	}
 }
@@ -113,14 +113,14 @@ func TestRunSQLiteRejectsBelowBaselineVersion(t *testing.T) {
 	if err := recordVersionSQL(db, 5, "batch_skip_parts"); err != nil {
 		t.Fatalf("seed version: %v", err)
 	}
-	if _, err := RunSQLite(db); err == nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err == nil {
 		t.Fatal("expected error when version < baseline")
 	}
 }
 
 func TestSQLiteBaselineHasQuantityChecks(t *testing.T) {
 	db := openSQLiteTest(t)
-	if _, err := RunSQLite(db); err != nil {
+	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {
 		t.Fatalf("RunSQLite: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO parts (code, name, stock_qty, warn_qty) VALUES ('P1', 'x', -1, 0)`); err == nil {

@@ -27,7 +27,7 @@ func TestAuditScreenRendersEveryCell(t *testing.T) {
 		t.Fatalf("open sqlite: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := migrate.RunSQLite(db); err != nil {
+	if _, err := migrate.RunSQLite(db, migrate.SQLiteOptions{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := repository.NewSQLite(db)

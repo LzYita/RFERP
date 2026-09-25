@@ -119,23 +119,8 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	var selGuard bool
 	s.table.OnSelected = func(id widget.TableCellID) {
-		if selGuard {
-			selGuard = false
-			return
-		}
-		if id.Row == 0 {
-			return
-		}
-		if s.selected == id.Row {
-			s.selected = -1
-		} else {
-			s.selected = id.Row
-		}
-		s.table.Refresh()
-		selGuard = true
-		s.table.Select(widget.TableCellID{Row: -1, Col: -1})
+		toggleTableRowSelection(s.table, &s.selected, id.Row)
 	}
 	s.table.SetColumnWidth(0, 120)
 	s.table.SetColumnWidth(1, 180)

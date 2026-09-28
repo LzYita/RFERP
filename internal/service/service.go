@@ -1717,21 +1717,9 @@ func bomConsume(planQty int, item model.BOMItem) float64 {
 // ---- 验证BOM完整性 ----
 
 func (s *Service) ClearDatabase() error {
-	stmts := []string{
-		"DELETE FROM batch_skip_parts",
-		"DELETE FROM batch_trace",
-		"DELETE FROM batch_consumptions",
-		"DELETE FROM bom_items",
-		"DELETE FROM product_batches",
-		"DELETE FROM parts",
-		"DELETE FROM products",
-		"DELETE FROM audit_log",
-	}
 	return s.repo.WithBulkLoad(func(tx repository.TxOps) error {
-		for _, stmt := range stmts {
-			if _, err := tx.Exec(stmt); err != nil {
-				return fmt.Errorf("clear database failed at [%s]: %w", stmt, err)
-			}
+		if err := deleteBusinessTables(tx); err != nil {
+			return fmt.Errorf("clear database failed: %w", err)
 		}
 		return nil
 	})

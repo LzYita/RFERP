@@ -24,15 +24,20 @@ import (
 )
 
 type BackupScreen struct {
-	svc          usecase.Applications
-	window       fyne.Window
-	backupPath   *widget.Entry
-	auditPath    *widget.Entry
-	allDataPath  *widget.Entry
-	startDate    *widget.Entry
-	endDate      *widget.Entry
-	clearConfirm *widget.Entry
-	importPath   *widget.Entry
+	svc           usecase.Applications
+	window        fyne.Window
+	backupPath    *widget.Entry
+	auditPath     *widget.Entry
+	allDataPath   *widget.Entry
+	startDate     *widget.Entry
+	endDate       *widget.Entry
+	clearConfirm  *widget.Entry
+	importPath    *widget.Entry
+	restoreToken  *widget.Entry
+	importBtn     *widget.Button
+	clearBtn      *widget.Button
+	running       bool
+	restorePrompt string
 
 	dataDirLabel *widget.Label
 	backupHint   *widget.Label
@@ -107,13 +112,25 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 		s.importPath = importPath
 	}
 	browseBtn := widget.NewButtonWithIcon("浏览", theme.FolderOpenIcon(), s.doBrowse)
-	importBtn := widget.NewButtonWithIcon("开始导入", theme.UploadIcon(), s.doImport)
-	importBtn.Importance = widget.WarningImportance
+	importBtn := widget.NewButtonWithIcon("整库恢复（覆盖现有数据）", theme.UploadIcon(), s.doImport)
+	importBtn.Importance = widget.DangerImportance
+	s.importBtn = importBtn
+
+	restoreToken := s.restoreToken
+	if restoreToken == nil {
+		restoreToken = widget.NewEntry()
+		restoreToken.SetPlaceHolder("请在下方输入框输入确认口令后恢复")
+		s.restoreToken = restoreToken
+	}
+	s.refreshRestorePrompt()
 
 	importBox := container.NewVBox(
-		widget.NewLabelWithStyle("导 入 备 份", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("SQLite 数据库快照（.db）会整库恢复并重启应用；MySQL SQL 备份（.sql）仅追加 INSERT，不覆盖已有数据。"),
+		widget.NewLabelWithStyle("整 库 恢 复", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("恢复=把数据库整体回到所选备份时刻，当前数据会被完全覆盖（不是追加导入）。"+
+			"两种后端一致：SQLite 快照（.db）与 MySQL 备份（.sql）都是整库恢复。"),
+		widget.NewLabel("操作前会自动生成一份可回退的副本；账号、迁移记录与数据库身份不会被覆盖。"),
 		container.NewBorder(nil, nil, nil, browseBtn, importPath),
+		container.NewBorder(nil, nil, widget.NewLabel("输入确认口令: "), nil, restoreToken),
 		importBtn,
 	)
 
@@ -147,12 +164,14 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 		clearConfirm.SetPlaceHolder("请在输入框输入 drop 确认清空")
 		s.clearConfirm = clearConfirm
 	}
-	clearBtn := widget.NewButtonWithIcon("清空数据库（危险操作）", theme.DeleteIcon(), s.doClear)
+	clearBtn := widget.NewButtonWithIcon("清空业务数据（危险操作）", theme.DeleteIcon(), s.doClear)
 	clearBtn.Importance = widget.DangerImportance
+	s.clearBtn = clearBtn
 
 	clearBox := container.NewVBox(
-		widget.NewLabelWithStyle("清 空 数 据 库", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-		widget.NewLabel("警告：此操作将删除所有表中的全部数据（保留表结构），不可恢复！"),
+		widget.NewLabelWithStyle("清 空 业 务 数 据", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("将清空产品/零件/BOM/批次/追溯/操作记录；账号、迁移记录与数据库身份会保留。"),
+		widget.NewLabel("操作前会自动生成一份可回退的副本，因此本次清空是可恢复的。"),
 		container.NewBorder(nil, nil, widget.NewLabel("输入 drop 确认: "), nil, clearConfirm),
 		clearBtn,
 	)
@@ -200,23 +219,57 @@ func (s *BackupScreen) Build() fyne.CanvasObject {
 	return container.NewScroll(content)
 }
 
+// setRunning 在破坏性操作执行期间禁用按钮，防止重复提交。
+func (s *BackupScreen) setRunning(running bool) {
+	s.running = running
+	if s.importBtn != nil {
+		if running {
+			s.importBtn.Disable()
+		} else {
+			s.importBtn.Enable()
+		}
+	}
+	if s.clearBtn != nil {
+		if running {
+			s.clearBtn.Disable()
+		} else {
+			s.clearBtn.Enable()
+		}
+	}
+}
+
+// doClear 清空业务数据。保留账号、迁移记录与数据库身份。
 func (s *BackupScreen) doClear() {
+	if s.running {
+		return
+	}
 	typed := s.clearConfirm.Text
 	if typed != "drop" {
 		dialog.ShowInformation("确认失败", "请在输入框中准确输入 drop 以确认清空操作", s.window)
 		return
 	}
-	dialog.NewConfirm("最终警告", "确定要清空数据库所有数据吗？此操作不可恢复！", func(ok bool) {
-		if !ok {
-			return
-		}
-		if err := s.svc.ClearDatabase(); err != nil {
-			showError(s.window, "清空失败", err)
-			return
-		}
-		s.clearConfirm.SetText("")
-		dialog.ShowInformation("清空完成", "所有表中的数据已被清空", s.window)
-	}, s.window).Show()
+	dialog.NewConfirm("最终警告", "确定要清空全部业务数据吗？\n\n"+
+		"· 产品/零件/BOM/批次/追溯/操作记录会被清空\n"+
+		"· 账号、迁移记录与数据库身份会保留\n"+
+		"· 操作前会自动生成一份完整副本，可用整库恢复退回",
+		func(ok bool) {
+			if !ok {
+				return
+			}
+			s.setRunning(true)
+			res, err := s.svc.ClearDatabase()
+			s.setRunning(false)
+			if err != nil {
+				showError(s.window, "清空失败", err)
+				return
+			}
+			s.clearConfirm.SetText("")
+			msg := fmt.Sprintf("业务数据已清空；账号、迁移记录与数据库身份已保留。\n\n可回退副本：\n%s", res.PreClear)
+			if len(res.Cleared) > 0 {
+				msg += "\n\n已清空：" + strings.Join(res.Cleared, "、")
+			}
+			dialog.ShowInformation("清空完成", msg, s.window)
+		}, s.window).Show()
 }
 
 func (s *BackupScreen) doChangeDataDir() {
@@ -307,42 +360,119 @@ func (s *BackupScreen) doBrowse() {
 	)
 	list.OnSelected = func(id widget.ListItemID) {
 		s.importPath.SetText(files[id])
-		dialog.ShowInformation("已选择", fmt.Sprintf("已选择文件：\n%s", files[id]), s.window)
+		s.refreshRestorePrompt()
+		dialog.ShowInformation("已选择", fmt.Sprintf("已选择文件：\n%s\n\n确认口令已自动填好，直接点「整库恢复」即可。", files[id]), s.window)
 	}
 	pop := dialog.NewCustom("选择备份文件 - "+backupDir, "关闭", list, s.window)
 	pop.Resize(fyne.NewSize(600, 400))
 	pop.Show()
 }
 
+// restoreTokenFor 构造该备份文件对应的确认口令。
+// 带时间戳是为了强迫操作者读一遍"到底要恢复哪一份"，
+// 避免选了 A 却导了 B。
+func restoreTokenFor(filePath string) string {
+	ts := backupTimestamp(filePath)
+	if ts == "" {
+		return ""
+	}
+	return "restore " + ts
+}
+
+// backupTimestamp 从 backup_YYYYMMDD_HHMMSS.sql / .db 文件名中取出时间戳。
+func backupTimestamp(filePath string) string {
+	name := filepath.Base(filePath)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	for _, prefix := range []string{"backup_", "pre_restore_", "pre_clear_"} {
+		if strings.HasPrefix(name, prefix) {
+			return strings.TrimPrefix(name, prefix)
+		}
+	}
+	return ""
+}
+
+// refreshRestorePrompt 按当前选中的文件刷新口令提示与输入框内容。
+func (s *BackupScreen) refreshRestorePrompt() {
+	token := restoreTokenFor(s.importPath.Text)
+	if s.restoreToken != nil {
+		s.restoreToken.SetPlaceHolder("请在下方输入框输入确认口令后恢复")
+		if token != "" {
+			s.restoreToken.SetText(token)
+		} else {
+			s.restoreToken.SetText("")
+		}
+	}
+	s.restorePrompt = token
+}
+
+// doImport 整库恢复。四道闸门（#26）：
+//
+//	G1 备份文件必须存在、非空、带 mysqldump 完成标记（由 service 二次校验）
+//	G2 必须输入与该文件时间戳匹配的口令
+//	G3 逐条列明后果的二次确认
+//	G4 执行期间禁用按钮
 func (s *BackupScreen) doImport() {
-	filePath := s.importPath.Text
+	if s.running {
+		return
+	}
+	filePath := strings.TrimSpace(s.importPath.Text)
 	if filePath == "" {
 		dialog.ShowInformation("提示", "请先选择或输入备份文件路径", s.window)
 		return
 	}
-	if _, err := os.Stat(filePath); err != nil {
+	info, err := os.Stat(filePath)
+	if err != nil {
 		dialog.ShowInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
+		return
+	}
+	// 闸门 G1（第一层）：空文件直接拒绝，不进入确认流程。
+	if info.Size() == 0 {
+		dialog.ShowInformation("备份文件无效", "所选文件为空，无法用于恢复。\n\n"+
+			"请选择本应用「一键备份」或「操作前自动副本」生成的 .sql / .db 文件。", s.window)
 		return
 	}
 	// D-014: snapshot restore is whole-DB rollback, never a merge.
 	// 类型按文件内容判断（与 Service.RestoreDatabase 同一口径），不看扩展名。
 	isSnapshot := dbfile.IsSQLiteSnapshot(filePath)
-	msg := fmt.Sprintf("即将从以下备份恢复：\n%s\n\n", filePath)
-	if isSnapshot {
-		msg += "这是 SQLite 整库快照。恢复=整库回到该备份时刻，不会与当前数据合并。\n" +
-			"操作前会把当前数据库另存为 <数据库文件>.before-restore-<时间戳>。\n\n" +
-			"完成后应用将自动重启，请确认现在继续。"
-	} else {
-		msg += "即将从以下文件追加导入数据（仅执行 INSERT 语句）："
+
+	// 闸门 G2：口令必须与该文件的时间戳匹配。
+	token := restoreTokenFor(filePath)
+	if token == "" {
+		dialog.ShowInformation("无法确认", "无法从文件名识别备份时间戳，为避免误操作已拒绝恢复。\n\n"+
+			"仅支持恢复本应用生成的备份：\n· backup_<时间戳>.sql / .db（一键备份）\n"+
+			"· pre_restore_<时间戳>.sql（恢复前副本）\n· pre_clear_<时间戳>.sql（清空前副本）", s.window)
+		return
 	}
-	dialog.NewConfirm("确认恢复", msg,
+	if s.restoreToken == nil || strings.TrimSpace(s.restoreToken.Text) != token {
+		dialog.ShowInformation("确认失败", fmt.Sprintf("请在确认口令输入框中准确输入：\n\n%s\n\n"+
+			"该口令对应你选中的备份文件，用于避免恢复错文件。", token), s.window)
+		return
+	}
+
+	// 闸门 G3：逐条列明后果。
+	msg := fmt.Sprintf("即将把数据库整库恢复到以下备份时刻：\n%s\n\n", filePath)
+	msg += "请确认以下后果：\n"
+	if isSnapshot {
+		msg += "1. 当前数据会被完全覆盖（整库回到该备份时刻，不与现有数据合并）\n"
+	} else {
+		msg += "1. 当前业务数据会被完全覆盖（不是追加导入）\n"
+	}
+	msg += "2. 操作前会自动生成一份完整副本，可用整库恢复退回\n"
+	msg += "3. 账号、迁移记录与数据库身份不会被覆盖，账号保持现状\n"
+	msg += "4. 操作在单个事务内完成；中途失败会整体回滚，数据库保持恢复前状态\n"
+	if isSnapshot {
+		msg += "\nSQLite 快照恢复后应用会自动重启。"
+	}
+	dialog.NewConfirm("最终警告：整库恢复", msg,
 		func(confirm bool) {
 			if !confirm {
 				return
 			}
-			success, failed, err := s.svc.RestoreDatabase(filePath)
-			if err != nil {
-				showError(s.window, "恢复失败", err)
+			s.setRunning(true)
+			res, rerr := s.svc.RestoreDatabase(filePath)
+			s.setRunning(false)
+			if rerr != nil {
+				showError(s.window, "恢复失败", rerr)
 				return
 			}
 			if isSnapshot {
@@ -360,13 +490,28 @@ func (s *BackupScreen) doImport() {
 				os.Exit(0)
 				return
 			}
-			msg := fmt.Sprintf("成功导入 %d 条记录", success)
-			if failed > 0 {
-				msg += fmt.Sprintf("，%d 条跳过（可能已存在）", failed)
+			s.restoreToken.SetText("")
+			out := fmt.Sprintf("整库恢复完成，共执行 %d 条 INSERT。\n\n恢复后各表行数：\n%s",
+				res.Statements, restoreRowsSummary(res.TableCounts))
+			if res.PreRestore != "" {
+				out += fmt.Sprintf("\n\n可回退副本：\n%s\n如需退回，用该文件再执行一次整库恢复即可。", res.PreRestore)
 			}
-			msg += fmt.Sprintf("\n文件：%s", filePath)
-			dialog.ShowInformation("导入完成", msg, s.window)
+			dialog.ShowInformation("恢复完成", out, s.window)
 		}, s.window).Show()
+}
+
+// restoreRowsSummary 返回按表名排序的行数摘要。
+func restoreRowsSummary(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (s *BackupScreen) doExportAudit() {

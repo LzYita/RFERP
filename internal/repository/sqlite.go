@@ -111,6 +111,12 @@ func (t *SQLiteTx) Exec(query string, args ...any) (sql.Result, error) {
 	return t.q.Exec(query, args...)
 }
 
+// CountRows 读取指定表的行数。table 必须来自代码内固定清单
+// （internal/service 的 businessTables），不接受外部输入。
+func (t *SQLiteTx) CountRows(table string, dest *int) error {
+	return t.q.Get(dest, "SELECT COUNT(*) FROM "+table)
+}
+
 func (t *SQLiteTx) GetProduct(id int64) (*model.Product, error) {
 	return getProduct(t.q, id)
 }

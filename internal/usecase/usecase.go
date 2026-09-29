@@ -97,14 +97,33 @@ type Stats interface {
 }
 
 // Backup 备份、恢复、清库与导出。语义见 D-014：单份完整快照，不合成。
+// 恢复与清空都是「覆盖」而非「追加」，且都会先自动留一份可回退的副本（#26）。
 type Backup interface {
 	DataDir() string
 	SetDataDir(dir string) error
 	BackupDatabase(saveDir string) (string, error)
-	RestoreDatabase(filePath string) (success, failed int, err error)
-	ClearDatabase() error
+	RestoreDatabase(filePath string) (RestoreResult, error)
+	ClearDatabase() (ClearResult, error)
 	ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error)
 	ExportAllDataCSV(saveDir string) (map[string]string, string, error)
+}
+
+// RestoreResult 一次整库恢复的结果（#26）。
+type RestoreResult struct {
+	// Statements 实际执行的 INSERT 语句数。
+	Statements int `json:"statements"`
+	// PreRestore 恢复前自动生成的完整副本路径，可用于回退。
+	PreRestore string `json:"preRestore,omitempty"`
+	// TableCounts 恢复后各业务表的行数，供用户核对。
+	TableCounts map[string]int `json:"tableCounts,omitempty"`
+}
+
+// ClearResult 一次清空数据的结果（#26）。
+type ClearResult struct {
+	// PreClear 清空前自动生成的完整副本路径，可用于回退。
+	PreClear string `json:"preClear,omitempty"`
+	// Cleared 被清空的表名。
+	Cleared []string `json:"cleared,omitempty"`
 }
 
 // Applications 桌面/API 完整用例集合。

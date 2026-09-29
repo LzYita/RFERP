@@ -432,12 +432,12 @@ func (c *Client) BackupDatabase(saveDir string) (string, error) {
 	return out.Path, nil
 }
 
-func (c *Client) RestoreDatabase(filePath string) (int, int, error) {
-	return 0, 0, fmt.Errorf("连接服务器模式请在主机上执行恢复")
+func (c *Client) RestoreDatabase(filePath string) (usecase.RestoreResult, error) {
+	return usecase.RestoreResult{}, fmt.Errorf("连接服务器模式请在主机上执行恢复")
 }
 
-func (c *Client) ClearDatabase() error {
-	return fmt.Errorf("连接服务器模式请在主机上执行清库")
+func (c *Client) ClearDatabase() (usecase.ClearResult, error) {
+	return usecase.ClearResult{}, fmt.Errorf("连接服务器模式请在主机上执行清库")
 }
 
 func (c *Client) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {

@@ -15,7 +15,6 @@ import (
 
 	"app/internal/auth"
 	"app/internal/config"
-	"app/internal/dbfile"
 	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/repository"
@@ -1072,81 +1071,7 @@ func (s *Service) ListRecentAuditLogs(limit int) ([]model.AuditLog, error) {
 
 // ---- 备份与导出 ----
 
-func (s *Service) RestoreDatabase(filePath string) (success, failed int, err error) {
-	// 备份类型必须与当前存储后端一致。类型按文件内容判断（不是扩展名），
-	// 与 UI 的确认文案 / 是否需要重启保持同一口径。
-	sqliteBackend := s.snapshots != nil && s.snapshots.Kind() == usecase.SnapshotKindSQLite
-	if dbfile.IsSQLiteSnapshot(filePath) {
-		if !sqliteBackend {
-			return 0, 0, fmt.Errorf("当前使用 MySQL 存储，无法应用 SQLite 整库快照（.db）；请导入 .sql 备份")
-		}
-		// D-014: single full snapshot rollback via file replace (no merge).
-		// 恢复前会把当前库另存为 <数据库文件>.before-restore-<时间戳>。
-		if _, rerr := s.snapshots.Restore(filePath); rerr != nil {
-			return 0, 0, rerr
-		}
-		return 1, 0, nil
-	}
-	if sqliteBackend {
-		return 0, 0, fmt.Errorf("当前使用 SQLite 存储，不支持导入 MySQL 的 .sql 备份；请导入 .db 整库快照")
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return 0, 0, fmt.Errorf("read file: %w", err)
-	}
-
-	content := strings.ReplaceAll(string(data), string([]byte{13, 10}), string([]byte{10}))
-	lines := strings.Split(content, "\n")
-
-	err = s.repo.WithBulkLoad(func(tx repository.TxOps) error {
-		var buf strings.Builder
-		inInsert := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
-				continue
-			}
-			if !inInsert {
-				if strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
-					buf.Reset()
-					buf.WriteString(line)
-					if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-						if _, err := tx.Exec(buf.String()); err != nil {
-							failed++
-							return fmt.Errorf("restore INSERT failed: %w", err)
-						}
-						success++
-					} else {
-						inInsert = true
-					}
-				}
-				continue
-			}
-			buf.WriteString("\n")
-			buf.WriteString(line)
-			if strings.HasSuffix(strings.TrimRight(trimmed, " 	"), ";") {
-				if _, err := tx.Exec(buf.String()); err != nil {
-					failed++
-					return fmt.Errorf("restore INSERT failed: %w", err)
-				}
-				success++
-				inInsert = false
-			}
-		}
-		if inInsert {
-			failed++
-			return fmt.Errorf("restore SQL contains unterminated INSERT")
-		}
-		return nil
-	})
-	if err != nil {
-		// The restore is one transaction: statement successes are rolled back
-		// when any later statement or the commit fails.
-		return 0, failed, err
-	}
-	return success, 0, nil
-}
+// RestoreDatabase 见 restore.go（整库恢复：只回灌数据，保留系统表，操作前留副本）。
 
 func (s *Service) BackupDatabase(saveDir string) (string, error) {
 	return s.snapshots.Snapshot(saveDir)
@@ -1716,13 +1641,43 @@ func bomConsume(planQty int, item model.BOMItem) float64 {
 
 // ---- 验证BOM完整性 ----
 
-func (s *Service) ClearDatabase() error {
-	return s.repo.WithBulkLoad(func(tx repository.TxOps) error {
+// ClearDatabase 清空全部业务数据，保留账号、迁移记录与数据库身份。
+//
+// 清空前先生成一份完整副本；生成或校验失败即中止，不清空任何数据。
+// 副本保留最近 safetyCopyKeep 份，可用整库恢复把库退回到清空之前。
+func (s *Service) ClearDatabase() (ClearResult, error) {
+	var res ClearResult
+	pre, err := s.safetyCopy(prefixPreClear)
+	if err != nil {
+		return res, fmt.Errorf("清空前备份失败，已中止清空：%w", err)
+	}
+	res.PreClear = pre
+	res.Cleared = append([]string(nil), businessTables...)
+
+	if err := s.repo.WithBulkLoad(func(tx repository.TxOps) error {
 		if err := deleteBusinessTables(tx); err != nil {
 			return fmt.Errorf("clear database failed: %w", err)
 		}
 		return nil
-	})
+	}); err != nil {
+		return res, err
+	}
+
+	// 审计留痕放在清空之后：audit_log 本身已被清空，
+	// 只有提交后再写，这一步才会留在库里。
+	if err := s.writeAudit(auditEntry{
+		TableName: "database",
+		Action:    "CLEAR",
+		NewData: map[string]any{
+			"pre_clear": pre,
+			"cleared":   businessTables,
+			"preserved": preservedTables,
+		},
+		Operator: auth.OperatorName(),
+	}); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 func (s *Service) ValidateBOM(productID int64) (bool, error) {

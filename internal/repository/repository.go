@@ -175,6 +175,12 @@ func (t *Tx) Exec(query string, args ...any) (sql.Result, error) {
 	return t.tx.Exec(query, args...)
 }
 
+// CountRows 读取指定表的行数。table 必须来自代码内固定清单
+// （internal/service 的 businessTables），不接受外部输入。
+func (t *Tx) CountRows(table string, dest *int) error {
+	return t.tx.Get(dest, "SELECT COUNT(*) FROM "+table)
+}
+
 func (t *Tx) Commit() error {
 	return t.tx.Commit()
 }

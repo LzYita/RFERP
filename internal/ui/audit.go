@@ -210,6 +210,9 @@ func tableLabel(t string) string {
 		return "批次追溯"
 	case "batch_skip_parts":
 		return "跳过零件"
+	case "database":
+		// #26：整库恢复 / 清空业务数据都记在 database 表下
+		return "整库操作"
 	default:
 		return t
 	}
@@ -233,6 +236,12 @@ func actionLabel(action string) string {
 		return "撤销"
 	case "UPDATE_STATUS":
 		return "状态变更"
+	case "RESTORE":
+		// #26：整库恢复
+		return "整库恢复"
+	case "CLEAR":
+		// #26：清空业务数据
+		return "清空业务数据"
 	default:
 		return action
 	}
@@ -363,6 +372,27 @@ func shortSummary(a model.AuditLog) string {
 			return fmt.Sprintf("修改: %v", n)
 		}
 	}
+	// 整库操作（#26）：摘要要能回答"恢复到哪一份 / 清空前留了什么"
+	if table == "database" && a.NewData != nil {
+		d := *a.NewData
+		if action == "RESTORE" {
+			out := "整库恢复"
+			if v, ok := d["file"]; ok {
+				out += "自 " + baseName(fmt.Sprintf("%v", v))
+			}
+			if v, ok := d["statements"]; ok {
+				out += fmt.Sprintf("（%v 条记录）", v)
+			}
+			return out
+		}
+		if action == "CLEAR" {
+			out := "清空业务数据"
+			if v, ok := d["pre_clear"]; ok {
+				out += "，清空前副本 " + baseName(fmt.Sprintf("%v", v))
+			}
+			return out
+		}
+	}
 	if a.NewData != nil {
 		vals := make([]string, 0, 3)
 		for _, k := range []string{"code", "name", "batch_no"} {
@@ -378,6 +408,18 @@ func shortSummary(a model.AuditLog) string {
 		}
 	}
 	return tableLabel(table) + "操作"
+}
+
+// baseName 取路径末段，用于在操作记录里显示备份文件名而不是整条路径。
+func baseName(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = strings.ReplaceAll(p, "/", `\`)
+	if i := strings.LastIndex(p, `\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 func partCodeName(m *map[string]any) string {

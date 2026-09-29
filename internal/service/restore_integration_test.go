@@ -10,6 +10,7 @@ import (
 
 	"app/internal/migrate"
 	"app/internal/model"
+	"app/internal/paths"
 	"app/internal/repository"
 	"app/internal/service"
 	"app/internal/usecase"
@@ -29,6 +30,10 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 
 	db := connectTestDB(t, dsn)
 	resetTestTables(t, db)
+	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
+	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
+	paths.SetDataDir(t.TempDir())
+	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -134,6 +139,10 @@ func TestRestoreDatabaseRollsBackOnBrokenDumpIntegration(t *testing.T) {
 
 	db := connectTestDB(t, dsn)
 	resetTestTables(t, db)
+	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
+	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
+	paths.SetDataDir(t.TempDir())
+	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -205,6 +214,10 @@ func TestRestoreDatabaseRejectsTruncatedDumpIntegration(t *testing.T) {
 
 	db := connectTestDB(t, dsn)
 	resetTestTables(t, db)
+	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
+	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
+	paths.SetDataDir(t.TempDir())
+	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

@@ -213,6 +213,12 @@ func actionStyle(action string) (color.Color, color.Color) {
 		return badgeBlueBg, badgeBlueFg
 	case "STOCK_DEDUCT":
 		return badgeWarnBg, badgeWarnFg
+	case "RESTORE":
+		// 整库恢复：用蓝色系，区别于日常增删改
+		return badgeBlueBg, badgeBlueFg
+	case "CLEAR":
+		// 清空业务数据：与删除同级，用红色警示
+		return badgeErrorBg, badgeErrorFg
 	}
 	return badgeGrayBg, badgeGrayFg
 }

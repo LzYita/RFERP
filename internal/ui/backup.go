@@ -368,6 +368,49 @@ func (s *BackupScreen) doBrowse() {
 	pop.Show()
 }
 
+// gateError 是闸门拒绝的原因，携带弹窗标题与文案。
+type gateError struct {
+	title   string
+	message string
+}
+
+func (e *gateError) Error() string { return e.title + ": " + e.message }
+
+// restoreGateErr 校验一次恢复请求能否进入确认弹窗。
+// 纯函数：不碰 UI、不碰数据库，因此可以被直接测试。
+//
+// 闸门（#26）：
+//
+//	G1 文件必须存在、非空——空文件与不存在的路径直接拒绝
+//	G2 必须能从文件名识别出备份时间戳，并且口令与之完全匹配
+//
+// Service.RestoreDatabase 还会再校验一次"完整备份标记"，
+// 这里只负责挡住明显的误操作。
+func restoreGateErr(filePath, typedToken string) *gateError {
+	if filePath == "" {
+		return &gateError{"提示", "请先选择或输入备份文件路径"}
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return &gateError{"提示", "文件不存在或无法访问，请检查路径"}
+	}
+	if info.Size() == 0 {
+		return &gateError{"备份文件无效", "所选文件为空，无法用于恢复。\n\n" +
+			"请选择本应用「一键备份」或「操作前自动副本」生成的 .sql / .db 文件。"}
+	}
+	token := restoreTokenFor(filePath)
+	if token == "" {
+		return &gateError{"无法确认", "无法从文件名识别备份时间戳，为避免误操作已拒绝恢复。\n\n" +
+			"仅支持恢复本应用生成的备份：\n· backup_<时间戳>.sql / .db（一键备份）\n" +
+			"· pre_restore_<时间戳>.sql（恢复前副本）\n· pre_clear_<时间戳>.sql（清空前副本）"}
+	}
+	if typedToken != token {
+		return &gateError{"确认失败", fmt.Sprintf("请在确认口令输入框中准确输入：\n\n%s\n\n"+
+			"该口令对应你选中的备份文件，用于避免恢复错文件。", token)}
+	}
+	return nil
+}
+
 // restoreTokenFor 构造该备份文件对应的确认口令。
 // 带时间戳是为了强迫操作者读一遍"到底要恢复哪一份"，
 // 避免选了 A 却导了 B。
@@ -416,38 +459,18 @@ func (s *BackupScreen) doImport() {
 		return
 	}
 	filePath := strings.TrimSpace(s.importPath.Text)
-	if filePath == "" {
-		dialog.ShowInformation("提示", "请先选择或输入备份文件路径", s.window)
-		return
+	typed := ""
+	if s.restoreToken != nil {
+		typed = strings.TrimSpace(s.restoreToken.Text)
 	}
-	info, err := os.Stat(filePath)
-	if err != nil {
-		dialog.ShowInformation("提示", "文件不存在或无法访问，请检查路径", s.window)
-		return
-	}
-	// 闸门 G1（第一层）：空文件直接拒绝，不进入确认流程。
-	if info.Size() == 0 {
-		dialog.ShowInformation("备份文件无效", "所选文件为空，无法用于恢复。\n\n"+
-			"请选择本应用「一键备份」或「操作前自动副本」生成的 .sql / .db 文件。", s.window)
+	// 闸门 G1/G2：文件合法性与确认口令。不通过就不进入确认流程。
+	if gateErr := restoreGateErr(filePath, typed); gateErr != nil {
+		dialog.ShowInformation(gateErr.title, gateErr.message, s.window)
 		return
 	}
 	// D-014: snapshot restore is whole-DB rollback, never a merge.
 	// 类型按文件内容判断（与 Service.RestoreDatabase 同一口径），不看扩展名。
 	isSnapshot := dbfile.IsSQLiteSnapshot(filePath)
-
-	// 闸门 G2：口令必须与该文件的时间戳匹配。
-	token := restoreTokenFor(filePath)
-	if token == "" {
-		dialog.ShowInformation("无法确认", "无法从文件名识别备份时间戳，为避免误操作已拒绝恢复。\n\n"+
-			"仅支持恢复本应用生成的备份：\n· backup_<时间戳>.sql / .db（一键备份）\n"+
-			"· pre_restore_<时间戳>.sql（恢复前副本）\n· pre_clear_<时间戳>.sql（清空前副本）", s.window)
-		return
-	}
-	if s.restoreToken == nil || strings.TrimSpace(s.restoreToken.Text) != token {
-		dialog.ShowInformation("确认失败", fmt.Sprintf("请在确认口令输入框中准确输入：\n\n%s\n\n"+
-			"该口令对应你选中的备份文件，用于避免恢复错文件。", token), s.window)
-		return
-	}
 
 	// 闸门 G3：逐条列明后果。
 	msg := fmt.Sprintf("即将把数据库整库恢复到以下备份时刻：\n%s\n\n", filePath)

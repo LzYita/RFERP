@@ -20,7 +20,7 @@ type PartScreen struct {
 	window     fyne.Window
 	all        []model.Part
 	data       []model.Part
-	table      *widget.Table
+	table      *listTable
 	label      *widget.Label
 	selected   int
 	filterType string
@@ -67,10 +67,14 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 	s.label = widget.NewLabel("共 0 条记录")
 
 	s.selected = -1
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		toggleTableRowSelection(s.table, &s.selected, row)
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.data) + 1, 9 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			sel := tci.Row == s.selected && tci.Row > 0
 			if tci.Row == 0 {
 				headers := []string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "选择"}
@@ -119,9 +123,6 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		toggleTableRowSelection(s.table, &s.selected, id.Row)
-	}
 	s.table.SetColumnWidth(0, 120)
 	s.table.SetColumnWidth(1, 180)
 	s.table.SetColumnWidth(2, 140)
@@ -150,7 +151,7 @@ func (s *PartScreen) showWarnList() {
 
 	w := fyne.CurrentApp().NewWindow(fmt.Sprintf("库存预警 - %d 个零件", len(warnParts)))
 
-	table := widget.NewTable(
+	table := newListTable(
 		func() (int, int) { return len(warnParts) + 1, 5 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {

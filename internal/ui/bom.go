@@ -24,7 +24,7 @@ type BOMScreen struct {
 	specSel  *widget.Select
 	parts    []model.Part
 	bomData  []model.BOMItem
-	table    *widget.Table
+	table    *listTable
 	label    *widget.Label
 	products []model.Product
 	selected int
@@ -136,10 +136,14 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 
 	s.label = widget.NewLabel("请先选择产品")
 	s.selected = -1
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		toggleTableRowSelection(s.table, &s.selected, row)
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.bomData) + 1, 8 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			sel := tci.Row == s.selected && tci.Row > 0
 			if tci.Row == 0 {
 				headers := []string{"零件编码", "零件名称", "用量模式", "用量", "损耗率(%)", "可替换", "备注", "选择"}
@@ -197,9 +201,6 @@ func (s *BOMScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		toggleTableRowSelection(s.table, &s.selected, id.Row)
-	}
 	s.table.SetColumnWidth(0, 130)
 	s.table.SetColumnWidth(1, 200)
 	s.table.SetColumnWidth(2, 130)

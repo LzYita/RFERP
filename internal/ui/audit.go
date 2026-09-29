@@ -22,7 +22,7 @@ type AuditScreen struct {
 	window  fyne.Window
 	allData []model.AuditLog
 	data    []model.AuditLog
-	table   *widget.Table
+	table   *listTable
 	label   *widget.Label
 	filter  string
 }
@@ -45,10 +45,17 @@ func (s *AuditScreen) Build() fyne.CanvasObject {
 	s.label = widget.NewLabel("共 0 条记录")
 
 	headers := []string{"时间", "类型", "操作", "对象", "变更明细", "操作人"}
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		if row <= 0 || row-1 >= len(s.data) {
+			return
+		}
+		s.showDetail(s.data[row-1])
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.data) + 1, len(headers) },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			if tci.Row == 0 {
 				updateCell(o, headers[tci.Col], true, headerColor)
 				return
@@ -83,12 +90,6 @@ func (s *AuditScreen) Build() fyne.CanvasObject {
 	s.table.SetColumnWidth(3, 200)
 	s.table.SetColumnWidth(4, 540)
 	s.table.SetColumnWidth(5, 80)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		if id.Row <= 0 || id.Row-1 >= len(s.data) {
-			return
-		}
-		s.showDetail(s.data[id.Row-1])
-	}
 
 	s.Refresh()
 	return container.NewBorder(filterBar, s.label, nil, nil, s.table)

@@ -42,7 +42,7 @@ Built with **Go + Fyne**; data is stored in **MySQL 8** or in a local **SQLite**
 - The **first-run wizard** offers both; you can also set `"storage": "sqlite"` in `config.json`.
 - A config with no `storage` key is always treated as **MySQL** — the app never switches silently.
 - **Switching storage only changes the configuration; it does not move data.** Export from the old storage and import into the new one yourself.
-- Backup/restore follows the storage: MySQL uses `.sql` dumps (append-style `INSERT` import), SQLite uses whole-file `.db` snapshots (full rollback, then the app restarts). The two are **not** interchangeable.
+- 备份恢复随存储类型走：两种后端都是**整库恢复**（当前数据会被完全覆盖，不做合并）。MySQL 用 .sql 备份，SQLite 用 .db 整库快照，两者不可混用。操作前会自动生成 pre_restore_ 副本，可用于回退；账号、迁移记录与数据库身份不会被覆盖。
 
 ## First run
 
@@ -154,7 +154,18 @@ docs/decisions/  decision records (D-xxx)
 
 ## License
 
-No open-source license is specified. Please contact the author before using, distributing or modifying.
+**All rights reserved.** This repository is published for reference and issue tracking only;
+it is **not** licensed for reuse.
+
+You may read the source and report issues, but you may **not** copy, modify, redistribute or
+commercially exploit it — including building a competing product from it — without the
+author's prior written permission.
+
+Third-party dependencies keep their own permissive licenses (BSD-3-Clause / MIT / MPL-2.0),
+listed in `go.mod`; those terms are unaffected by this notice.
+
+This notice may change. No license has been granted to date, and adding one in the future
+cannot revoke rights already granted to recipients of earlier copies.
 
 ---
 

@@ -38,6 +38,16 @@ Add `[skip changelog]` to a commit subject to keep that commit out of the list.
 - Issues and pull request discussion: **English**
 - README and release notes: **English + Chinese**
 
+### Licensing
+
+This project has **no open-source license; all rights reserved** (see the License
+section of the README). Opening an issue is always welcome, and by opening a pull
+request you grant the maintainer the rights needed to accept and ship it.
+
+Do not add a LICENSE file, and do not propose vendoring dependencies or relicensing.
+If you believe the project should be licensed differently, open an issue first
+instead of proposing a change.
+
 ---
 
 ## 中文
@@ -73,3 +83,11 @@ Add `[skip changelog]` to a commit subject to keep that commit out of the list.
 
 - Issue 与 PR 讨论：**英文**
 - README 与发行说明：**中英双语**
+
+### 许可证
+
+本项目**未采用开源许可证，保留所有权利**（见 README 的「许可证」一节）。
+欢迎提 issue；提交 PR 即表示授予维护者接受并发布该改动所需的权限。
+
+请勿添加 LICENSE 文件，也不要提交「将依赖打包进仓库」或「更换许可证」这类改动。
+如果你认为本项目应当采用不同的许可证，请先开 issue 讨论，而不是直接提改动。

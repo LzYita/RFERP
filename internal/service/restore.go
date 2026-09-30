@@ -45,13 +45,11 @@ func restoreRowsSummary(counts map[string]int) string {
 
 // RestoreDatabase 将整个数据库恢复到 filePath 记录的时刻。
 //
-// 语义（#26 方案 A，两种后端一致）：
-//   - 只回灌数据。备份文件里的 DDL / 会话语句一律忽略，现场表结构不变。
-//   - users / schema_migrations / db_identity 三张系统表保留（见 tables.go）：
-//     账号不随数据回滚（避免恢复后无账号可登录）；结构版本与数据库身份
-//     描述的是现场状态，不能被备份里的旧值覆盖。
-//   - 操作前必须先生成一份完整副本；生成或校验失败即中止，不改动任何数据。
-//   - 业务表的「清空 + 回灌」在同一个事务里完成，失败则整体回滚。
+// MySQL: 只回灌业务表数据，忽略 DDL / 会话语句；users、schema_migrations、
+// db_identity 保留现场状态。「清空 + 回灌」在单事务中完成。回滚成功才可
+// 断言未应用；COMMIT 结果不明与提交后失败必须分别报告。
+// SQLite: D-014 整文件替换，账号、表结构、数据库身份随快照一起回退。
+// 两种后端操作前都生成可从备份目录选择的完整副本，副本失败即中止。
 func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 	var res RestoreResult
 
@@ -62,13 +60,21 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 		if !sqliteBackend {
 			return res, fmt.Errorf("当前使用 MySQL 存储，无法应用 SQLite 整库快照（.db）；请导入 .sql 备份")
 		}
-		// D-014: single full snapshot rollback via file replace (no merge).
-		// 恢复前会把当前库另存为 <数据库文件>.before-restore-<时间戳>。
-		pre, rerr := s.snapshots.Restore(filePath)
-		if rerr != nil {
-			return res, rerr
+		// D-014: full snapshot rollback via file replace (no merge). Keep a
+		// selectable backup in the backup directory before closing DB handles.
+		pre, err := s.safetyCopy(prefixPreRestore)
+		if err != nil {
+			return res, fmt.Errorf("恢复前备份失败，已中止恢复：%w", err)
 		}
 		res.PreRestore = pre
+		// Restore also keeps its own sidecar file for low-level replacement
+		// recovery; the backup-directory copy is the UI's rollback path.
+		_, rerr := s.snapshots.Restore(filePath)
+		if rerr != nil {
+			// File replacement may have started; never promise the old database
+			// is intact without inspecting the on-disk state.
+			return res, &usecase.OperationError{State: usecase.OperationUnknown, Err: rerr}
+		}
 		res.Statements = 1
 		return res, nil
 	}
@@ -111,15 +117,15 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 		return n, nil
 	}()
 	if err != nil {
-		// WithBulkLoad 失败即回滚：业务表回到恢复前的样子，
-		// 恢复前副本仍然保留，用户可据此回退。
-		return RestoreResult{PreRestore: pre}, err
+		// Only a confirmed rollback means the data was not changed. A failed
+		// COMMIT is uncertain; cleanup after a successful COMMIT is already applied.
+		return RestoreResult{PreRestore: pre}, bulkLoadOutcome(err)
 	}
 	res.Statements = stmts
 
 	counts, err := s.countBusinessTables()
 	if err != nil {
-		return res, err
+		return res, &usecase.OperationError{State: usecase.OperationApplied, Err: err}
 	}
 	res.TableCounts = counts
 
@@ -138,7 +144,7 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 		},
 		Operator: auth.OperatorName(),
 	}); err != nil {
-		return res, err
+		return res, &usecase.OperationError{State: usecase.OperationApplied, Err: err}
 	}
 	return res, nil
 }

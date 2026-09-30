@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"os"
@@ -72,13 +73,22 @@ func (s *SQLiteStore) WithBulkLoad(fn func(TxOps) error) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 	if _, err := conn.ExecContext(context.Background(), `PRAGMA defer_foreign_keys = ON`); err != nil {
+		_ = conn.Close()
 		return fmt.Errorf("defer foreign keys: %w", err)
 	}
 	err = withImmediateConn(conn, fn)
-	_, _ = conn.ExecContext(context.Background(), `PRAGMA defer_foreign_keys = OFF`)
-	return err
+	_, cleanupErr := conn.ExecContext(context.Background(), `PRAGMA defer_foreign_keys = OFF`)
+	var outcome *BulkLoadError
+	if cleanupErr != nil || (errors.As(err, &outcome) && outcome.Outcome == BulkLoadUnknown) {
+		// An uncertain transaction or PRAGMA state must not be pooled.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	closeErr := conn.Close()
+	if err == nil && (cleanupErr != nil || closeErr != nil) {
+		return &BulkLoadError{Outcome: BulkLoadApplied, Err: errors.Join(cleanupErr, closeErr)}
+	}
+	return errors.Join(err, cleanupErr, closeErr)
 }
 
 func (s *SQLiteStore) withImmediateTx(fn func(TxOps) error) error {
@@ -86,8 +96,12 @@ func (s *SQLiteStore) withImmediateTx(fn func(TxOps) error) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	return withImmediateConn(conn, fn)
+	err = withImmediateConn(conn, fn)
+	var outcome *BulkLoadError
+	if errors.As(err, &outcome) && outcome.Outcome == BulkLoadUnknown {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	return errors.Join(err, conn.Close())
 }
 
 func withImmediateConn(conn *sqlx.Conn, fn func(TxOps) error) error {
@@ -97,11 +111,15 @@ func withImmediateConn(conn *sqlx.Conn, fn func(TxOps) error) error {
 	}
 	tx := &SQLiteTx{q: connQueryer{conn}}
 	if err := fn(tx); err != nil {
-		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		if _, rollbackErr := conn.ExecContext(ctx, `ROLLBACK`); rollbackErr != nil {
+			return &BulkLoadError{Outcome: BulkLoadUnknown, Err: errors.Join(err, fmt.Errorf("rollback transaction: %w", rollbackErr))}
+		}
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		if _, rollbackErr := conn.ExecContext(ctx, `ROLLBACK`); rollbackErr != nil {
+			return &BulkLoadError{Outcome: BulkLoadUnknown, Err: errors.Join(fmt.Errorf("commit transaction: %w", err), fmt.Errorf("rollback transaction: %w", rollbackErr))}
+		}
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil

@@ -22,6 +22,7 @@ type fakeSnapshotPort struct {
 	destructive bool
 	prefixes    []string
 	restored    string
+	restoreErr  error
 }
 
 func (p *fakeSnapshotPort) Snapshot(saveDir string) (string, error) {
@@ -40,12 +41,16 @@ func (p *fakeSnapshotPort) Kind() string { return p.kind }
 
 func (p *fakeSnapshotPort) Restore(snapshotPath string) (string, error) {
 	p.restored = snapshotPath
+	if p.restoreErr != nil {
+		return "", p.restoreErr
+	}
 	return "before-restore-copy", nil
 }
 
 // newRestoreMockService 返回带假快照端口的 Service。
 func newRestoreMockService(t *testing.T, port *fakeSnapshotPort) (*Service, sqlmock.Sqlmock) {
 	t.Helper()
+	t.Setenv("MES_DATA_DIR", t.TempDir())
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("open sql mock: %v", err)
@@ -156,6 +161,47 @@ func TestRestoreDatabaseAbortsWhenSafetyCopyFails(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("restore touched the database: %v", err)
+	}
+}
+
+func TestRestoreSQLiteCreatesSelectableSafetyCopyBeforeReplacingFile(t *testing.T) {
+	t.Setenv("MES_DATA_DIR", t.TempDir())
+	port := &fakeSnapshotPort{kind: "sqlite"}
+	svc := NewWithSnapshot(nil, port, nil)
+	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.RestoreDatabase(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(port.prefixes) != 1 || port.prefixes[0] != prefixPreRestore {
+		t.Fatalf("safety copy prefixes = %v, want pre_restore", port.prefixes)
+	}
+	if !strings.Contains(res.PreRestore, "pre_restore_") {
+		t.Fatalf("reported copy %q is not selectable by the backup UI", res.PreRestore)
+	}
+	if port.restored != path {
+		t.Fatalf("restored %q, want %q", port.restored, path)
+	}
+}
+
+func TestRestoreSQLiteStopsBeforeReplacingFileWhenSafetyCopyFails(t *testing.T) {
+	t.Setenv("MES_DATA_DIR", t.TempDir())
+	port := &fakeSnapshotPort{kind: "sqlite", destructive: true}
+	svc := NewWithSnapshot(nil, port, nil)
+	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.RestoreDatabase(path); err == nil {
+		t.Fatal("SQLite restore proceeded without a safety copy")
+	}
+	if port.restored != "" {
+		t.Fatalf("restore ran despite safety-copy failure: %q", port.restored)
 	}
 }
 

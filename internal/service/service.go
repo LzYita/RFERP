@@ -1660,7 +1660,7 @@ func (s *Service) ClearDatabase() (ClearResult, error) {
 		}
 		return nil
 	}); err != nil {
-		return res, err
+		return res, bulkLoadOutcome(err)
 	}
 
 	// 审计留痕放在清空之后：audit_log 本身已被清空，
@@ -1675,7 +1675,7 @@ func (s *Service) ClearDatabase() (ClearResult, error) {
 		},
 		Operator: auth.OperatorName(),
 	}); err != nil {
-		return res, err
+		return res, &usecase.OperationError{State: usecase.OperationApplied, Err: err}
 	}
 	return res, nil
 }

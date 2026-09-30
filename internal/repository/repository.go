@@ -101,9 +101,18 @@ type sessionChecks struct {
 // checks disabled (FK/UNIQUE), then restores them. Dialect stays in this
 // adapter; Service must not issue these statements.
 func (r *Repository) WithBulkLoad(operation func(TxOps) error) error {
-	return r.WithConn(func(conn *Conn) error {
-		return withMySQLChecksDisabled(conn, operation)
+	var operationErr error
+	var callbackRan bool
+	err := r.WithConn(func(conn *Conn) error {
+		callbackRan = true
+		operationErr = withMySQLChecksDisabled(conn, operation)
+		return operationErr
 	})
+	if err != nil && callbackRan && operationErr == nil {
+		// The transaction committed, but returning the connection failed.
+		return &BulkLoadError{Outcome: BulkLoadApplied, Err: err}
+	}
+	return err
 }
 
 func withMySQLChecksDisabled(conn *Conn, operation func(TxOps) error) (retErr error) {
@@ -112,6 +121,7 @@ func withMySQLChecksDisabled(conn *Conn, operation func(TxOps) error) (retErr er
 		return fmt.Errorf("read MySQL session checks: %w", err)
 	}
 
+	var committed, uncertain bool
 	defer func() {
 		var restoreErrs []error
 		if _, err := conn.Exec(fmt.Sprintf("SET FOREIGN_KEY_CHECKS = %d", previous.ForeignKeyChecks)); err != nil {
@@ -124,6 +134,11 @@ func withMySQLChecksDisabled(conn *Conn, operation func(TxOps) error) (retErr er
 			// Session checks may still be disabled. Never pool this connection.
 			conn.MarkUnusable()
 			retErr = errors.Join(retErr, errors.Join(restoreErrs...))
+		}
+		if uncertain {
+			retErr = &BulkLoadError{Outcome: BulkLoadUnknown, Err: retErr}
+		} else if committed && retErr != nil {
+			retErr = &BulkLoadError{Outcome: BulkLoadApplied, Err: retErr}
 		}
 	}()
 
@@ -140,13 +155,18 @@ func withMySQLChecksDisabled(conn *Conn, operation func(TxOps) error) (retErr er
 	}
 	if err := operation(tx); err != nil {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			uncertain = true
+			conn.MarkUnusable()
 			return errors.Join(err, fmt.Errorf("rollback database operation: %w", rollbackErr))
 		}
 		return err
 	}
 	if err := tx.Commit(); err != nil {
+		uncertain = true
+		conn.MarkUnusable()
 		return fmt.Errorf("commit database operation: %w", err)
 	}
+	committed = true
 	return nil
 }
 

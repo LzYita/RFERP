@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,25 @@ func (s *stubApps) ClearDatabase() (usecase.ClearResult, error) {
 
 // t_tmpDir 只是 DataDir 的占位值；闸门测试不会真的写文件。
 const t_tmpDir = "C:\\rferp-test-datadir"
+
+func TestOperationErrorTitleDoesNotClaimAppliedDataWasRolledBack(t *testing.T) {
+	cause := errors.New("follow-up unavailable")
+	for _, tc := range []struct {
+		state usecase.OperationState
+		want  string
+	}{
+		{usecase.OperationApplied, "恢复已提交，后续处理失败"},
+		{usecase.OperationUnknown, "恢复结果不明，须核对数据"},
+	} {
+		err := &usecase.OperationError{State: tc.state, Err: cause}
+		if got := operationErrorTitle("恢复", err); got != tc.want {
+			t.Fatalf("title for %s = %q, want %q", tc.state, got, tc.want)
+		}
+	}
+	if got := operationErrorTitle("恢复", cause); got != "恢复失败" {
+		t.Fatalf("ordinary error title = %q", got)
+	}
+}
 
 func writeTmp(t *testing.T, dir, name string) string {
 	t.Helper()

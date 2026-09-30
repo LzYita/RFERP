@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -260,7 +261,7 @@ func (s *BackupScreen) doClear() {
 			res, err := s.svc.ClearDatabase()
 			s.setRunning(false)
 			if err != nil {
-				showError(s.window, "清空失败", err)
+				showError(s.window, operationErrorTitle("清空", err), withSafetyCopy(err, res.PreClear))
 				return
 			}
 			s.clearConfirm.SetText("")
@@ -402,7 +403,7 @@ func restoreGateErr(filePath, typedToken string) *gateError {
 	if token == "" {
 		return &gateError{"无法确认", "无法从文件名识别备份时间戳，为避免误操作已拒绝恢复。\n\n" +
 			"仅支持恢复本应用生成的备份：\n· backup_<时间戳>.sql / .db（一键备份）\n" +
-			"· pre_restore_<时间戳>.sql（恢复前副本）\n· pre_clear_<时间戳>.sql（清空前副本）"}
+			"· pre_restore_<时间戳>.sql / .db（恢复前副本）\n· pre_clear_<时间戳>.sql / .db（清空前副本）"}
 	}
 	if typedToken != token {
 		return &gateError{"确认失败", fmt.Sprintf("请在确认口令输入框中准确输入：\n\n%s\n\n"+
@@ -477,12 +478,15 @@ func (s *BackupScreen) doImport() {
 	msg += "请确认以下后果：\n"
 	if isSnapshot {
 		msg += "1. 当前数据会被完全覆盖（整库回到该备份时刻，不与现有数据合并）\n"
+		msg += "2. 操作前会生成可在备份界面选择的完整 .db 副本\n"
+		msg += "3. 账号、迁移记录与数据库身份也会回到快照时刻\n"
+		msg += "4. SQLite 通过替换整库文件恢复，不是单事务回灌；替换中断时请核对文件与副本\n"
 	} else {
 		msg += "1. 当前业务数据会被完全覆盖（不是追加导入）\n"
+		msg += "2. 操作前会自动生成一份完整副本，可用整库恢复退回\n"
+		msg += "3. 账号、迁移记录与数据库身份不会被覆盖，账号保持现状\n"
+		msg += "4. 回灌在单个事务内完成；如提交结果不明或提交后核验失败，须先核对数据再重试\n"
 	}
-	msg += "2. 操作前会自动生成一份完整副本，可用整库恢复退回\n"
-	msg += "3. 账号、迁移记录与数据库身份不会被覆盖，账号保持现状\n"
-	msg += "4. 操作在单个事务内完成；中途失败会整体回滚，数据库保持恢复前状态\n"
 	if isSnapshot {
 		msg += "\nSQLite 快照恢复后应用会自动重启。"
 	}
@@ -495,7 +499,7 @@ func (s *BackupScreen) doImport() {
 			res, rerr := s.svc.RestoreDatabase(filePath)
 			s.setRunning(false)
 			if rerr != nil {
-				showError(s.window, "恢复失败", rerr)
+				showError(s.window, operationErrorTitle("恢复", rerr), withSafetyCopy(rerr, res.PreRestore))
 				return
 			}
 			if isSnapshot {
@@ -504,7 +508,7 @@ func (s *BackupScreen) doImport() {
 				if rerr := update.RestartApp(); rerr != nil {
 					dialog.ShowInformation("已整库回退，请手动重启",
 						"已整库回到所选备份时刻（未与当前数据合并）。\n"+
-							"恢复前的数据库已另存为 <数据库文件>.before-restore-<时间戳>。\n"+
+							fmt.Sprintf("恢复前可回退副本：%s\n", res.PreRestore)+
 							"自动重启失败："+rerr.Error()+"\n\n"+
 							"请关闭并重新打开 RFERP 后再继续操作。",
 						s.window)
@@ -521,6 +525,24 @@ func (s *BackupScreen) doImport() {
 			}
 			dialog.ShowInformation("恢复完成", out, s.window)
 		}, s.window).Show()
+}
+
+func operationErrorTitle(action string, err error) string {
+	var outcome *usecase.OperationError
+	if errors.As(err, &outcome) {
+		if outcome.State == usecase.OperationApplied {
+			return action + "已提交，后续处理失败"
+		}
+		return action + "结果不明，须核对数据"
+	}
+	return action + "失败"
+}
+
+func withSafetyCopy(err error, path string) error {
+	if path == "" {
+		return err
+	}
+	return fmt.Errorf("%w\n\n操作前副本：%s", err, path)
 }
 
 // restoreRowsSummary 返回按表名排序的行数摘要。

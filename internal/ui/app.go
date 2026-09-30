@@ -27,6 +27,13 @@ type App struct {
 	backup    *BackupScreen
 	users     *UsersScreen
 
+	// version 是程序版本号（形如 1.2.2），显示在设置页顶部。
+	version string
+	// updateURL 是更新清单地址；为空时设置页不提供在线查更新。
+	updateURL string
+	// settingsPanel 懒建于首次点击「设置」时。
+	settingsPanel *settingsPanel
+
 	navItems []navItem
 	navBtns  []*widget.Button
 	content  *fyne.Container
@@ -47,7 +54,13 @@ type pageDef struct {
 }
 
 func NewApp(svc usecase.Applications, cfg *config.Config, w fyne.Window, onLogout func()) *App {
-	a := &App{svc: svc, cfg: cfg, window: w, selected: 0, onLogout: onLogout}
+	return NewAppWithVersion(svc, cfg, w, onLogout, "", "")
+}
+
+// NewAppWithVersion 与 NewApp 相同，但额外提供版本号与更新清单地址，
+// 供侧栏「设置」入口里的使用指南页显示与在线查更新。
+func NewAppWithVersion(svc usecase.Applications, cfg *config.Config, w fyne.Window, onLogout func(), version, updateURL string) *App {
+	a := &App{svc: svc, cfg: cfg, window: w, selected: 0, onLogout: onLogout, version: version, updateURL: updateURL}
 	a.dashboard = NewDashboardScreen(svc, w)
 	a.stats = NewStatsScreen(svc, w)
 	a.product = NewProductScreen(svc, w)
@@ -103,6 +116,14 @@ func (a *App) buildSidebarFooter() fyne.CanvasObject {
 	nameLbl := widget.NewLabelWithStyle(name, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	roleLbl := widget.NewLabel(role + " · " + auth.Current().Username)
 
+	// 设置入口：使用指南与分版本更新说明。
+	// 放在左下角与账号信息、退出登录同列，不占用业务导航的位置；
+	// 点击后在右侧主内容区显示，不弹窗。
+	settingsBtn := widget.NewButtonWithIcon("设置", theme.SettingsIcon(), func() {
+		a.showSettings()
+	})
+	settingsBtn.Importance = widget.LowImportance
+
 	logoutBtn := widget.NewButtonWithIcon("退出登录", theme.LogoutIcon(), func() {
 		auth.Logout()
 		if a.onLogout != nil {
@@ -112,7 +133,12 @@ func (a *App) buildSidebarFooter() fyne.CanvasObject {
 	logoutBtn.Importance = widget.LowImportance
 
 	info := container.NewVBox(nameLbl, roleLbl)
-	box := container.NewVBox(widget.NewSeparator(), container.NewPadded(info), container.NewPadded(logoutBtn))
+	box := container.NewVBox(
+		widget.NewSeparator(),
+		container.NewPadded(info),
+		container.NewPadded(settingsBtn),
+		container.NewPadded(logoutBtn),
+	)
 	return box
 }
 
@@ -135,6 +161,33 @@ func (a *App) Select(idx int) {
 	}
 	if a.pages[idx].refresh != nil {
 		a.pages[idx].refresh()
+	}
+}
+
+// showSettings 在右侧主内容区显示设置面板。
+//
+// 显示设置时左侧业务导航不高亮任何一项——设置不属于任何业务模块，
+// 高亮会让人误以为还在某个业务页面里。点任意业务导航项即可回到正常页面
+// （Select 会直接改写内容区）。
+func (a *App) showSettings() {
+	if a.content == nil {
+		return
+	}
+	if a.settingsPanel == nil {
+		a.settingsPanel = newSettingsPanel(a.version, a.updateURL, func() {
+			// 返回：回到进入设置前所在的业务页，没有则回工作台
+			idx := a.selected
+			if idx < 0 || idx >= len(a.pages) {
+				idx = 0
+			}
+			a.Select(idx)
+		})
+	}
+	a.content.Objects = []fyne.CanvasObject{a.settingsPanel.Build()}
+	a.content.Refresh()
+	for _, b := range a.navBtns {
+		b.Importance = widget.MediumImportance
+		b.Refresh()
 	}
 }
 

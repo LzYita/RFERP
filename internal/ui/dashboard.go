@@ -22,7 +22,7 @@ type DashboardScreen struct {
 	window      fyne.Window
 	cardGrid    *fyne.Container
 	warnList    *widget.List
-	logTable    *widget.Table
+	logTable    *listTable
 	warnData    []model.Part
 	logData     []model.AuditLog
 	lastRefresh *widget.Label
@@ -72,7 +72,7 @@ func (d *DashboardScreen) Build() fyne.CanvasObject {
 
 	// 最近操作
 	logHeader := widget.NewLabelWithStyle("最近操作记录", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	d.logTable = widget.NewTable(
+	d.logTable = newListTable(
 		func() (int, int) { return len(d.logData) + 1, 4 },
 		func() fyne.CanvasObject {
 			l := widget.NewLabel("XXXXXXXXXXXXXXXXXXXX")

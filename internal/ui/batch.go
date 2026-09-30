@@ -21,10 +21,10 @@ type BatchScreen struct {
 	svc        usecase.Applications
 	window     fyne.Window
 	data       []model.ProductBatch
-	table      *widget.Table
+	table      *listTable
 	label      *widget.Label
 	traceData  []model.BatchTrace
-	traceTable *widget.Table
+	traceTable *listTable
 	selected   int
 }
 
@@ -49,10 +49,14 @@ func (s *BatchScreen) Build() fyne.CanvasObject {
 	s.label = widget.NewLabel("共 0 批")
 
 	s.selected = -1
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		toggleTableRowSelection(s.table, &s.selected, row)
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.data) + 1, 7 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			sel := tci.Row == s.selected && tci.Row > 0
 			if tci.Row == 0 {
 				headers := []string{"批次号", "产品", "计划数", "完成数", "状态", "客户", "选择"}
@@ -93,9 +97,6 @@ func (s *BatchScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		toggleTableRowSelection(s.table, &s.selected, id.Row)
-	}
 	s.table.SetColumnWidth(0, 200)
 	s.table.SetColumnWidth(1, 200)
 	s.table.SetColumnWidth(2, 100)
@@ -107,7 +108,7 @@ func (s *BatchScreen) Build() fyne.CanvasObject {
 	// 追溯子表
 	traceLabel := widget.NewLabelWithStyle("投料追溯记录", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 
-	s.traceTable = widget.NewTable(
+	s.traceTable = newListTable(
 		func() (int, int) { return len(s.traceData) + 1, 4 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {

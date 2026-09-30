@@ -19,7 +19,7 @@ type ProductScreen struct {
 	window   fyne.Window
 	all      []model.Product
 	data     []model.Product
-	table    *widget.Table
+	table    *listTable
 	label    *widget.Label
 	selected int
 	query    string
@@ -47,10 +47,14 @@ func (s *ProductScreen) Build() fyne.CanvasObject {
 	s.label = widget.NewLabel("共 0 条记录")
 
 	s.selected = -1
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		toggleTableRowSelection(s.table, &s.selected, row)
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.data) + 1, 6 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			sel := tci.Row == s.selected && tci.Row > 0
 			if tci.Row == 0 {
 				headers := []string{"编码", "名称", "规格", "单位", "状态", "选择"}
@@ -89,9 +93,6 @@ func (s *ProductScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		toggleTableRowSelection(s.table, &s.selected, id.Row)
-	}
 	s.table.SetColumnWidth(0, 150)
 	s.table.SetColumnWidth(1, 280)
 	s.table.SetColumnWidth(2, 220)

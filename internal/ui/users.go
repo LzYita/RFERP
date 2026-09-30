@@ -19,7 +19,7 @@ type UsersScreen struct {
 	svc      usecase.Applications
 	window   fyne.Window
 	data     []model.User
-	table    *widget.Table
+	table    *listTable
 	label    *widget.Label
 	selected int
 }
@@ -40,10 +40,14 @@ func (s *UsersScreen) Build() fyne.CanvasObject {
 	s.label = widget.NewLabel("共 0 个用户")
 
 	s.selected = -1
-	s.table = widget.NewTable(
+	onRowTapped := func(row int) {
+		toggleTableRowSelection(s.table, &s.selected, row)
+	}
+	s.table = newListTable(
 		func() (int, int) { return len(s.data) + 1, 6 },
 		makeCellTmpl,
 		func(tci widget.TableCellID, o fyne.CanvasObject) {
+			bindCellTappable(o, tci.Row, onRowTapped)
 			sel := tci.Row == s.selected && tci.Row > 0
 			if tci.Row == 0 {
 				headers := []string{"用户名", "显示名", "角色", "状态", "最后登录", "选择"}
@@ -84,9 +88,6 @@ func (s *UsersScreen) Build() fyne.CanvasObject {
 			}
 		},
 	)
-	s.table.OnSelected = func(id widget.TableCellID) {
-		toggleTableRowSelection(s.table, &s.selected, id.Row)
-	}
 	s.table.SetColumnWidth(0, 160)
 	s.table.SetColumnWidth(1, 180)
 	s.table.SetColumnWidth(2, 120)

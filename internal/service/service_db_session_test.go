@@ -305,6 +305,32 @@ func TestRestoreDatabaseRejectsUnterminatedInsertAndRollsBack(t *testing.T) {
 	}
 }
 
+func TestRestoreDatabaseRejectsQualifiedInsertAndRollsBack(t *testing.T) {
+	for _, stmt := range []string{
+		"INSERT INTO `app`.`users` (`username`) VALUES ('unexpected');",
+		"INSERT INTO app.schema_migrations (`version`) VALUES (1);",
+		"INSERT INTO `app` . `db_identity` (`id`) VALUES ('unexpected');",
+		"INSERT INTO app.products (`code`) VALUES ('unexpected');",
+	} {
+		t.Run(stmt, func(t *testing.T) {
+			svc, mock := newRestoreMockService(t, &fakeSnapshotPort{kind: "mysql"})
+			expectSessionChecks(t, mock)
+			mock.ExpectBegin()
+			expectBusinessDeletes(t, mock)
+			mock.ExpectRollback()
+			expectSessionChecksRestored(t, mock)
+
+			_, err := svc.RestoreDatabase(writeDump(t, stmt))
+			if err == nil || !strings.Contains(err.Error(), "qualified INSERT target") {
+				t.Fatalf("RestoreDatabase(%q) = %v, want qualified target rejection", stmt, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 // TestRestoreDatabaseSkipsSQLiteSnapshotOnMySQL 跨后端仍必须拒绝。
 func TestRestoreDatabaseSkipsSQLiteSnapshotOnMySQL(t *testing.T) {
 	port := &fakeSnapshotPort{kind: "mysql"}

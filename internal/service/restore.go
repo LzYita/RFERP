@@ -170,6 +170,11 @@ func replayDumpInserts(tx repository.TxOps, content string) (int, error) {
 			if !strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
 				continue
 			}
+			if insertTargetIsQualified(trimmed) {
+				// A dump from this app never qualifies table names. Reject a
+				// modified dump rather than writing to system or other schemas.
+				return statements, fmt.Errorf("restore SQL contains qualified INSERT target")
+			}
 			if insertTargetIsPreserved(trimmed) {
 				// 跳过整条语句：多行 INSERT 需要把缓冲状态保持为「不在语句中」。
 				continue
@@ -206,6 +211,26 @@ func execRestoreStatement(tx repository.TxOps, stmt string, statements *int) err
 	}
 	*statements++
 	return nil
+}
+
+// insertTargetIsQualified detects db.table and `db`.`table` targets without
+// treating a period inside a single quoted identifier as a schema separator.
+func insertTargetIsQualified(stmt string) bool {
+	rest := strings.TrimSpace(stmt[len("INSERT INTO"):])
+	if rest == "" {
+		return false
+	}
+	if rest[0] == '`' || rest[0] == '"' {
+		if end := strings.IndexByte(rest[1:], rest[0]); end >= 0 {
+			return strings.HasPrefix(strings.TrimSpace(rest[end+2:]), ".")
+		}
+		return false
+	}
+	end := strings.IndexAny(rest, " \t(")
+	if end < 0 {
+		return strings.Contains(rest, ".")
+	}
+	return strings.Contains(rest[:end], ".") || strings.HasPrefix(strings.TrimSpace(rest[end:]), ".")
 }
 
 // insertTargetIsPreserved 判断一条 INSERT 是否写入必须保留的系统表。

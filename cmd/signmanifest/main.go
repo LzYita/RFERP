@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ func main() {
 	minVer := flag.String("min", "", "最低可升级版本（可选）")
 	channel := flag.String("channel", "stable", "更新通道")
 	out := flag.String("out", "releases.json", "输出清单文件")
+	changelog := flag.String("changelog", "", "内置更新说明文件（internal/help/changelog.json）；给定则把本次版本累积进去")
 	flag.Parse()
 
 	if *zipPath == "" || *url == "" || *version == "" {
@@ -92,9 +94,89 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("已生成并签名清单:", *out)
+
+	// 把本次版本累积进内置更新说明（设置页的「更新说明」读取该文件）。
+	// 同版本重跑时替换该条，避免重复累积。
+	if *changelog != "" {
+		if err := appendChangelog(*changelog, m.Version, m.PublishedAt, m.Notes); err != nil {
+			// 不让累积失败阻断发布：清单已经签好署好名，更新功能本身可用。
+			fmt.Println("警告: 累积内置更新说明失败（不影响本次发布）:", err)
+		} else {
+			fmt.Println("已累积内置更新说明:", *changelog)
+		}
+	}
+
 	fmt.Println("版本:", *version)
 	fmt.Println("sha256:", sum)
 	fmt.Println("大小:", fi.Size())
+}
+
+// changelogFile 只声明我们关心的字段。
+type changelogFile struct {
+	Versions []changelogEntry `json:"versions"`
+}
+
+type changelogEntry struct {
+	Version     string `json:"version"`
+	PublishedAt string `json:"publishedAt,omitempty"`
+	Notes       string `json:"notes"`
+}
+
+// appendChangelog 把一个版本写入更新说明文件，按版本号从新到旧排序。
+//
+// 文件不存在时创建；同版本已存在则替换其内容（重跑发布不会产生重复条目）。
+//
+// 只改写 versions 字段：文件里的其它键（如给维护者看的 $comment）用
+// json.RawMessage 原样带回，避免累积过程静默丢掉它们。
+func appendChangelog(path, version, publishedAt, notes string) error {
+	// 根对象保留为原始键值对，未知字段不动
+	root := map[string]json.RawMessage{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &root); err != nil {
+			return fmt.Errorf("已有更新说明文件无法解析（请手工修复后重试）: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	var versions []changelogEntry
+	if raw, ok := root["versions"]; ok {
+		if err := json.Unmarshal(raw, &versions); err != nil {
+			return fmt.Errorf("已有 versions 字段无法解析（请手工修复后重试）: %w", err)
+		}
+	}
+
+	entry := changelogEntry{Version: version, PublishedAt: publishedAt, Notes: notes}
+	replaced := false
+	out := make([]changelogEntry, 0, len(versions)+1)
+	for _, e := range versions {
+		if e.Version == version {
+			out = append(out, entry)
+			replaced = true
+			continue
+		}
+		out = append(out, e)
+	}
+	if !replaced {
+		out = append(out, entry)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return update.CompareVersions(out[i].Version, out[j].Version) > 0
+	})
+
+	raw, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	root["versions"] = raw
+
+	b, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return err
+	}
+	// 末尾补换行，保持文件在 Git 里的可读性
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0644)
 }
 
 func loadKey(path string) (ed25519.PrivateKey, error) {

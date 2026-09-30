@@ -42,7 +42,7 @@ Built with **Go + Fyne**; data is stored in **MySQL 8** or in a local **SQLite**
 - The **first-run wizard** offers both; you can also set `"storage": "sqlite"` in `config.json`.
 - A config with no `storage` key is always treated as **MySQL** — the app never switches silently.
 - **Switching storage only changes the configuration; it does not move data.** Export from the old storage and import into the new one yourself.
-- Backup/restore follows the storage backend, and **both are whole-database restores** (current data is fully overwritten, never merged): MySQL uses `.sql` dumps, SQLite uses whole-file `.db` snapshots, and the two are not interchangeable. A `pre_restore_` copy is taken automatically first and can be used to roll back; accounts, migration records and the database identity are never overwritten.
+- Backup/restore follows the storage backend; the two are not interchangeable or merged. MySQL replays a `.sql` dump over the business tables in one transaction, preserving current accounts, migration records and database identity. SQLite replaces the entire database file with a `.db` snapshot, **including** those system records and the schema, then restarts the app. A selectable `pre_restore_` copy is made before either restore so the previous state can be recovered.
 
 ## First run
 

@@ -51,13 +51,13 @@ func TestRestoreDatabaseRejectsCrossBackendBackup(t *testing.T) {
 
 	// MySQL 存储：拒绝 SQLite 整库快照
 	mysqlSvc := service.New(nil, "", "", nil)
-	if _, _, err := mysqlSvc.RestoreDatabase(snapshot); err == nil || !strings.Contains(err.Error(), "MySQL") {
+	if _, err := mysqlSvc.RestoreDatabase(snapshot); err == nil || !strings.Contains(err.Error(), "MySQL") {
 		t.Fatalf("mysql backend accepted a SQLite snapshot: err=%v", err)
 	}
 
 	// SQLite 存储：拒绝 MySQL 的 .sql 备份
 	sqliteSvc := service.NewWithSnapshot(nil, service.NewSQLiteSnapshotPort(filepath.Join(dir, "live.db"), nil), nil)
-	if _, _, err := sqliteSvc.RestoreDatabase(dump); err == nil || !strings.Contains(err.Error(), "SQLite") {
+	if _, err := sqliteSvc.RestoreDatabase(dump); err == nil || !strings.Contains(err.Error(), "SQLite") {
 		t.Fatalf("sqlite backend accepted a .sql dump: err=%v", err)
 	}
 }

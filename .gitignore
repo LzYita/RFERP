@@ -24,3 +24,6 @@ release-notes.full.md
 
 # 涓存椂鏂囦欢
 *.tmp
+
+# 本地人工验收构建产物 / local manual-acceptance build
+manual-verify/

@@ -21,6 +21,9 @@ type SkipPartRow struct {
 type TxOps interface {
 	Exec(query string, args ...any) (sql.Result, error)
 
+	// CountRows 读取指定表的行数。表名来自代码内固定清单，不接受外部输入。
+	CountRows(table string, dest *int) error
+
 	GetProduct(id int64) (*model.Product, error)
 	GetProductForUpdate(id int64) (*model.Product, error)
 	CreateProduct(p *model.Product) (int64, error)

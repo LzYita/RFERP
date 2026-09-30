@@ -154,7 +154,18 @@ docs/decisions/  decision records (D-xxx)
 
 ## License
 
-No open-source license is specified. Please contact the author before using, distributing or modifying.
+**All rights reserved.** This repository is published for reference and issue tracking only;
+it is **not** licensed for reuse.
+
+You may read the source and report issues, but you may **not** copy, modify, redistribute or
+commercially exploit it — including building a competing product from it — without the
+author's prior written permission.
+
+Third-party dependencies keep their own permissive licenses (BSD-3-Clause / MIT / MPL-2.0),
+listed in `go.mod`; those terms are unaffected by this notice.
+
+This notice may change. No license has been granted to date, and adding one in the future
+cannot revoke rights already granted to recipients of earlier copies.
 
 ---
 

@@ -75,7 +75,9 @@ if errorlevel 1 (
 )
 
 echo [5/7] Sign manifest ...
-go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%PKG_URL%" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json"
+rem -changelog accumulates this release into the in-app changelog (settings page).
+rem The file is committed, so the accumulation shows up in the release commit.
+go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%PKG_URL%" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json" -changelog "internal\help\changelog.json"
 if errorlevel 1 (
     echo   Signing failed.
     pause

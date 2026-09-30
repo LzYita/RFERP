@@ -327,21 +327,23 @@ func launchMain(a fyne.App, cfg *config.Config, svc usecase.Applications) {
 	w.CenterOnScreen()
 	w.SetPadded(true)
 
-	appUI := ui.NewApp(svc, cfg, w, func() {
-		w.Close()
-		ui.ShowLogin(a, svc, func(u *model.User) {
-			log.Printf("login: %s (%s)", u.Username, u.Role)
-			launchMain(a, cfg, svc)
-		})
-	})
-	w.SetContent(appUI.BuildUI())
-	w.Show()
-
 	update.CleanupOld()
 	updateURL := cfg.UpdateURL
 	if v := os.Getenv("RFERP_UPDATE_URL"); v != "" {
 		updateURL = v
 	}
+
+	// 设置页要显示版本号并支持手动查更新，所以这两项要传进 UI 层。
+	appUI := ui.NewAppWithVersion(svc, cfg, w, func() {
+		w.Close()
+		ui.ShowLogin(a, svc, func(u *model.User) {
+			log.Printf("login: %s (%s)", u.Username, u.Role)
+			launchMain(a, cfg, svc)
+		})
+	}, version, updateURL)
+	w.SetContent(appUI.BuildUI())
+	w.Show()
+
 	if cfg.AutoUpdate && updateURL != "" {
 		ui.StartUpdateCheck(w, updateURL, version)
 	}

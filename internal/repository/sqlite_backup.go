@@ -41,10 +41,20 @@ func verifySQLiteDatabase(db *sqlx.DB) error {
 
 // SnapshotSQLiteFile writes a timestamped VACUUM INTO snapshot of dbPath under saveDir.
 func SnapshotSQLiteFile(dbPath, saveDir string) (string, error) {
+	return SnapshotSQLiteFileTo(dbPath, saveDir, "backup")
+}
+
+// SnapshotSQLiteFileTo 与 SnapshotSQLiteFile 相同，但文件名使用自定义前缀
+// （前缀_时间戳.db）。供「破坏性操作前的自动副本」区分用途：
+// pre_clear。产物仍是完整库文件，可直接用于另一次整库恢复。
+func SnapshotSQLiteFileTo(dbPath, saveDir, prefix string) (string, error) {
+	if prefix == "" {
+		prefix = "backup"
+	}
 	if err := os.MkdirAll(saveDir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("backup_%s.db", time.Now().Format("20060102_150405"))
+	name := fmt.Sprintf("%s_%s.db", prefix, time.Now().Format("20060102_150405"))
 	out := filepath.Join(saveDir, name)
 	db, err := OpenSQLite(dbPath)
 	if err != nil {

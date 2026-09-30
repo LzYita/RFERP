@@ -23,6 +23,14 @@ type SnapshotPort interface {
 	Kind() string
 }
 
+// PrefixSnapshotPort 是 SnapshotPort 的可选扩展：生成带自定义前缀的完整快照。
+// 用途是「破坏性操作（整库恢复 / 清空数据）前自动留副本」——
+// 与用户手动「一键备份」区分开，便于识别与按份数清理。
+// 实现应保证产物仍是完整快照，可直接作为另一次恢复的输入。
+type PrefixSnapshotPort interface {
+	PrefixSnapshot(saveDir, prefix string) (path string, err error)
+}
+
 // SessionPort 在“关闭外键/唯一检查”的会话中执行 operation，用于批量导入/清库。
 // MySQL 实现使用会话级 FOREIGN_KEY_CHECKS / UNIQUE_CHECKS；
 // SQLite 实现应使用 PRAGMA 等价物或逐语句策略。Service 不得出现这些方言。

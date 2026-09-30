@@ -34,18 +34,45 @@ func TestBackupScreenUsesBackendAccurateCopy(t *testing.T) {
 	for _, want := range []string{
 		"一键备份",
 		"备份当前数据库",
-		"SQLite 数据库快照（.db）",
-		"MySQL SQL 备份（.sql）",
+		"SQLite 快照（.db）",
 		"整库恢复",
-		"追加 INSERT",
+		"操作前会自动生成",
+		"账号、迁移记录与数据库身份",
+		"输入确认口令",
+		"覆盖现有数据",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("backup screen copy missing %q", want)
 		}
 	}
-	for _, misleading := range []string{"mysqldump", "导出为 SQL 文件", "SQL 文件中提取 INSERT"} {
+	for _, misleading := range []string{
+		"mysqldump",
+		"导出为 SQL 文件",
+		"SQL 文件中提取 INSERT",
+		"追加 INSERT",
+		"仅追加",
+		"导入完成",
+		"删除所有表",
+		"所有表中的数据已被清空",
+	} {
 		if strings.Contains(content, misleading) {
-			t.Errorf("backup screen still contains backend-inaccurate copy %q", misleading)
+			t.Errorf("backup screen still contains inaccurate copy %q", misleading)
+		}
+	}
+}
+
+func TestRestoreTokenIsDerivedFromBackupTimestamp(t *testing.T) {
+	cases := map[string]string{
+		`D:\backup\backup_20260925_101530.sql`:      "restore 20260925_101530",
+		`D:\backup\backup_20260925_101530.db`:       "restore 20260925_101530",
+		`D:\backup\pre_restore_20260101_000000.sql`: "restore 20260101_000000",
+		`D:\backup\pre_clear_20260101_000000.sql`:   "restore 20260101_000000",
+		`D:\backup\arbitrary.sql`:                   "",
+		`D:\backup\notes.txt`:                       "",
+	}
+	for path, want := range cases {
+		if got := restoreTokenFor(path); got != want {
+			t.Errorf("restoreTokenFor(%q) = %q, want %q", path, got, want)
 		}
 	}
 }

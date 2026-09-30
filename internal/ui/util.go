@@ -66,7 +66,7 @@ func textWidth(s string, bold bool) float32 {
 
 // autofitColumns 依据表头与各列文本调整列宽，让内容尽量完整显示。
 // minW/maxW 为列宽下限/上限；超过上限的列由单元格以省略号截断。
-func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW, maxW float32) {
+func autofitColumns(t *listTable, headers []string, colTexts [][]string, minW, maxW float32) {
 	if t == nil {
 		return
 	}
@@ -91,18 +91,26 @@ func autofitColumns(t *widget.Table, headers []string, colTexts [][]string, minW
 	}
 }
 
+// selectableTable 是 toggleTableRowSelection 需要的最小能力集合。
+// 用接口而不是 *listTable，是为了让裸 *widget.Table 也能传入（既有测试即如此）。
+type selectableTable interface {
+	Refresh()
+	UnselectAll()
+}
+
 // toggleTableRowSelection 切换表格的行选中态（第 0 行是表头，忽略）。
 //
-// 这里必须用 UnselectAll 清掉 Fyne 自身的选中态，**不能**用
-// Select(widget.TableCellID{Row: -1, Col: -1})：
-// Fyne 的 Table.Select 只校验上界（id.Row >= rows），负值会通过并调用
-// ScrollTo(-1, -1)，而 ScrollTo 会把该"单元格"（即 y=0）滚到可视区顶部——
-// 于是用户点选靠下的行时，表格会突然跳回顶部。
-// UnselectAll 只清选中状态，不改变滚动位置。
+// 由 cellWidget.Tapped 调用（见 bindCellTappable 的说明），不经过 Table.OnSelected。
 //
-// 清状态是必要的：Fyne 对"同一个单元格再次 Select"会直接返回、不触发
-// OnSelected，那样同一行就无法再次点击（也就无法取消选中）。
-func toggleTableRowSelection(t *widget.Table, selected *int, row int) {
+// 这里的 UnselectAll 只清 Fyne 自身的选中态，不改变滚动位置，因此可以安全调用；
+// 它是兜底而非必需——正常路径下 Fyne 的 selectedCell 始终为 nil。
+// 保留它是为了万一日后有别处又走了 Table.Select，也能保证同一行可以反复点击
+// （Fyne 对"同一个单元格再次 Select"会直接返回、不触发 OnSelected）。
+//
+// 切勿改成 Select(widget.TableCellID{Row: -1, Col: -1})：Fyne 的 Table.Select
+// 只校验上界（id.Row >= rows），负值会通过并调用 ScrollTo(-1, -1)，
+// 而 ScrollTo 会把该"单元格"（即 y=0）滚到可视区顶部。
+func toggleTableRowSelection(t selectableTable, selected *int, row int) {
 	if t == nil || row <= 0 {
 		return
 	}
@@ -115,22 +123,110 @@ func toggleTableRowSelection(t *widget.Table, selected *int, row int) {
 	t.UnselectAll()
 }
 
+// listTable 包裹 widget.Table，把 Fyne 自带的"点击/聚焦即滚动"行为挡在门外。
+//
+// 背景（用户报告的跳顶 bug 的根因）：Fyne 的 Table.Tapped 在桌面上会调用
+// canvas.Focus(t)，而它把
+//
+//	t.currentFocus = TableCellID{row, col}
+//
+// 放在 canvas.Focus(t) **之后**（table.go 中 Tapped 末段）。于是 FocusGained 里的
+// ScrollTo(t.currentFocus) 用到的是上一轮遗留的 currentFocus——首次为 {Row:0,Col:0}——
+// 把表格滚回第一行；退出后才把 currentFocus 写成点击行，所以只有第一次跳。
+// 现象与"首次进入页面点靠下的行跳回顶部、第二次不跳、选中态正常"完全吻合。
+//
+// 为什么不能用"预聚焦"绕开：焦点会被搜索框、按钮、弹窗抢走，一旦丢失，用户下一次
+// 点击表格又会重新触发 FocusGained → 又跳顶。所以必须让 FocusGained 本身无害。
+//
+// 为什么单元格拦截不够：真实驱动沿对象树找 Tappable/焦点目标时，点击落在行分隔线、
+// 列分隔线或空白处不会命中任何 cell，事件仍会冒泡到 Table.Tapped。
+// 包装类型是最后一道闸门——无论事件从哪里来，都不会再触发 Select/ScrollTo。
+//
+// 代价：方向键在列表里的行间导航失效（Table 依赖私有的 currentFocus，
+// 而它只在 Table.Tapped 里更新，现在 Tapped 已被屏蔽）。
+// 这是暂时接受的取舍，不是完整键盘交互修复：Tab 仍可进入表格，
+// 但没有焦点高亮，也不响应列表导航键；恢复导航需独立维护焦点行。
+type listTable struct {
+	*widget.Table
+}
+
+// newListTable 与 widget.NewTable 同参，返回受控的 listTable。
+func newListTable(
+	length func() (rows int, cols int),
+	create func() fyne.CanvasObject,
+	update func(widget.TableCellID, fyne.CanvasObject),
+) *listTable {
+	return &listTable{Table: widget.NewTable(length, create, update)}
+}
+
+// Tapped 屏蔽 Table 的点击处理：不 Select、不请求焦点。
+// 单元格（cellWidget）会先接管绝大多数点击，这里兜住落在分隔线/空白处的那部分。
+func (t *listTable) Tapped(*fyne.PointEvent) {}
+
+// FocusGained 屏蔽 Table 的"获得焦点即滚动到 currentFocus"。
+// 表格因此可以安全地被 Tab 或鼠标聚焦。
+// 刻意不做任何 Refresh：Table 原实现会 RefreshItem(currentFocus)，
+// 而这里 currentFocus 恒为 {0,0}，重绘只会带来无谓的像素变化。
+func (t *listTable) FocusGained() {}
+
+// FocusLost 同样屏蔽：原实现会 Refresh 去掉焦点样式，这里无事可做。
+func (t *listTable) FocusLost() {}
+
+// TypedRune / TypedKey 不转发：Table 的键盘导航依赖私有的 currentFocus，
+// 转发会在首次按下方向键时把视图跳到第 1 行，比不支持更糟。
+func (t *listTable) TypedRune(rune)          {}
+func (t *listTable) TypedKey(*fyne.KeyEvent) {}
+
 // cellWidget 是表格单元格：背景 + 文本。
 // 文本超宽时以省略号截断（列宽已按内容自适应，只有极长内容才会被截断）。
+//
+// cellWidget 自己实现 fyne.Tappable 接管点击，目的是让 Table.Tapped 收不到事件。
+// 见 bindCellTappable 的说明。
 type cellWidget struct {
 	widget.BaseWidget
 	bg    *canvas.Rectangle
 	label *widget.Label
+
+	row      int           // 本单元格对应的表格行号（0 是表头）
+	onTapped func(row int) // 点击回调，nil 表示不响应点击
 }
 
 func newCellWidget() *cellWidget {
 	c := &cellWidget{
 		bg:    canvas.NewRectangle(transparent),
 		label: widget.NewLabel(""),
+		row:   -1,
 	}
 	c.label.Truncation = fyne.TextTruncateEllipsis
 	c.ExtendBaseWidget(c)
 	return c
+}
+
+// Tapped 实现 fyne.Tappable。Fyne 的点击分发会自最上层的命中对象向上回溯，
+// 找到第一个 Tappable 就停下并调用它。因为每个单元格都是 Tappable，
+// 点击不会再冒泡到 Table.Tapped，也就不会触发 Table.Select。
+func (c *cellWidget) Tapped(*fyne.PointEvent) {
+	if c.onTapped == nil {
+		return
+	}
+	c.onTapped(c.row)
+}
+
+// bindCellTappable 把单元格与行号、点击回调绑定。必须在表格的 UpdateCell 回调里
+// 调用（那里才有 TableCellID 的行号），且 onTapped 应是创建表格时就固定下来的同一个
+// 闭包，避免每次刷新都为每个单元格新建闭包。
+//
+// 为什么不直接用 Table.OnSelected：
+// 它必须经过 Table.Select，Select 会 ScrollTo(id)；随后 Table.Tapped 请求焦点，
+// 才更新 currentFocus。首次跳顶的已核实主因是 FocusGained 使用旧焦点行，
+// 详见 listTable 注释，不能将其归因于点击必然命中 ScrollTo 的某个坐标分支。
+// 单元格直接驱动选择同时避开 Select 的滚动和原生点击的焦点路径；
+// 行高亮仍由各页面自己的 selected 状态绘制。
+func bindCellTappable(o fyne.CanvasObject, row int, onTapped func(row int)) {
+	if c, ok := o.(*cellWidget); ok {
+		c.row = row
+		c.onTapped = onTapped
+	}
 }
 
 func (c *cellWidget) CreateRenderer() fyne.WidgetRenderer {
@@ -213,6 +309,12 @@ func actionStyle(action string) (color.Color, color.Color) {
 		return badgeBlueBg, badgeBlueFg
 	case "STOCK_DEDUCT":
 		return badgeWarnBg, badgeWarnFg
+	case "RESTORE":
+		// 整库恢复：用蓝色系，区别于日常增删改
+		return badgeBlueBg, badgeBlueFg
+	case "CLEAR":
+		// 清空业务数据：与删除同级，用红色警示
+		return badgeErrorBg, badgeErrorFg
 	}
 	return badgeGrayBg, badgeGrayFg
 }

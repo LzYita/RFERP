@@ -1,10 +1,11 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"app/internal/logging"
 	"app/internal/migrate"
 	"app/internal/model"
+	"app/internal/mysqlfind"
 	"app/internal/paths"
 	"app/internal/repository"
 	"app/internal/service"
@@ -57,37 +59,58 @@ func init() {
 	}
 }
 
-func ensureMySQL(host, port, service string) {
+// ensureMySQL 在连库前确保本机 MySQL 已就绪：探测端口，不通则启动对应服务。
+//
+// 启动 Windows 服务需要管理员权限。已提权时直接用 SCM API 启动；未提权时
+// 只把这一条命令通过 UAC 提权执行（见 mysqlfind.StartServiceElevated），
+// 因此正常使用时不会出现提权提示，只有 MySQL 确实没在运行时才弹一次 UAC。
+//
+// 返回值说明启动是否成功，供调用方决定是提示用户还是继续尝试连接。
+func ensureMySQL(host, port, service string) error {
 	if !isLocalHost(host) {
-		return
+		return nil
 	}
 	addr := net.JoinHostPort(host, port)
-	conn, err := net.DialTimeout("tcp", addr, time.Second)
-	if err == nil {
-		conn.Close()
-		return
+	if portOpen(addr) {
+		return nil
 	}
+	if service == "" {
+		return errors.New("未配置 MySQL 服务名")
+	}
+
 	log.Printf("MySQL 未运行，尝试启动服务 %s...", service)
-	cmd := exec.Command("cmd", "/c", "net", "start", service)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("启动 MySQL 服务失败: %v\n%s", err, string(out))
-		// 第二次尝试用 sc start
-		cmd2 := exec.Command("cmd", "/c", "sc", "start", service)
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			log.Printf("sc start 也失败: %v\n%s", err2, string(out2))
+	err := mysqlfind.StartService(service)
+	if err != nil {
+		// 权限不足：改用 UAC 提权启动（会弹一次用户确认）
+		var se *mysqlfind.StartError
+		if errors.As(err, &se) && se.NeedsAdmin {
+			log.Printf("启动 MySQL 服务需要管理员权限，改用 UAC 提权：%v", err)
+			if err2 := mysqlfind.StartServiceElevated(service); err2 != nil {
+				return err2
+			}
+		} else {
+			return err
 		}
 	}
+
 	// 等待 MySQL 就绪
 	for i := 0; i < 30; i++ {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
-		if err == nil {
-			conn.Close()
+		if portOpen(addr) {
 			log.Println("MySQL 已就绪")
-			return
+			return nil
 		}
 		time.Sleep(time.Second)
 	}
-	log.Println("等待 MySQL 超时，将尝试连接...")
+	return fmt.Errorf("等待 MySQL 就绪超时（%s）", addr)
+}
+
+func portOpen(addr string) bool {
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func isLocalHost(host string) bool {
@@ -99,6 +122,16 @@ func isLocalHost(host string) bool {
 }
 
 func main() {
+	// 提权子进程：本次启动只为拉起 MySQL 服务，随后立即退出。
+	// 必须放在最前面——不能抢单实例锁、不能建窗口、不能碰配置。
+	if handled, err := mysqlfind.RunServiceStartIfRequested(os.Args); handled {
+		if err != nil {
+			log.Printf("elevated service start failed: %v", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+
 	winappid.Set("LzYita.RFERP")
 
 	// 更新后重启时，旧进程可能仍在退出中，稍等它释放单实例锁。
@@ -185,13 +218,27 @@ func enterLocalMode(a fyne.App, cfg *config.Config) {
 		return
 	}
 	log.Printf("run mode=local storage=mysql")
+	var startErr error
 	if cfg.Loaded() {
-		ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
+		startErr = ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
+		if startErr != nil {
+			log.Printf("ensure MySQL: %v", startErr)
+		}
 	}
 
 	db, err := sqlx.Connect("mysql", cfg.DB.DSN)
 	if err != nil {
 		log.Printf("database connection failed: %v", err)
+		// 已配置过却连不上库，是运行故障（MySQL 没起来、端口不通、凭据失效等），
+		// 不是"还没配置"。此时弹首次配置向导会让用户误以为配置丢了，
+		// 甚至可能覆盖掉本来可用的配置，所以改用「数据库不可用」界面，
+		// 给出真实原因和重试/启动服务的入口。
+		if cfg.Loaded() {
+			ui.ShowDatabaseUnavailable(a, cfg, err.Error(), startErr, func() {
+				enterLocalMode(a, config.Load())
+			})
+			return
+		}
 		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
 			if newCfg.IsSQLite() {

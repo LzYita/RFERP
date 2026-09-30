@@ -144,6 +144,8 @@ func toggleTableRowSelection(t selectableTable, selected *int, row int) {
 //
 // 代价：方向键在列表里的行间导航失效（Table 依赖私有的 currentFocus，
 // 而它只在 Table.Tapped 里更新，现在 Tapped 已被屏蔽）。
+// 这是暂时接受的取舍，不是完整键盘交互修复：Tab 仍可进入表格，
+// 但没有焦点高亮，也不响应列表导航键；恢复导航需独立维护焦点行。
 type listTable struct {
 	*widget.Table
 }
@@ -215,17 +217,11 @@ func (c *cellWidget) Tapped(*fyne.PointEvent) {
 // 闭包，避免每次刷新都为每个单元格新建闭包。
 //
 // 为什么不直接用 Table.OnSelected：
-// Fyne 的 Table.Tapped 会调用 Table.Select，而 Select 无条件调用 ScrollTo(id)。
-// ScrollTo 的纵向判定是
-//
-//	if cellY < scrollPos.Y         -> scrollPos.Y = cellY
-//	else if cellY+cellHeight > ... -> scrollPos.Y = cellY + cellHeight - 视口高
-//
-// 用户滚轮滚到靠下位置后首次点选时会命中第一个分支，滚动偏移被改写，视图跳走；
-// 因为改写后的偏移与后续 findY 的估算对齐，第二次起同样的点击不再触发——
-// 表现为"只有第一次点击会跳顶"。
-// 选中态本身不受影响（高亮由各页面用自己的 selected 变量绘制），
-// 所以现象是"视图跳回顶部但选中正常"。
+// 它必须经过 Table.Select，Select 会 ScrollTo(id)；随后 Table.Tapped 请求焦点，
+// 才更新 currentFocus。首次跳顶的已核实主因是 FocusGained 使用旧焦点行，
+// 详见 listTable 注释，不能将其归因于点击必然命中 ScrollTo 的某个坐标分支。
+// 单元格直接驱动选择同时避开 Select 的滚动和原生点击的焦点路径；
+// 行高亮仍由各页面自己的 selected 状态绘制。
 func bindCellTappable(o fyne.CanvasObject, row int, onTapped func(row int)) {
 	if c, ok := o.(*cellWidget); ok {
 		c.row = row

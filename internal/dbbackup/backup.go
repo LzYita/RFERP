@@ -73,7 +73,8 @@ func BackupTo(dsn, mysqldumpPath, saveDir, prefix string) (string, error) {
 	return filePath, nil
 }
 
-// PruneSnapshots 在 saveDir 下只保留最新的 keep 个 <prefix>_*.sql。
+// PruneSnapshots 分别保留最新的 keep 个 <prefix>_*.sql / .db；
+// 不跨存储后端删除副本（用户可能曾在同一数据目录切换存储方式）。
 // 用于限制「破坏性操作前自动副本」的份数。清理失败只记日志式忽略，
 // 绝不返回错误：副本已经生成，清理不应影响调用方的结果。
 func PruneSnapshots(saveDir, prefix string, keep int) []string {
@@ -84,26 +85,28 @@ func PruneSnapshots(saveDir, prefix string, keep int) []string {
 	if err != nil {
 		return nil
 	}
-	var names []string
 	want := prefix + "_"
-	for _, e := range entries {
-		if e.IsDir() {
+	var removed []string
+	for _, ext := range []string{".db", ".sql"} {
+		var names []string
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			n := e.Name()
+			if strings.HasPrefix(n, want) && strings.HasSuffix(strings.ToLower(n), ext) {
+				names = append(names, n)
+			}
+		}
+		if len(names) <= keep {
 			continue
 		}
-		n := e.Name()
-		if strings.HasPrefix(n, want) && strings.HasSuffix(strings.ToLower(n), ".sql") {
-			names = append(names, n)
-		}
-	}
-	if len(names) <= keep {
-		return nil
-	}
-	// 文件名内嵌固定格式时间戳，字典序即时间序。
-	sort.Strings(names)
-	var removed []string
-	for _, n := range names[:len(names)-keep] {
-		if err := os.Remove(filepath.Join(saveDir, n)); err == nil {
-			removed = append(removed, n)
+		// 文件名内嵌固定格式时间戳，字典序即时间序。
+		sort.Strings(names)
+		for _, n := range names[:len(names)-keep] {
+			if err := os.Remove(filepath.Join(saveDir, n)); err == nil {
+				removed = append(removed, n)
+			}
 		}
 	}
 	return removed

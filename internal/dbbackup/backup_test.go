@@ -108,3 +108,24 @@ func TestPruneSnapshotsToleratesMissingDir(t *testing.T) {
 		t.Fatalf("PruneSnapshots on a missing dir removed %v", removed)
 	}
 }
+
+func TestPruneSnapshotsKeepsSQLiteAndMySQLCopiesSeparately(t *testing.T) {
+	dir := t.TempDir()
+	for _, ext := range []string{".db", ".sql"} {
+		for i := 1; i <= 6; i++ {
+			name := "pre_restore_2026010" + string(rune('0'+i)) + "_000000" + ext
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	removed := PruneSnapshots(dir, "pre_restore", 5)
+	if len(removed) != 2 || removed[0] != "pre_restore_20260101_000000.db" || removed[1] != "pre_restore_20260101_000000.sql" {
+		t.Fatalf("removed %v, want oldest SQLite and MySQL copies", removed)
+	}
+	for _, ext := range []string{".db", ".sql"} {
+		if _, err := os.Stat(filepath.Join(dir, "pre_restore_20260106_000000"+ext)); err != nil {
+			t.Fatalf("latest %s copy missing: %v", ext, err)
+		}
+	}
+}

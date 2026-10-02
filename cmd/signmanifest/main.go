@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,7 +29,17 @@ func main() {
 	channel := flag.String("channel", "stable", "更新通道")
 	out := flag.String("out", "releases.json", "输出清单文件")
 	changelog := flag.String("changelog", "", "内置更新说明文件（internal/help/changelog.json）；给定则把本次版本累积进去")
+	changelogOnly := flag.String("changelog-only", "", "只把本次版本累积进该内置更新说明文件然后退出，不需要私钥与更新包。必须在构建之前调用：更新说明靠 go:embed 打进二进制，构建之后再累积就来不及了")
 	flag.Parse()
+
+	if *changelogOnly != "" {
+		if err := accumulate(*changelogOnly, *version, *notes, *notesFile); err != nil {
+			fmt.Println("累积内置更新说明失败:", err)
+			os.Exit(1)
+		}
+		fmt.Println("已累积内置更新说明（构建前）:", *changelogOnly)
+		return
+	}
 
 	if *zipPath == "" || *url == "" || *version == "" {
 		fmt.Println("用法: signmanifest -zip 包路径 -url 下载地址 -version 1.2.3 [-notes 说明] [-min 最低版本] [-out releases.json]")
@@ -41,14 +52,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	notesText := *notes
-	if *notesFile != "" {
-		b, err := os.ReadFile(*notesFile)
-		if err != nil {
-			fmt.Println("读取更新说明文件失败:", err)
-			os.Exit(1)
-		}
-		notesText = strings.TrimRight(string(b), "\r\n \t")
+	notesText, err := readNotes(*notes, *notesFile)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 
 	fi, err := os.Stat(*zipPath)
@@ -120,6 +127,37 @@ type changelogEntry struct {
 	Version     string `json:"version"`
 	PublishedAt string `json:"publishedAt,omitempty"`
 	Notes       string `json:"notes"`
+}
+
+// accumulate 把一个版本写进内置更新说明文件，不需要私钥与更新包。
+//
+// release.bat 在构建 exe 之前调用它：更新说明通过 go:embed 编译进二进制，
+// 若在构建之后才累积，本次发布的程序里就不会有本次的更新说明
+// （「更新说明」页与指南顶部的「内置记录最新」都会停在上一版）。
+func accumulate(path, version, notes, notesFile string) error {
+	if path == "" {
+		return errors.New("未指定更新说明文件")
+	}
+	if version == "" {
+		return errors.New("未指定版本号")
+	}
+	text, err := readNotes(notes, notesFile)
+	if err != nil {
+		return err
+	}
+	return appendChangelog(path, version, time.Now().UTC().Format(time.RFC3339), text)
+}
+
+// readNotes 读取更新说明正文：-notes-file 优先于 -notes。
+func readNotes(notes, notesFile string) (string, error) {
+	if notesFile == "" {
+		return strings.TrimRight(notes, "\r\n \t"), nil
+	}
+	b, err := os.ReadFile(notesFile)
+	if err != nil {
+		return "", fmt.Errorf("读取更新说明文件 %s 失败: %w", notesFile, err)
+	}
+	return strings.TrimRight(string(b), "\r\n \t"), nil
 }
 
 // appendChangelog 把一个版本写入更新说明文件，按版本号从新到旧排序。

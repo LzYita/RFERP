@@ -34,14 +34,14 @@ echo ================================
 echo   Release RFERP %VERSION%
 echo ================================
 
-echo [1/7] Check signing key ...
+echo [1/8] Check signing key ...
 if not exist "%KEY%" (
     echo   Missing private key: %KEY%
     pause
     exit /b 1
 )
 
-echo [2/7] Release notes ...
+echo [2/8] Release notes ...
 if not exist "!NOTES_FILE!" (
     > "!NOTES_FILE!" echo RFERP %VERSION%
     >> "!NOTES_FILE!" echo.
@@ -55,7 +55,20 @@ echo   ---- release notes ----
 type "!NOTES_FILE!"
 echo   -----------------------
 
-echo [3/7] Build RFERP.exe ...
+echo [3/8] Accumulate in-app changelog ...
+rem MUST run before the build: guide/FAQ/changelog ship via go:embed, so the
+rem binary can only list versions that were already in changelog.json when
+rem it was compiled. Accumulating after signing (as this step used to be)
+rem produced a release whose own changelog page and guide header were one
+rem version behind. Same-version entries are replaced, so a re-run is safe.
+go run ./cmd/signmanifest -changelog-only "internal\help\changelog.json" -version "%VERSION%" -notes-file "!NOTES_FILE!"
+if errorlevel 1 (
+    echo   Changelog accumulation failed.
+    pause
+    exit /b 1
+)
+
+echo [4/8] Build RFERP.exe ...
 go build -ldflags="-linkmode=internal -H windowsgui -X main.version=%VERSION%" -o RFERP.exe cmd/desktop/main.go
 if errorlevel 1 (
     echo   Build failed.
@@ -64,7 +77,7 @@ if errorlevel 1 (
 )
 if exist rcedit-x64.exe if exist picture\app.ico rcedit-x64.exe RFERP.exe --set-icon picture\app.ico >nul
 
-echo [4/7] Package update zip ...
+echo [5/8] Package update zip ...
 if not exist dist mkdir dist
 if exist "dist\RFERP-%VERSION%.zip" del "dist\RFERP-%VERSION%.zip"
 powershell -NoProfile -Command "Compress-Archive -Path 'RFERP.exe' -DestinationPath 'dist\RFERP-%VERSION%.zip' -Force"
@@ -74,7 +87,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [5/7] Sign manifest ...
+echo [6/8] Sign manifest ...
 go run ./cmd/signmanifest -key "%KEY%" -zip "dist\RFERP-%VERSION%.zip" -url "%PKG_URL%" -version "%VERSION%" -notes-file "!NOTES_FILE!" -out "dist\releases.json"
 if errorlevel 1 (
     echo   Signing failed.
@@ -82,7 +95,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [6/7] Build installer ...
+echo [7/8] Build installer ...
 if not defined ISCC (
     echo   ISCC not found. Install Inno Setup 6 or set ISCC.
     pause
@@ -100,7 +113,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [7/7] Upload to GitHub Release ...
+echo [8/8] Upload to GitHub Release ...
 if not defined GH (
     echo   gh not found in PATH. Install GitHub CLI or set GH.
     pause

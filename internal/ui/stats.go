@@ -197,6 +197,11 @@ func (s *StatsScreen) buildTrend(days []usecase.StockDailyPoint) fyne.CanvasObje
 		label := canvas.NewText(fmt.Sprintf("%.0f", float64(step)*float64(i)), clrForeground2)
 		label.TextSize = 11
 		label.Alignment = fyne.TextAlignTrailing
+		// 图表用 NewWithoutLayout 手工定位，子对象不会被自动 Resize，Size 会停在
+		// {0,0}。两种 painter 的右对齐都按 pos.X + Size.Width - 文本宽度 计算，
+		// 宽度为 0 时 X 会被算成负数，刻度被裁到画布左侧（只露出最后一位数字）。
+		// 显式给出宽度，让右边缘落在绘图区左侧。
+		label.Resize(fyne.NewSize(padL-8, label.MinSize().Height))
 		label.Move(fyne.NewPos(0, y-8))
 		objs = append(objs, label)
 	}
@@ -222,6 +227,8 @@ func (s *StatsScreen) buildTrend(days []usecase.StockDailyPoint) fyne.CanvasObje
 			lbl := canvas.NewText(d.Date, clrForeground2)
 			lbl.TextSize = 10
 			lbl.Alignment = fyne.TextAlignCenter
+			// 同上：居中同样依赖 Size，给出 40 宽的盒子让它真正以 x 为中心。
+			lbl.Resize(fyne.NewSize(40, lbl.MinSize().Height))
 			lbl.Move(fyne.NewPos(x-20, padT+plotH+6))
 			objs = append(objs, lbl)
 		}
@@ -280,6 +287,9 @@ func legendDot(c color.Color, text string) fyne.CanvasObject {
 
 // ---- 横向条形图面板 ----
 
+// rankNameWidth 是排行榜面板里名称列的固定宽度（见 buildRankPanel）。
+const rankNameWidth = 130
+
 func (s *StatsScreen) buildRankPanel(title string, rows []rankRow, barColor color.Color, unit string) fyne.CanvasObject {
 	maxV := 0.0
 	for _, r := range rows {
@@ -300,6 +310,10 @@ func (s *StatsScreen) buildRankPanel(title string, rows []rankRow, barColor colo
 
 		nameLbl := widget.NewLabel(r.name)
 		nameLbl.Truncation = fyne.TextTruncateEllipsis
+		// 不能靠 Truncation 后的 MinSize 定宽：省略号模式下 Label 的 MinSize 只有
+		// 一个"…"那么宽（约 21px），HBox 按 MinSize 分配宽度后名字会被挤成"…"。
+		// 用固定宽度外壳显式给出名称列宽度，超长时再交给 Truncation 截断。
+		nameBox := newFixedWidthBox(nameLbl, rankNameWidth)
 
 		valLbl := widget.NewLabel(fmt.Sprintf("%.0f %s", r.value, unit))
 		valLbl.Alignment = fyne.TextAlignTrailing
@@ -309,7 +323,7 @@ func (s *StatsScreen) buildRankPanel(title string, rows []rankRow, barColor colo
 		bar.SetMinSize(fyne.NewSize(200*ratio, 18))
 		barBox := container.NewHBox(bar, layout.NewSpacer())
 
-		row := container.NewHBox(nameLbl, layout.NewSpacer(), barBox, layout.NewSpacer(), valLbl)
+		row := container.NewHBox(nameBox, layout.NewSpacer(), barBox, layout.NewSpacer(), valLbl)
 		rowObjs = append(rowObjs, row)
 	}
 

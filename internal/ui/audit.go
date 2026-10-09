@@ -88,14 +88,16 @@ func (s *AuditScreen) Build() fyne.CanvasObject {
 	s.table.SetColumnWidth(1, 80)
 	s.table.SetColumnWidth(2, 80)
 	s.table.SetColumnWidth(3, 200)
-	s.table.SetColumnWidth(4, 540)
-	s.table.SetColumnWidth(5, 80)
+	s.table.SetColumnWidth(4, 480)
+	// 操作人是中文显示名（如"演示仓管员"），80 只够三个半字，会截断成"演示仓…"；
+	// 六列合计需控制在内容区宽度内，否则最右列会被推出可视区。
+	s.table.SetColumnWidth(5, 110)
 
 	s.Refresh()
 	return container.NewBorder(filterBar, s.label, nil, nil, s.table)
 }
 
-const changeColWidth = 540
+const changeColWidth = 480
 
 // estimateLines 估算文本在给定像素宽度下的换行行数（中文按 1、英文按 0.55 个字符宽计）。
 func estimateLines(text string, width float32) int {

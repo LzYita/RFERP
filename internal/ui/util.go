@@ -335,6 +335,37 @@ func withImportance(b *widget.Button, imp widget.Importance) *widget.Button {
 	return b
 }
 
+// fixedWidthBox 给单个子对象一个固定宽度，高度随内容。
+//
+// 用途：widget.Label 设置 Truncation 后，MinSize 会缩成一个省略号的宽度
+// （约 21px），放进 HBox/Grid 后按 MinSize 分配宽度，文字直接变成 "…"。
+// 需要"固定宽度 + 超出截断"时，用它把标签包起来。
+type fixedWidthBox struct {
+	widget.BaseWidget
+	obj   fyne.CanvasObject
+	width float32
+}
+
+func newFixedWidthBox(obj fyne.CanvasObject, width float32) *fixedWidthBox {
+	b := &fixedWidthBox{obj: obj, width: width}
+	b.ExtendBaseWidget(b)
+	return b
+}
+
+func (b *fixedWidthBox) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(b.obj)
+}
+
+func (b *fixedWidthBox) MinSize() fyne.Size {
+	m := b.obj.MinSize()
+	return fyne.NewSize(b.width, m.Height)
+}
+
+func (b *fixedWidthBox) Resize(size fyne.Size) {
+	b.BaseWidget.Resize(size)
+	b.obj.Resize(fyne.NewSize(size.Width, b.obj.MinSize().Height))
+}
+
 func parseIntText(text string) (int, error) {
 	value, err := strconv.Atoi(strings.TrimSpace(text))
 	if err != nil {

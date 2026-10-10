@@ -37,11 +37,11 @@ func TestStartupGateRejectsWrongToken(t *testing.T) {
 	s := gatedServer(t, bootTok)
 
 	cases := map[string]string{
-		"完全不同":     strings.Repeat("f", len(bootTok)),
+		"完全不同":   strings.Repeat("f", len(bootTok)),
 		"正确值少一位": bootTok[:len(bootTok)-1],
 		"正确值多一位": bootTok + "0",
-		"大小写不同":   strings.ToUpper(bootTok),
-		"空字符串":     "",
+		"大小写不同":  strings.ToUpper(bootTok),
+		"空字符串":   "",
 	}
 	for name, tok := range cases {
 		t.Run(name, func(t *testing.T) {

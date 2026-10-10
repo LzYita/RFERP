@@ -11,7 +11,6 @@ import (
 	"app/internal/bootstrap"
 	"app/internal/config"
 	"app/internal/paths"
-
 )
 
 // startWithDB 起一套「真装配 + 真 SQLite + 真内嵌服务」，
@@ -191,4 +190,3 @@ func TestPermissionsEndpointReflectsAuthMatrix(t *testing.T) {
 		t.Errorf("只读访问 /api/audit/recent = %d, want 403；权限端点与实际鉴权必须一致", code)
 	}
 }
-

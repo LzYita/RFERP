@@ -40,8 +40,8 @@ type Result struct {
 	Apps    usecase.Applications
 	Store   repository.Store
 	Kind    Kind
-	Target  string   // MySQL 为 DSN，SQLite 为数据库文件路径；用于日志与「连接服务器」页展示
-	Applied []int    // 本次实际执行的迁移步骤，空表示已是最新
+	Target  string // MySQL 为 DSN，SQLite 为数据库文件路径；用于日志与「连接服务器」页展示
+	Applied []int  // 本次实际执行的迁移步骤，空表示已是最新
 	Close   func() error
 }
 

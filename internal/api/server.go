@@ -35,7 +35,7 @@ type Server struct {
 	startupToken string
 
 	// staticFS/staticDir 非空时挂载前端构建产物（阶段 A 内嵌服务用它同时提供 API 与页面）。
-	staticFS   fs.FS
+	staticFS  fs.FS
 	staticDir string
 
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，

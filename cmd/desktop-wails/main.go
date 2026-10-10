@@ -109,10 +109,11 @@ func main() {
 
 	log.Printf("RFERP %s embedded server on http://%s (storage=%s)", version, emb.addr, res.Kind)
 
+	winW, winH := fitWindow(1360, 860)
 	if err := wails.Run(&options.App{
 		Title:  "RFERP-仁风仓库管理系统 v" + version,
-		Width:  1360,
-		Height: 860,
+		Width:  winW,
+		Height: winH,
 		// Assets 留空：全部请求都交给 Handler（反向代理）。
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},

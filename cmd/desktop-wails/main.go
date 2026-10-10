@@ -1,4 +1,4 @@
-﻿// 入口：Wails 桌面外壳 + 内嵌 HTTP 服务（阶段 A，Round 1 关口）。
+// 入口：Wails 桌面外壳 + 内嵌 HTTP 服务（阶段 A，Round 1 关口）。
 //
 // 形态：Wails 只负责窗口与 WebView2 运行时；所有业务与页面都由一个绑在
 // 127.0.0.1 随机端口上的 HTTP 服务提供，与 cmd/server 共用同一套 api 与装配。

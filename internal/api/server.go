@@ -1,4 +1,4 @@
-﻿// Package api 提供 HTTP 应用入口（Phase C）。
+// Package api 提供 HTTP 应用入口（Phase C）。
 // 鉴权与操作人来自服务端会话，不信任客户端传入的 operator。
 package api
 
@@ -83,6 +83,8 @@ func (s *Server) Handler() http.Handler {
 	// 未登录可读用户数，供首启判断（仅 count）。
 	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
+	// 当前用户的模块权限：前端导航据此显示，不在前端另抄一份权限矩阵。
+	mux.HandleFunc("GET /api/me/permissions", s.auth(s.handleMyPermissions, ""))
 	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
 	// 旧 token 在服务端仍然有效。
 	mux.HandleFunc("DELETE /api/session", s.auth(s.handleLogout, ""))

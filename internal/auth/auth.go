@@ -95,6 +95,24 @@ func AccessFor(role Role, module string) Access {
 	return AccessNone
 }
 
+// AllModules 返回全部权限模块的键，顺序与 moduleAccess 的字面量一致。
+//
+// 前端导航要靠它枚举模块，但不该自己维护一份模块列表——
+// 模块增减必须同时反映到权限表、导航与界面上，从一处派生才不会漂移。
+func AllModules() []string {
+	return []string{
+		ModuleDashboard,
+		ModuleStats,
+		ModuleProducts,
+		ModuleParts,
+		ModuleBOM,
+		ModuleBatch,
+		ModuleAudit,
+		ModuleBackup,
+		ModuleUsers,
+	}
+}
+
 const (
 	hashIter = 120000
 	hashLen  = 32

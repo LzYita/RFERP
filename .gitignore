@@ -25,10 +25,15 @@ release-notes.full.md
 # 临时文件
 *.tmp
 
-# �����˹����չ������� / local manual-acceptance build
+# �����˹����չ������� / local manual-acceptance build
 manual-verify/
 # 前端构建产物（由 web/ 的 npm run build 生成，不入库）
 web/node_modules/
 web/dist/
+
+# 嵌入目录：只保留 .gitkeep。
+# 必须先取消忽略目录本身——上面第 12 行的 dist/ 匹配任何层级名为 dist 的目录，
+# 而 Git 不允许在「被排除的父目录」下重新包含文件，所以顺序不能颠倒。
+!internal/webassets/dist/
 internal/webassets/dist/*
-!internal/webassets/dist/index.html
+!internal/webassets/dist/.gitkeep

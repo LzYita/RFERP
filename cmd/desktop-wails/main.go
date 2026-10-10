@@ -79,6 +79,11 @@ func main() {
 
 	res, err := bootstrap.Build(cfg, bootstrap.Options{Logf: log.Printf})
 	if err != nil {
+		// 无头模式下没有界面可以承载更详细的说明，直接退出即可；
+		// 弹系统对话框在无 GUI 的开发环境里既看不见也挡不住 CI。
+		if *serveOnly {
+			log.Fatalf("bootstrap failed: %v", err)
+		}
 		// 阶段 A 的内嵌服务必须同时支持 SQLite 与 MySQL；两者都失败时
 		// 没有界面可以承载更详细的说明，先落到系统对话框。
 		winmsg.Error("RFERP 无法启动", err.Error())

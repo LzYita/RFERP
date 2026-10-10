@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/usecase"
 )
@@ -135,15 +134,15 @@ func (s *Server) handleListProducts(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {
-	var p model.Product
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	in, ok := decodeProductWrite(w, r)
+	if !ok {
 		return
 	}
 	u, _ := s.userFromRequest(r)
 	name := operatorName(u)
-	p.Operator = &name
-	out, err := s.apps.CreateProduct(&p)
+	in.Operator = &name
+
+	out, err := s.apps.CreateProduct(in.toProductForCreate())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

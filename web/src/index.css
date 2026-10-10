@@ -114,7 +114,13 @@
   .data-table tbody tr:nth-child(even) td.col-fix {
     background: #fafbfd;
   }
-  .data-table tbody tr[data-selected='true'] td {
+  /*
+   * 选中态必须同时覆盖普通列与固定列，且放在斑马纹之后。
+   * 否则 `:nth-child(even) td.col-fix` 的优先级 (0,3,2) 会压过选中规则 (0,2,2)，
+   * 表现为「偶数行的操作列不跟随选中底色」——同一张表里两种颜色，看着像 bug。
+   */
+  .data-table tbody tr[data-selected='true'] td,
+  .data-table tbody tr[data-selected='true'] td.col-fix {
     background: var(--color-primary-subtle);
   }
 }

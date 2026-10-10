@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -22,7 +23,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/wailsapp/wails/v2"
@@ -45,6 +48,17 @@ import (
 var version = "dev"
 
 func main() {
+	// 开发/验证用：只起内嵌 HTTP 服务，不开 Wails 窗口。
+	//
+	// Vite 开发期需要 API 监听在一个已知端口上（见 vite.config.ts 的
+	// RFERP_DEV_PORT），无头模式就是为它准备的。
+	//
+	// 注意：此模式**不启用启动 token**——没有 WebView 代理去注入 Cookie，
+	// 启用后连自己人都进不去。它只用于本机开发，不要用于交付。
+	serveOnly := flag.Bool("serve", false, "只启动内嵌 HTTP 服务，不开窗口（开发/验证用）")
+	serveAddr := flag.String("serve-addr", "127.0.0.1:54321", "-serve 模式的监听地址")
+	flag.Parse()
+
 	winappid.Set("LzYita.RFERP")
 
 	// 更新后重启时旧进程可能仍在退出，稍等它释放单实例锁。
@@ -76,6 +90,11 @@ func main() {
 		}
 	}()
 
+	if *serveOnly {
+		runHeadless(res.Apps, *serveAddr)
+		return
+	}
+
 	emb, stop, err := serve(res.Apps)
 	if err != nil {
 		winmsg.Error("RFERP 无法启动", err.Error())
@@ -99,6 +118,40 @@ func main() {
 		log.Printf("wails exited with error: %v", err)
 		os.Exit(1)
 	}
+}
+
+// runHeadless 只提供 HTTP 服务，供前端开发与自动化验证使用。
+//
+// 与窗口模式的差别只有一处：不启用启动 token（没有 WebView 代理注入 Cookie）。
+// 其余——装配、静态资源、会话、鉴权——完全相同，因此用它验证界面是有意义的。
+func runHeadless(apps usecase.Applications, addr string) {
+	apiSrv := api.New(apps,
+		api.WithVersion(version),
+		api.WithStaticFS(webassets.FS(), webassets.Dir),
+	)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("监听 %s 失败: %v", addr, err)
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	apiSrv.StartSessionJanitor(ctx)
+
+	log.Printf("RFERP %s headless on http://%s/  (Ctrl+C 停止)", version, ln.Addr())
+	srv := &http.Server{
+		Handler:           apiSrv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	go func() {
+		<-ctx.Done()
+		sctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		_ = srv.Shutdown(sctx)
+	}()
+	log.Fatal(srv.Serve(ln))
 }
 
 // embeddedServer 是已就绪的内嵌服务。

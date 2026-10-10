@@ -36,10 +36,24 @@ await writeFile(path.join(to, keepName), keepContent)
 
 await cp(from, to, { recursive: true })
 
-const files = await readdir(to)
-let bytes = 0
-for (const f of files) {
-  const s = await stat(path.join(to, f))
-  if (s.isFile()) bytes += s.size
+// 统计必须递归：只数顶层条目会把 assets/ 当成空目录，
+// 报出「4 个条目 9975 字节」这种让人误以为资源没复制成功的数字。
+async function walk(dir) {
+  let files = 0
+  let bytes = 0
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      const sub = await walk(p)
+      files += sub.files
+      bytes += sub.bytes
+    } else {
+      files++
+      bytes += (await stat(p)).size
+    }
+  }
+  return { files, bytes }
 }
-console.log(`embed: ${files.length} 个条目, ${bytes} 字节 -> ${to}`)
+
+const { files, bytes } = await walk(to)
+console.log(`embed: ${files} 个文件, ${bytes} 字节 -> ${to}`)

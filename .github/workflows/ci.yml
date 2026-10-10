@@ -38,6 +38,25 @@ jobs:
           go-version: '1.26.5' # keep in sync with the release toolchain
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@b4ffde65f46336ab88eb53be808477a3946ba35d2 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # 前端产物必须先就位，Go 的 go:embed 才能把它打进二进制。
+      # 少了这一步，Test 里的嵌入断言只会看到占位页——那正是「exe 能启动
+      # 但打开是空白」这个已修 bug 的原始形态，不该让 CI 静默跳过。
+      - name: Build frontend
+        shell: pwsh
+        working-directory: web
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:embed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Set up MSYS2 UCRT64 GCC
         id: msys2
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2

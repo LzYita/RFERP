@@ -60,8 +60,12 @@ func TestRealBuildOutputIsEmbedded(t *testing.T) {
 	body, _ := io.ReadAll(w.Result().Body)
 	html := string(body)
 
-	if strings.Contains(html, "前端资源尚未构建") {
-		t.Skip("前端尚未构建（web/dist 为空）；执行 cd web && npm run build:embed 后重跑本用例")
+	// 未构建时 serveStatic 回的是 JSON 错误而不是页面。按内容判断而不是
+	// 匹配提示文案：文案一改，这个跳过分支就会失效并把「没构建」误报成
+	// 「构建产物不对」。
+	if strings.HasPrefix(strings.TrimSpace(html), "{") {
+		t.Skip("前端尚未构建（internal/webassets/dist 里只有 .gitkeep）；" +
+			"执行 cd web && npm run build:embed 后重跑本用例")
 	}
 	if !strings.Contains(html, `id="root"`) {
 		t.Fatalf("内嵌的 index.html 不是前端构建产物:\n%s", html)

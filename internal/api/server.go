@@ -3,16 +3,12 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"app/internal/auth"
 	"app/internal/model"
@@ -36,12 +32,6 @@ type Server struct {
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
-}
-
-type session struct {
-	Token     string
-	User      *model.User
-	ExpiresAt time.Time
 }
 
 // Option 用于可选装配（保持 New 的旧调用点不变）。
@@ -74,6 +64,9 @@ func (s *Server) Handler() http.Handler {
 	// 未登录可读用户数，供首启判断（仅 count）。
 	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
+	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
+	// 旧 token 在服务端仍然有效。
+	mux.HandleFunc("DELETE /api/session", s.auth(s.handleLogout, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
 	mux.HandleFunc("POST /api/parts/adjust-stock", s.auth(s.handleAdjustStock, "Inventory.AdjustStock"))
@@ -228,36 +221,6 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
-}
-
-func (s *Server) issueSession(u *model.User) (string, error) {
-	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	tok := hex.EncodeToString(raw[:])
-	s.mu.Lock()
-	s.sessions[tok] = &session{Token: tok, User: u, ExpiresAt: time.Now().Add(12 * time.Hour)}
-	s.mu.Unlock()
-	return tok, nil
-}
-
-func (s *Server) userFromRequest(r *http.Request) (*model.User, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" || !strings.HasPrefix(h, "Bearer ") {
-		return nil, false
-	}
-	tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[tok]
-	if !ok || time.Now().After(sess.ExpiresAt) {
-		if ok {
-			delete(s.sessions, tok)
-		}
-		return nil, false
-	}
-	return sess.User, true
 }
 
 // auth 包装鉴权与用例权限点；opName 为空表示仅需登录。

@@ -79,7 +79,9 @@ var moduleAccess = map[string]map[Role]Access{
 	ModuleParts:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessWrite, RoleProduction: AccessRead, RoleViewer: AccessRead},
 	ModuleBOM:       {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
 	ModuleBatch:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessWrite, RoleViewer: AccessRead},
-	ModuleAudit:     {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
+	// 操作记录含操作人账号、时间与具体动作，2026-10-10 定：只读角色不得查看。
+	// 改成 AccessNone 后，usecase.Allow 与 HTTP 层自动收紧，前端导航也据此隐藏入口。
+	ModuleAudit:     {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone},
 	ModuleBackup:    {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone},
 	ModuleUsers:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
 }

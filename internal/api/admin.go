@@ -2,10 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
-	"app/internal/model"
 	"app/internal/paths"
 	"app/internal/usecase"
 )
@@ -48,9 +48,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// 改角色前先记下旧角色：权限点存在会话快照里，不主动踢下线的话，
+	// 对方当前会话会继续按旧角色放行，管理员会以为没改成功。
+	// Applications 没有单查用户的入口，这里从列表里找。
+	prevRole := ""
+	if users, err := s.apps.ListUsers(); err == nil {
+		for _, u := range users {
+			if u.ID == in.ID {
+				prevRole = u.Role
+				break
+			}
+		}
+	}
 	if err := s.apps.UpdateUser(in); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if prevRole != "" && prevRole != in.Role {
+		if n := s.RevokeUserSessions(in.ID); n > 0 {
+			log.Printf("role changed for user %d (%s -> %s): 强制下线 %d 个会话",
+				in.ID, prevRole, in.Role, n)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -116,15 +134,15 @@ func (s *Server) handleListProducts(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {
-	var p model.Product
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	in, ok := decodeProductWrite(w, r)
+	if !ok {
 		return
 	}
 	u, _ := s.userFromRequest(r)
 	name := operatorName(u)
-	p.Operator = &name
-	out, err := s.apps.CreateProduct(&p)
+	in.Operator = &name
+
+	out, err := s.apps.CreateProduct(in.toProductForCreate())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

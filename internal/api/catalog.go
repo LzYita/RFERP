@@ -31,15 +31,20 @@ func (s *Server) handleGetProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateProduct(w http.ResponseWriter, r *http.Request) {
-	var p model.Product
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	in, ok := decodeProductWrite(w, r)
+	if !ok {
 		return
 	}
 	u, _ := s.userFromRequest(r)
 	name := operatorName(u)
-	p.Operator = &name
-	out, err := s.apps.UpdateProduct(&p)
+	in.Operator = &name
+
+	p, err := in.toProductForUpdate(s)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := s.apps.UpdateProduct(p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -79,15 +84,16 @@ func (s *Server) handleGetPart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreatePart(w http.ResponseWriter, r *http.Request) {
-	var p model.Part
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	in, ok := decodePartWrite(w, r)
+	if !ok {
 		return
 	}
 	u, _ := s.userFromRequest(r)
 	name := operatorName(u)
-	p.Operator = &name
-	out, err := s.apps.CreatePart(&p)
+	in.Operator = &name
+
+	p := in.toPartForCreate()
+	out, err := s.apps.CreatePart(p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -96,12 +102,20 @@ func (s *Server) handleCreatePart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdatePart(w http.ResponseWriter, r *http.Request) {
-	var p model.Part
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid body")
+	in, ok := decodePartWrite(w, r)
+	if !ok {
 		return
 	}
-	out, err := s.apps.UpdatePart(&p)
+	u, _ := s.userFromRequest(r)
+	name := operatorName(u)
+	in.Operator = &name
+
+	p, err := in.toPartForUpdate(s)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	out, err := s.apps.UpdatePart(p)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

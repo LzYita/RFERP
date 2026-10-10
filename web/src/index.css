@@ -1,0 +1,147 @@
+@import 'tailwindcss';
+
+/*
+ * 视觉基线（2026-10-10 定稿，见 docs/plans/wails-migration.md §Round 1.1）。
+ * 改这里等于改全站；不要在单个组件里写死这些值的副本。
+ *
+ * 取舍记录：
+ *  - 主色墨绿 #0F766E：跳出后台惯用的蓝紫，且不与红/黄状态色撞色。
+ *    曾评估赭红 #B91C1C，但它与「已撤销」状态红同族，语义会混淆，已排除。
+ *  - 深色侧栏：表格列多时对内容干扰最小。
+ *  - 密度取 Ant size='middle'：ERP 表格是长时间高频场景，
+ *    过密易看错行、过疏需频繁滚动。
+ *  - 圆角 8px：与 shadcn 默认一致，避免后续对齐摩擦。
+ *  - 表格阈值 720px：由实测最宽表（批次追溯 9 列 680px）+ 40px 余量反推，
+ *    不是拍脑袋的值。改动前先看 §Round 1.1 的实测表。
+ */
+@theme {
+  /* 主色：墨绿 */
+  --color-primary: #0f766e;
+  --color-primary-fg: #ffffff;
+  --color-primary-hover: #115e59;
+  --color-primary-active: #134e4a;
+  /* 主色的浅背景，用于选中行、批量栏底色 */
+  --color-primary-subtle: #e6f2f0;
+  --color-primary-subtle-border: #a7d3ce;
+
+  /* 深色侧栏 */
+  --color-sidebar: #1e293b;
+  --color-sidebar-fg: #cbd5e1;
+  --color-sidebar-fg-muted: #94a3b8;
+  --color-sidebar-active: #334155;
+  --color-sidebar-border: #334155;
+
+  /* 页面底色与表面 */
+  --color-canvas: #f1f5f4;
+  --color-surface: #ffffff;
+  --color-border: #d7e0de;
+  --color-border-subtle: #e8eeec;
+
+  /* 文字 */
+  --color-fg: #17211f;
+  --color-fg-muted: #5c6b68;
+  --color-fg-subtle: #8b9996;
+
+  /*
+   * 状态色。刻意与主色正交——墨绿主色 + 红黄绿状态色互不混淆。
+   * 「结果不确定」用 warn 而不是 danger：它不是失败，误当失败会让用户重试。
+   */
+  --color-ok: #1e8a54;
+  --color-ok-bg: #e6f7ee;
+  --color-warn: #b47012;
+  --color-warn-bg: #fff4df;
+  --color-danger: #c23a3a;
+  --color-danger-bg: #fde8e8;
+  --color-neutral: #5b6673;
+  --color-neutral-bg: #eceff3;
+
+  /* 圆角 */
+  --radius-DEFAULT: 8px;
+
+  /*
+   * 表格密度：Ant size='middle'。
+   * 单元格上下 5px、左右 11px，正文 13px，一屏约 19 行。
+   * 改这里等于改所有表格的行高，不要在单个表格里覆盖。
+   */
+  --spacing-cell-y: 5px;
+  --spacing-cell-x: 11px;
+  --text-table: 13px;
+
+  /* 侧栏宽度固定 166px：可用表格宽 = 视口 − 166 − 26 = 视口 − 192 */
+  --spacing-sidebar: 166px;
+  --spacing-content-pad: 13px;
+
+  /* 表格最小宽度。低于此值时横向滚动，而不是把列压扁。 */
+  --spacing-table-min: 720px;
+}
+
+/* 表格通用密度与阈值：所有数据表共用，避免逐表写死 */
+@layer components {
+  .data-table {
+    width: 100%;
+    min-width: var(--spacing-table-min);
+    border-collapse: collapse;
+    font-size: var(--text-table);
+  }
+  .data-table th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--color-fg-muted);
+    padding: var(--spacing-cell-y) var(--spacing-cell-x);
+    border-bottom: 1px solid var(--color-border);
+    background: #fafbfd;
+    white-space: nowrap;
+  }
+  .data-table td {
+    padding: var(--spacing-cell-y) var(--spacing-cell-x);
+    border-bottom: 1px solid var(--color-border-subtle);
+    white-space: nowrap;
+  }
+  /*
+   * 固定操作列。必须与 min-width 同时存在：
+   * 没有 min-width 时表格被压缩到与容器等宽，sticky 列会直接盖住最后一列。
+   */
+  .data-table .col-fix {
+    position: sticky;
+    right: 0;
+    background: var(--color-surface);
+    box-shadow: -4px 0 6px -4px rgb(16 24 40 / 0.18);
+  }
+  .data-table tbody tr:nth-child(even) td {
+    background: #fafbfd;
+  }
+  .data-table tbody tr:nth-child(even) td.col-fix {
+    background: #fafbfd;
+  }
+  /*
+   * 选中态必须同时覆盖普通列与固定列，且放在斑马纹之后。
+   * 否则 `:nth-child(even) td.col-fix` 的优先级 (0,3,2) 会压过选中规则 (0,2,2)，
+   * 表现为「偶数行的操作列不跟随选中底色」——同一张表里两种颜色，看着像 bug。
+   */
+  .data-table tbody tr[data-selected='true'] td,
+  .data-table tbody tr[data-selected='true'] td.col-fix {
+    background: var(--color-primary-subtle);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-fg);
+  font-family: 'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Noto Sans CJK SC',
+    system-ui, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* ERP 是长时间使用的工具：不允许误选中文本后拖出蓝色高亮块 */
+  user-select: none;
+}
+input,
+textarea,
+[data-selectable] {
+  user-select: text;
+}

@@ -3,16 +3,13 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"app/internal/auth"
 	"app/internal/model"
@@ -33,15 +30,17 @@ type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 
+	// startupToken 非空时启用启动 token 门（阶段 A 内嵌服务）。
+	// cmd/server 留空，走 Bearer + 网络边界。
+	startupToken string
+
+	// staticFS/staticDir 非空时挂载前端构建产物（阶段 A 内嵌服务用它同时提供 API 与页面）。
+	staticFS  fs.FS
+	staticDir string
+
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
-}
-
-type session struct {
-	Token     string
-	User      *model.User
-	ExpiresAt time.Time
 }
 
 // Option 用于可选装配（保持 New 的旧调用点不变）。
@@ -50,6 +49,16 @@ type Option func(*Server)
 // WithVersion 让服务端在 /api/v1/serverinfo 里自报版本。
 func WithVersion(v string) Option {
 	return func(s *Server) { s.version = v }
+}
+
+// WithStaticFS 挂载前端构建产物。
+// 单 exe 发行传 go:embed 得到的 fs.FS；开发期传 os.DirFS("web/dist")。
+// dir 是资源在 fsys 内的前缀（嵌入式布局下为 "dist"）。
+func WithStaticFS(fsys fs.FS, dir string) Option {
+	return func(s *Server) {
+		s.staticFS = fsys
+		s.staticDir = dir
+	}
 }
 
 // New 用给定用例实现构造 API。
@@ -74,6 +83,11 @@ func (s *Server) Handler() http.Handler {
 	// 未登录可读用户数，供首启判断（仅 count）。
 	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
+	// 当前用户的模块权限：前端导航据此显示，不在前端另抄一份权限矩阵。
+	mux.HandleFunc("GET /api/me/permissions", s.auth(s.handleMyPermissions, ""))
+	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
+	// 旧 token 在服务端仍然有效。
+	mux.HandleFunc("DELETE /api/session", s.auth(s.handleLogout, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
 	mux.HandleFunc("POST /api/parts/adjust-stock", s.auth(s.handleAdjustStock, "Inventory.AdjustStock"))
@@ -115,7 +129,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
-	return mux
+
+	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
+	// /api/ 前缀不会被静态文件截走。
+	if s.staticFS != nil {
+		mux.Handle("/", serveStatic(s.staticFS, s.staticDir))
+	}
+	return s.withStartupGate(mux)
 }
 
 type apiUser struct {
@@ -228,36 +248,6 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
-}
-
-func (s *Server) issueSession(u *model.User) (string, error) {
-	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	tok := hex.EncodeToString(raw[:])
-	s.mu.Lock()
-	s.sessions[tok] = &session{Token: tok, User: u, ExpiresAt: time.Now().Add(12 * time.Hour)}
-	s.mu.Unlock()
-	return tok, nil
-}
-
-func (s *Server) userFromRequest(r *http.Request) (*model.User, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" || !strings.HasPrefix(h, "Bearer ") {
-		return nil, false
-	}
-	tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[tok]
-	if !ok || time.Now().After(sess.ExpiresAt) {
-		if ok {
-			delete(s.sessions, tok)
-		}
-		return nil, false
-	}
-	return sess.User, true
 }
 
 // auth 包装鉴权与用例权限点；opName 为空表示仅需登录。

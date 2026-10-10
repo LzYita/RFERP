@@ -27,3 +27,8 @@ release-notes.full.md
 
 # ±¾µØÈË¹¤ÑéÊÕ¹¹½¨²úÎï / local manual-acceptance build
 manual-verify/
+# å‰ç«¯æ„å»ºäº§ç‰©ï¼ˆç”± web/ çš„ npm run build ç”Ÿæˆï¼Œä¸å…¥åº“ï¼‰
+web/node_modules/
+web/dist/
+internal/webassets/dist/*
+!internal/webassets/dist/index.html

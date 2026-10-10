@@ -1,10 +1,11 @@
-// Package api 提供 HTTP 应用入口（Phase C）。
+﻿// Package api 提供 HTTP 应用入口（Phase C）。
 // 鉴权与操作人来自服务端会话，不信任客户端传入的 operator。
 package api
 
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -29,6 +30,14 @@ type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 
+	// startupToken 非空时启用启动 token 门（阶段 A 内嵌服务）。
+	// cmd/server 留空，走 Bearer + 网络边界。
+	startupToken string
+
+	// staticFS/staticDir 非空时挂载前端构建产物（阶段 A 内嵌服务用它同时提供 API 与页面）。
+	staticFS   fs.FS
+	staticDir string
+
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
@@ -40,6 +49,16 @@ type Option func(*Server)
 // WithVersion 让服务端在 /api/v1/serverinfo 里自报版本。
 func WithVersion(v string) Option {
 	return func(s *Server) { s.version = v }
+}
+
+// WithStaticFS 挂载前端构建产物。
+// 单 exe 发行传 go:embed 得到的 fs.FS；开发期传 os.DirFS("web/dist")。
+// dir 是资源在 fsys 内的前缀（嵌入式布局下为 "dist"）。
+func WithStaticFS(fsys fs.FS, dir string) Option {
+	return func(s *Server) {
+		s.staticFS = fsys
+		s.staticDir = dir
+	}
 }
 
 // New 用给定用例实现构造 API。
@@ -108,7 +127,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
-	return mux
+
+	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
+	// /api/ 前缀不会被静态文件截走。
+	if s.staticFS != nil {
+		mux.Handle("/", serveStatic(s.staticFS, s.staticDir))
+	}
+	return s.withStartupGate(mux)
 }
 
 type apiUser struct {

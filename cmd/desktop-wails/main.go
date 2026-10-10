@@ -118,6 +118,12 @@ func main() {
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},
 		Windows: &windows.Options{
 			WebviewGpuIsDisabled: false,
+			// WebView2 缺失/版本异常/崩溃时的提示。
+			//
+			// 这些文案必须中文且可操作：出现这个页面的用户装不了软件，
+			// 只有明确告诉他去哪里下载才可能自己解决。留空会退回 Wails 的
+			// 英文默认文案，对国内用户等于没提示（D-010：检测并引导下载，不内置）。
+			Messages: webviewMessages(),
 		},
 	}); err != nil {
 		log.Printf("wails exited with error: %v", err)
@@ -134,9 +140,9 @@ func runHeadless(apps usecase.Applications, addr string) {
 		api.WithVersion(version),
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
 	)
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenLoopback(addr)
 	if err != nil {
-		log.Fatalf("监听 %s 失败: %v", addr, err)
+		log.Fatalf("%v", err)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -169,11 +175,56 @@ type embeddedServer struct {
 	listener net.Listener
 }
 
-// serve 在 127.0.0.1 的随机端口上启动内嵌服务。
+// listenLoopback 在回环地址上监听。
 //
-// 端口用 :0 交给内核分配，避免与本机已有服务冲突（Round 1 关口：随机端口分配、
-// 就绪等待、异常退出清理）。只绑回环，不监听 0.0.0.0。
+// 窗口模式传 ":0" 交给内核分配，因此永远不会撞端口——这是选随机端口的原因。
+// -serve 模式用固定端口（Vite 开发期需要一个已知地址），这时可能撞上，
+// 所以错误信息必须说清「换一个端口」，而不是只抛一句 address already in use。
+func listenLoopback(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err == nil {
+		return ln, nil
+	}
+	if isAddrInUse(err) {
+		return nil, fmt.Errorf("端口 %s 已被占用：%w\n"+
+			"请换一个端口，例如 -serve-addr 127.0.0.1:%d；"+
+			"桌面窗口模式不受影响，它使用内核分配的随机端口",
+			addr, err, randomPortSuggestion(addr))
+	}
+	return nil, fmt.Errorf("绑定回环地址 %s: %w", addr, err)
+}
+
+func isAddrInUse(err error) bool {
+	var errno syscall.Errno
+	if !errors.As(err, &errno) {
+		return false
+	}
+	// 10048 是 Windows 的 WSAEADDRINUSE；Go 的 syscall.EADDRINUSE 在 Windows 上
+	// 是另一个值（536870914），直接 errors.Is 判定永远为假，会走进普通失败分支
+	// 而丢掉「换个端口」的提示。非 Windows 平台用 EADDRINUSE 即可。
+	return errno == syscall.Errno(10048) || errno == syscall.EADDRINUSE
+}
+
+// randomPortSuggestion 给一个大概率空闲的端口号，避免用户只能干瞪眼。
+func randomPortSuggestion(addr string) int {
+	for i := 0; i < 20; i++ {
+		p := 54321 + i
+		if c, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p)); err == nil {
+			c.Close()
+			return p
+		}
+	}
+	return 54321
+}
+
+// serve 在 127.0.0.1 上启动内嵌服务。
 func serve(apps usecase.Applications) (*embeddedServer, func(), error) {
+	return serveOn(apps, "127.0.0.1:0")
+}
+
+// serveOn 在指定地址启动内嵌服务。addr 为 ":0" 时由内核分配端口
+// （Round 1 关口：随机端口分配、就绪等待、异常退出清理）。
+func serveOn(apps usecase.Applications, addr string) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
@@ -187,10 +238,10 @@ func serve(apps usecase.Applications) (*embeddedServer, func(), error) {
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
 	)
 
-	// 就绪等待：先 Listen 拿到端口即代表端口可用，再开始 Serve。
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// 就绪等待：Listen 成功即代表端口已可用，之后才 Serve。
+	ln, err := listenLoopback(addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("绑定回环端口: %w", err)
+		return nil, nil, err
 	}
 
 	httpSrv := &http.Server{
@@ -212,6 +263,13 @@ func serve(apps usecase.Applications) (*embeddedServer, func(), error) {
 
 	stop := func() {
 		cancel()
+		// 先关监听器，再优雅关闭。
+		//
+		// 顺序不能反、也不能只靠 Shutdown：http.Server 只有在 Serve() 被调用后
+		// 才会登记监听器。若在登记之前就 Shutdown，它看不到任何监听器，会立刻返回，
+		// 而 Serve() 随后照常开始服务——端口永远不释放，反复启停会逐渐耗尽端口
+		// （Round 1 关口：异常退出清理）。直接关 ln 不依赖那个时序。
+		_ = ln.Close()
 		shutdownCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
 		_ = httpSrv.Shutdown(shutdownCtx)
@@ -243,6 +301,35 @@ func (e *embeddedServer) proxyHandler() http.Handler {
 		}
 	}
 	return rp
+}
+
+// webviewMessages 返回 WebView2 相关的中文提示。
+//
+// 出现这些页面的用户装不了软件，只有明确告诉他去哪里下载才可能自己解决。
+// 留空会退回 Wails 的英文默认文案，对国内用户等于没提示。
+// D-010：检测并引导下载，不内置运行时。
+func webviewMessages() *windows.Messages {
+	m := windows.DefaultMessages()
+	m.InstallationRequired = "缺少 Microsoft Edge WebView2 运行时，RFERP 无法显示界面。\n\n" +
+		"点击「确定」将自动下载并安装，装完后重新启动 RFERP 即可。\n" +
+		"若自动安装失败，请手动下载：" +
+		"https://developer.microsoft.com/microsoft-edge/webview2/"
+	m.UpdateRequired = "Microsoft Edge WebView2 运行时版本过旧，需要更新后才能显示界面。\n\n" +
+		"点击「确定」将自动下载并安装最新版本。"
+	m.MissingRequirements = "缺少运行 RFERP 所需的组件"
+	m.Webview2NotInstalled = "未检测到 Microsoft Edge WebView2 运行时"
+	m.InvalidFixedWebview2 = "指定的 WebView2 运行时路径无效。\n\n" +
+		"请改用系统已安装的 WebView2，或重新安装该运行时后重试。"
+	m.WebView2ProcessCrash = "界面进程意外退出。\n\n" +
+		"如果反复出现，请更新 WebView2 运行时或重启电脑后重试。"
+	m.FailedToInstall = "WebView2 运行时自动安装失败。\n\n" +
+		"请手动下载安装后再启动：" +
+		"https://developer.microsoft.com/microsoft-edge/webview2/"
+	m.DownloadPage = "https://developer.microsoft.com/microsoft-edge/webview2/"
+	m.PressOKToInstall = "点击「确定」开始下载安装"
+	m.Error = "错误"
+	m.ContactAdmin = "如需协助，请联系系统管理员。"
+	return m
 }
 
 // newStartupToken 生成 24 字节随机 token（192 位），同机其它进程猜不到。

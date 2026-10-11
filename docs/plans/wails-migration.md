@@ -362,28 +362,36 @@ RFERP/
 现状 `App.tsx` 用 `screen.key` 手工三元判断（`activeKey === 'parts' ? ... : <Placeholder/>`）。
 本轮要扩到 5 个屏幕，继续堆三元会失控。
 
-- [ ] 抽 `screens/registry.tsx`：`Record<ModuleKey, () => JSX.Element>`，
+- [x] 抽 `screens/registry.tsx`：`Record<ModuleKey, () => ReactNode>`，
       `App.tsx` 改为查表渲染，删除三元
-- [ ] 导航点击后 `AppShell` 的选中态与内容区同步（Round 1 已具备，确认即可）
-- [ ] **未实现的模块保留 `PlaceholderScreen`**，本轮不删除
+      **注意**：条目必须返回 JSX 元素（`() => <X/>`），不能直接存组件再 `factory()`
+      调用——那会让 hook 挂到 App 的 fiber 上，切屏时抛 React #310 整页白屏，
+      且 TypeScript 不报错
+- [x] 导航点击后 `AppShell` 的选中态与内容区同步（Round 1 已具备，确认即可）
+- [x] **未实现的模块保留 `PlaceholderScreen`**，本轮不删除
 
 #### 2.2 三张只读屏
 
 对齐 Fyne 版语义，不加不减：
 
-- [ ] **工作台**：`dashboard.go` 的三块——经营预警、最近操作记录、统计卡。
+- [x] **工作台**：`dashboard.go` 的三块——经营预警、最近操作记录、统计卡。
       时间格式 `01-02 15:04`，表名/动作走 `tableLabel` / `actionLabel` 的中文映射
-      （`audit.go` 已有同款映射，前端需**复刻而非另写一套**）
-- [ ] **统计分析**：`GET /api/stats?days=`，复刻 `stats.go` 的筛选与图表口径
-- [ ] **操作记录**：`GET /api/audit` 分页 + 表名/动作筛选
+      （映射集中在 `lib/auditLabels.ts`，**逐字移植** `audit.go`，Dashboard 与 Audit 共用）
+- [x] **统计分析**：`GET /api/stats?days=`，复刻 `stats.go` 的筛选与图表口径。
+      注意 `usecase.StockStats` 及其子结构**无 json tag**，JSON 键是 PascalCase
+      （`Days`/`TopIn`/`TotalIn`…）；写成 snake_case 会静默全空
+- [x] **操作记录**：`GET /api/audit/recent?limit=500` + 前端分页 + 对象筛选。
+      `/api/audit` 是**按记录**查的（需 `record_id`），不是全局列表，勿误用
 
 > 三张屏全部**只读**，不含任何写操作——这是本轮与 Round 3 的分界，不要提前做编辑。
 
 #### 2.3 权限可见性（沿用 Round 1 结论）
 
-- [ ] 导航可见性：继续用 `canRead(modules, key)`，`'none'` 整个入口不显示（**不置灰**）
-- [ ] 操作点复用 `usecase.Allow(role, name)` 的权限点字符串，与 API 侧一致
-- [ ] **前端隐藏不是安全边界**，每个请求仍由服务端重算——不要在 `permissions.ts` 里堆业务判断
+- [x] 导航可见性：继续用 `canRead(modules, key)`，`'none'` 整个入口不显示（**不置灰**）
+- [x] 操作点复用 `usecase.Allow(role, name)` 的权限点字符串，与 API 侧一致
+- [x] **前端隐藏不是安全边界**，每个请求仍由服务端重算——不要在 `permissions.ts` 里堆业务判断
+      （2026-10-11 实测：`viewer1` 导航由 10 项降到 7 项，直接调 `/api/users`、
+      `/api/audit/recent`、`/api/backup` 均返回 403，两层一致）
 
 #### 2.4 首启向导：唯一需要 Go 的地方
 
@@ -400,12 +408,14 @@ RFERP/
 
 #### 2.5 关口（与本轮绑定，不可跳过）
 
-- [ ] **导航闭合**：9 个模块无一显示「建设中」，全部可用或明确只读
-- [ ] **权限拒绝路径**：用 `viewer1` 确认被禁模块**不出现**在导航里，
+- [x] **导航闭合**：9 个模块无一显示「建设中」，全部可用或明确只读
+      （实测 admin 10 项导航，工作台/统计分析/操作记录/零件管理四屏均渲染真实数据）
+- [x] **权限拒绝路径**：用 `viewer1` 确认被禁模块**不出现**在导航里，
       且**直接调接口返回 403**（两层都要验，前端隐藏不算数）
 - [ ] **首启闭环**：空库 → 建管理员 → 登录 → 三张只读屏数据正确
+      （待做：`nativefiledialog` 替代方案属 2.4，尚未实现）
 - [ ] **升级不回归**：装旧 Fyne 版 → 装新版 → 数据逐项一致（见 §Round 1 待办的升级专项）
-- [ ] 全量 `go test ./...` + `npm run build` + `wails build` 通过
+- [x] 全量 `go test ./...` + `npm run build` + `wails build` 通过
 
 #### 2.6 本轮明确不做
 

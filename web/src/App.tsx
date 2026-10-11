@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AppShell } from './components/AppShell'
-import { PartsScreen } from './screens/PartsScreen'
 import { LoginScreen } from './screens/LoginScreen'
-import { PlaceholderScreen } from './screens/PlaceholderScreen'
-import { NAV } from './lib/nav'
+import { renderScreen } from './screens/registry'
 import { api, getToken, logout, setToken, usePermissions, type Me } from './lib/api'
 
 const VERSION = '1.3.0'
@@ -56,23 +54,18 @@ export default function App() {
     return <LoginScreen onLoggedIn={onLoggedIn} />
   }
 
-  const activeKey = screen.key
-  const entry = NAV.find((n) => n.key === activeKey)
+const activeKey = screen.key
 
-  return (
-    <AppShell
-      me={me}
-      modules={modules}
-      active={activeKey}
-      version={VERSION}
-      onNavigate={(key) => setScreen({ kind: 'shell', key })}
-      onLogout={onLogout}
-    >
-      {activeKey === 'parts' ? (
-        <PartsScreen />
-      ) : (
-        <PlaceholderScreen title={entry?.label ?? '设置'} />
-      )}
-    </AppShell>
-  )
-}
+    return (
+      <AppShell
+        me={me}
+        modules={modules}
+        active={activeKey}
+        version={VERSION}
+        onNavigate={(key) => setScreen({ kind: 'shell', key })}
+        onLogout={onLogout}
+      >
+        {renderScreen(activeKey)}
+      </AppShell>
+    )
+  }

@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, ApiError } from '../lib/api'
+import { api } from '../lib/api'
+import {
+  Badge,
+  Btn,
+  Field,
+  Pagination,
+  ScreenError,
+  classifyLoadError,
+  fmtQty,
+  shortTime,
+} from '../components/ui'
 
 interface Part {
   id: number
@@ -48,11 +58,7 @@ export function PartsScreen() {
         if (!alive) return
         // 权限拒绝与后端故障要分开：前者是账号问题，后者是系统问题，
         // 混成一句「加载失败」会让用户既不知道该找谁、也不知道该重试。
-        if (err instanceof ApiError && err.isForbidden) {
-          setError({ kind: 'forbidden', text: '当前账号没有零件管理模块的查看权限' })
-        } else {
-          setError({ kind: 'server', text: `无法加载零件：${(err as Error).message}` })
-        }
+        setError(classifyLoadError(err, '零件'))
       })
     return () => {
       alive = false
@@ -228,150 +234,8 @@ export function PartsScreen() {
         </div>
 
         {/* 分页 */}
-        <div className="flex items-center gap-2.5 border-t border-[var(--color-border)] px-2.5 py-2 text-[11.5px] text-[var(--color-fg-muted)]">
-          <span>
-            共 {filtered.length} 条 · 本页 {rows.length} 条
-          </span>
-          <div className="ml-auto flex items-center gap-1">
-            <PageBox onClick={() => setPage(1)} disabled={current === 1}>
-              ‹
-            </PageBox>
-            {Array.from({ length: Math.min(pages, 5) }, (_, i) => i + 1).map((n) => (
-              <PageBox key={n} onClick={() => setPage(n)} active={n === current}>
-                {n}
-              </PageBox>
-            ))}
-            <PageBox onClick={() => setPage(pages)} disabled={current === pages}>
-              ›
-            </PageBox>
-          </div>
-        </div>
+        <Pagination total={filtered.length} shown={rows.length} page={current} pages={pages} onPage={setPage} />
       </section>
     </>
   )
-}
-
-/**
- * 屏级错误。
- *
- * 权限拒绝不提供「重试」：重试不会改变权限，用户点了只会更困惑。
- * 应引导其联系管理员，而不是让它面对一个转圈的按钮。
- */
-function ScreenError({ kind, text }: { kind: 'forbidden' | 'server'; text: string }) {
-  const denied = kind === 'forbidden'
-  return (
-    <div className="grid flex-1 place-items-center">
-      <div
-        role="alert"
-        className={[
-          'max-w-[420px] rounded-[8px] border px-5 py-4 text-center',
-          denied
-            ? 'border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)]'
-            : 'border-[var(--color-danger)]/30 bg-[var(--color-danger-bg)]',
-        ].join(' ')}
-      >
-        <div
-          className={[
-            'mb-1.5 text-[14px] font-semibold',
-            denied ? 'text-[var(--color-warn)]' : 'text-[var(--color-danger)]',
-          ].join(' ')}
-        >
-          {denied ? '没有访问权限' : '无法加载数据'}
-        </div>
-        <div className="text-[12px] leading-relaxed text-[var(--color-fg-muted)]">
-          {text}
-          {denied ? '。请联系管理员调整角色后重新登录。' : '。请稍后重试，或联系管理员。'}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function Badge({ kind, children }: { kind: 'ok' | 'warn' | 'neutral'; children: React.ReactNode }) {
-  const map = {
-    ok: 'bg-[var(--color-ok-bg)] text-[var(--color-ok)]',
-    warn: 'bg-[var(--color-warn-bg)] text-[var(--color-warn)]',
-    neutral: 'bg-[var(--color-neutral-bg)] text-[var(--color-neutral)]',
-  }
-  return (
-    <span className={['rounded-[4px] px-[7px] py-px text-[10.5px] font-semibold', map[kind]].join(' ')}>
-      {children}
-    </span>
-  )
-}
-
-function Btn({
-  children,
-  primary,
-  danger,
-  onClick,
-}: {
-  children: React.ReactNode
-  primary?: boolean
-  danger?: boolean
-  onClick?: () => void
-}) {
-  const cls = [
-    'inline-flex h-[26px] items-center rounded-[6px] border px-2.5 text-[11.5px]',
-    primary
-      ? 'border-[var(--color-primary)] bg-[var(--color-primary)] text-white'
-      : danger
-        ? 'border-[#efc9c9] text-[var(--color-danger)]'
-        : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:bg-[var(--color-canvas)]',
-  ].join(' ')
-  return (
-    <button type="button" className={cls} onClick={onClick}>
-      {children}
-    </button>
-  )
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label className="flex flex-col gap-[3px]">
-      <span className="text-[11px] text-[var(--color-fg-muted)]">{label}</span>
-      {children}
-    </label>
-  )
-}
-
-function PageBox({
-  children,
-  onClick,
-  active,
-  disabled,
-}: {
-  children: React.ReactNode
-  onClick: () => void
-  active?: boolean
-  disabled?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={[
-        'grid h-[22px] min-w-[22px] place-items-center rounded-[4px] border text-[11.5px] disabled:opacity-40',
-        active
-          ? 'border-[var(--color-primary)] bg-[var(--color-primary)] font-semibold text-white'
-          : 'border-[var(--color-border)] bg-[var(--color-surface)]',
-      ].join(' ')}
-    >
-      {children}
-    </button>
-  )
-}
-
-/** 数量最多两位小数，避免 1.0000000000000002 这类浮点噪声占宽。 */
-function fmtQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)))
-}
-
-/** 去掉年份：省约 60px，代价是跨年数据需要靠筛选区分。 */
-function shortTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  const p = (x: number) => String(x).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }

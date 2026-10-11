@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ModulePermissions } from './permissions'
 
-const TOKEN_KEY = 'rferp.token'
+/**
+ * 会话 token 只存在内存里，**不写 localStorage**。
+ *
+ * 这是刻意的：应用要求「每次打开都先到登录界面」。token 若落盘，启动时就能
+ * 静默恢复会话，登录页会被跳过。放内存则进程一启动凭证即为空，登录页必然出现
+ * —— 靠结构保证，而不是靠约定。
+ *
+ * 跨启动保留的是另一份东西：`remember` 那份经 DPAPI 加密的凭证，且即使有它，
+ * 也仍需用户点一次「登录」。
+ */
+let sessionToken: string | null = null
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return sessionToken
 }
 
 export function setToken(t: string | null): void {
-  if (t === null) localStorage.removeItem(TOKEN_KEY)
-  else localStorage.setItem(TOKEN_KEY, t)
+  sessionToken = t
 }
 
 export class ApiError extends Error {
@@ -80,15 +89,50 @@ export interface Me {
 export interface LoginResult {
   token: string
   user: Me
+  /** 仅当勾选「记住登录」时返回；是长期凭证，不是会话 token */
+  remember_token?: string
 }
 
-/** 登出：作废服务端会话条目，再清本地 token。只清本地是不够的。 */
+interface RememberLoad {
+  token: string | null
+  user_id?: number
+  username?: string
+}
+
+/**
+ * 记住登录。
+ *
+ * 磁盘上只存 DPAPI 加密的凭证，不存密码（见 internal/api/remember.go 的设计说明）。
+ * 这几个端点不要求用户会话——它们在登录之前就要用；安全边界是本机的
+ * 启动 token 网关，同机其它程序拿不到 Cookie。
+ */
+export const remember = {
+  /** 用凭证换一个新的普通会话，顺带清掉磁盘上的副本。 */
+  async exchange(token: string): Promise<LoginResult> {
+    return api.post<LoginResult>('/api/remember/exchange', { token })
+  },
+  /** 读出本机保存的凭证。 */
+  async load(): Promise<RememberLoad> {
+    return api.get<RememberLoad>('/api/remember/load')
+  },
+  /** 让本机把凭证 DPAPI 加密后落盘。 */
+  async save(token: string, userId: number): Promise<void> {
+    await api.post('/api/remember/save', { token, user: { id: userId } })
+  },
+  /** 清除磁盘上的凭证。主动退出登录时调用。 */
+  async forget(): Promise<void> {
+    await api.post('/api/remember/forget')
+  },
+}
+
+/** 登出：作废服务端会话条目、清除本机凭证，再清本地 token。只清本地是不够的。 */
 export async function logout(): Promise<void> {
   try {
     await api.del('/api/session')
   } catch {
     /* 会话可能已失效，本地照样清 */
   } finally {
+    await remember.forget().catch(() => undefined)
     setToken(null)
   }
 }

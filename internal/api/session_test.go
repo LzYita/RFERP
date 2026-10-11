@@ -16,6 +16,20 @@ import (
 // 用不到的方法全部 panic，避免「桩悄悄返回零值」掩盖问题。
 type sessionApps struct {
 	usecase.Applications
+	// users 供 ListUsers 返回；为 nil 时给出默认的启用管理员，
+	// 让「记住登录换会话前回库判活」这类路径在测试里能走通。
+	users []model.User
+}
+
+// ListUsers 实现 usecase.Applications 的一部分。
+//
+// 内嵌的是 nil 接口，未实现的方法会 panic；remember 的换会话路径必须
+// 回库确认账号仍启用，所以这里给一个可控实现，而不是让它崩。
+func (a *sessionApps) ListUsers() ([]model.User, error) {
+	if a.users != nil {
+		return a.users, nil
+	}
+	return []model.User{{ID: 1, Username: "admin", Role: string(auth.RoleAdmin), Status: 1}}, nil
 }
 
 // user 造一个测试用户。role 取 auth.Role 常量，落库字段是字符串。

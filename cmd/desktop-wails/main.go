@@ -66,9 +66,16 @@ func main() {
 	if os.Getenv("RFERP_UPDATE_RESTART") == "1" {
 		lockWait = 20 * time.Second
 	}
-	if ok, err := singleinstance.Acquire("RFERP.SingleInstance", lockWait); err == nil && !ok {
-		winmsg.Info("RFERP", "RFERP 已在运行，请勿重复启动。")
-		return
+	// 单实例锁只对窗口模式有意义。
+	//
+	// 无头模式没有窗口，抢同一个锁会让「开发服务器在跑 → 正式应用起不来」，
+	// 而这正是开发期最常见的组合；被后台的 -serve 进程挡住用户双击
+	// 正式程序，也是同一个毛病的另一面。
+	if !*serveOnly {
+		if ok, err := singleinstance.Acquire("RFERP.SingleInstance", lockWait); err == nil && !ok {
+			winmsg.Info("RFERP", "RFERP 已在运行，请勿重复启动。")
+			return
+		}
 	}
 
 	cfg := config.Load()
@@ -134,12 +141,19 @@ func main() {
 
 // runHeadless 只提供 HTTP 服务，供前端开发与自动化验证使用。
 //
-// 与窗口模式的差别只有一处：不启用启动 token（没有 WebView 代理注入 Cookie）。
-// 其余——装配、静态资源、会话、鉴权——完全相同，因此用它验证界面是有意义的。
+// 与窗口模式的差别有两处，都必须如此：
+//   - 不启用启动 token：没有 WebView 代理去注入 Cookie，启用后连自己人都进不去。
+//   - **不抢单实例锁**：它没有窗口，抢 GUI 的锁会让「正在跑开发服务器时无法启动
+//     正式应用」，而这恰恰是开发期最常见的组合。
+//
+// 其余——装配、静态资源、会话、鉴权——与窗口模式完全相同，所以用它验证界面有意义。
 func runHeadless(apps usecase.Applications, addr string) {
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
+		// 无头模式同样开启「记住登录」：它只绑回环地址（listenLoopback），
+		// 威胁等级与桌面形态一致，自动化验证也需要走同一条代码路径。
+		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
 	)
 	ln, err := listenLoopback(addr)
 	if err != nil {
@@ -234,6 +248,14 @@ func serveOn(apps usecase.Applications, addr string) (*embeddedServer, func(), e
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStartupToken(tok),
+		// 单机桌面形态才开「记住登录」：这一档有启动 token 网关兜底，
+		// 且凭证是 DPAPI 绑本机的密文。cmd/server 监听全网卡且无网关，
+		// 在那里开等于把长期凭证开放给网络上任何客户端。
+		//
+		// 放在 DataDir 而不是 %AppData%：DataDir 会随配置（例如桌面上的
+		// 便携测试版指向自己的目录）一起变，测试不会污染用户真实凭证，
+		// 也不会和另一份实例抢同一个文件。
+		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
 		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
 		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
 		api.WithStaticFS(webassets.FS(), webassets.Dir),

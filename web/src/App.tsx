@@ -18,21 +18,21 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: 'login' })
   const { modules, reload } = usePermissions()
 
-  // 启动时用已存的 token 换一次身份；失败即视为未登录。
+// 会话 token 只在内存里，进程启动时必然为空 —— 登录页一定会出现。
+  // 这里只处理「页面在已登录状态下被重载」的情况（例如 WebView 自身刷新）。
   useEffect(() => {
-    const t = getToken()
-    if (!t) {
+    if (getToken()) {
+      api
+        .get<Me>('/api/me')
+        .then((u) => {
+          setMe(u)
+          setScreen({ kind: 'shell', key: 'dashboard' })
+        })
+        .catch(() => setToken(null))
+        .finally(() => setReady(true))
+    } else {
       setReady(true)
-      return
     }
-    api
-      .get<Me>('/api/me')
-      .then((u) => {
-        setMe(u)
-        setScreen({ kind: 'shell', key: 'dashboard' })
-      })
-      .catch(() => setToken(null))
-      .finally(() => setReady(true))
   }, [])
 
   const onLoggedIn = useCallback((token: string, user: Me) => {

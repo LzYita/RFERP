@@ -69,6 +69,8 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			log.Printf("role changed for user %d (%s -> %s): 强制下线 %d 个会话",
 				in.ID, prevRole, in.Role, n)
 		}
+		// 凭证里存的是角色快照，不踢就会按旧角色继续放行。
+		s.revokeRememberForUser(in.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -83,6 +85,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 改密码后旧凭证必须失效，否则「记住登录」会绕过新密码。
+	s.RevokeUserSessions(in.ID)
+	s.revokeRememberForUser(in.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -107,6 +112,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 旧凭证里不含新密码，作废它才算真的改了密码。
+	s.RevokeUserSessions(in.ID)
+	s.revokeRememberForUser(in.ID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

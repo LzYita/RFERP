@@ -5,3 +5,10 @@
 *.go  text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# 模块清单必须固定 LF。Go 工具链永远写 LF，而 Windows 的 git 默认
+# core.autocrlf=true 会在检出时转成 CRLF；随后任何一次 go mod download
+# 都会用 LF 写回同一份内容，CI 的 `git diff --exit-code -- go.mod go.sum`
+# 于是报「模块文件已变更」——内容其实一模一样，只是行尾不同。
+go.mod text eol=lf
+go.sum text eol=lf

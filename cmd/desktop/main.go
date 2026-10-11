@@ -7,31 +7,25 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
 	"app/internal/api"
+	"app/internal/bootstrap"
 	"app/internal/config"
 	"app/internal/logging"
-	"app/internal/migrate"
 	"app/internal/model"
 	"app/internal/mysqlfind"
 	"app/internal/paths"
-	"app/internal/repository"
-	"app/internal/service"
 	"app/internal/singleinstance"
 	"app/internal/ui"
 	"app/internal/update"
 	"app/internal/usecase"
 	"app/internal/winappid"
 	"app/internal/winmsg"
-
-	_ "modernc.org/sqlite"
 )
 
 var version = "dev"
@@ -212,100 +206,67 @@ func enterClientMode(a fyne.App, cfg *config.Config) {
 }
 
 func enterLocalMode(a fyne.App, cfg *config.Config) {
-	if cfg.IsSQLite() {
-		log.Printf("run mode=local storage=sqlite")
-		enterLocalSQLite(a, cfg)
+	// 装配（选通道 → 连库 → 迁移 → 构造用例）已下沉到 internal/bootstrap，
+	// 与 cmd/server 共用同一份实现。本函数只负责把失败翻译成对应的界面。
+	res, err := bootstrap.Build(cfg, bootstrap.Options{
+		EnsureMySQL: ensureMySQL,
+		Logf:        log.Printf,
+	})
+	if err != nil {
+		showLocalBuildError(a, cfg, err)
 		return
 	}
-	log.Printf("run mode=local storage=mysql")
-	var startErr error
-	if cfg.Loaded() {
-		startErr = ensureMySQL(cfg.DB.Host, strconv.Itoa(cfg.DB.Port), cfg.MySQLService)
-		if startErr != nil {
-			log.Printf("ensure MySQL: %v", startErr)
-		}
+	if len(res.Applied) > 0 {
+		log.Printf("storage=%s migration applied: %v", res.Kind, res.Applied)
 	}
+	launchLocalUI(a, cfg, res.Apps)
+}
 
-	db, err := sqlx.Connect("mysql", cfg.DB.DSN)
-	if err != nil {
-		log.Printf("database connection failed: %v", err)
-		// 已配置过却连不上库，是运行故障（MySQL 没起来、端口不通、凭据失效等），
-		// 不是"还没配置"。此时弹首次配置向导会让用户误以为配置丢了，
-		// 甚至可能覆盖掉本来可用的配置，所以改用「数据库不可用」界面，
-		// 给出真实原因和重试/启动服务的入口。
-		if cfg.Loaded() {
-			ui.ShowDatabaseUnavailable(a, cfg, err.Error(), startErr, func() {
-				enterLocalMode(a, config.Load())
-			})
-			return
-		}
-		ui.ShowSetup(a, cfg, func(newCfg *config.Config, newDB *sqlx.DB) {
+// showLocalBuildError 把装配错误映射到既有的界面上。
+//
+// 三类必须分开，不能合并成一句「启动失败」：
+//   - 尚未配置 → 配置向导（用户需要做选择）
+//   - 已配置但连不上 → 「数据库不可用」（用户需要知道真实原因并能重试）
+//   - SQLite 各阶段故障 → 直接报错（路径已确定，不存在「配置」问题）
+func showLocalBuildError(a fyne.App, cfg *config.Config, err error) {
+	log.Printf("bootstrap failed: %v", err)
+
+	// 尚未配置：引导走配置向导。
+	if bootstrap.IsNotConfigured(err) {
+		ui.ShowSetup(a, cfg, func(newCfg *config.Config, _ *sqlx.DB) {
 			paths.SetDataDir(newCfg.DataDir)
-			if newCfg.IsSQLite() {
-				enterLocalSQLite(a, newCfg)
-				return
-			}
-			enterLocalMySQL(a, newCfg, newDB)
+			// 向导已经落盘配置，重新装配即可；不再复用向导握在手里的连接，
+			// 以保证本机与 server 走的是同一条装配路径。
+			enterLocalMode(a, newCfg)
 		})
 		return
 	}
-	enterLocalMySQL(a, cfg, db)
-}
 
-func enterLocalSQLite(a fyne.App, cfg *config.Config) {
-	path, pathErr := cfg.ResolveSQLitePath()
-	if pathErr != nil {
-		log.Printf("sqlite path: %v", pathErr)
-		winmsg.Error("RFERP 无法确定本机数据库路径", pathErr.Error())
+	// SQLite：路径已确定，没有「重新配置」这条路可走。
+	if cfg.IsSQLite() {
+		var title string
+		switch bootstrap.StageOf(err) {
+		case bootstrap.StageSQLitePath:
+			title = "RFERP 无法确定本机数据库路径"
+		case bootstrap.StageSQLiteMigrate:
+			title = "RFERP 数据库升级失败"
+		default:
+			title = "RFERP 无法打开本机数据库"
+		}
+		winmsg.Error(title, err.Error())
 		return
 	}
-	db, err := repository.OpenSQLite(path)
-	if err != nil {
-		log.Printf("sqlite open failed: %v", err)
-		winmsg.Error("RFERP 无法打开本机数据库", err.Error())
-		return
+
+	// MySQL 已配置却连不上：保留「启动服务亦失败」这一条线索，
+	// 它和「连不上」是两个不同的原因，用户要分别看到。
+	var startErr error
+	var ce *bootstrap.ConnectionError
+	if errors.As(err, &ce) {
+		startErr = ce.EnsureErr
 	}
-	// 升级前快照：有 pending 步骤且库非空时，RunSQLite 会先 VACUUM INTO 一份并校验，
-	// 失败则中止迁移（不留"升级了一半"的库）。
-	res, err := migrate.RunSQLite(db, migrate.SQLiteOptions{
-		DBPath:      path,
-		SnapshotDir: paths.BackupDir(),
-		Snapshot:    repository.SnapshotSQLiteFile,
+	ui.ShowDatabaseUnavailable(a, cfg, err.Error(), startErr, func() {
+		enterLocalMode(a, config.Load())
 	})
-	if err != nil {
-		log.Printf("sqlite migration failed: %v", err)
-		_ = db.Close()
-		winmsg.Error("RFERP 数据库升级失败", err.Error())
-		return
-	}
-	if len(res.Applied) > 0 {
-		log.Printf("sqlite migration applied: %v", res.Applied)
-	}
-	store := repository.NewSQLite(db)
-	closer := func() error { return db.Close() }
-	apps := service.NewWithSnapshot(store, service.NewSQLiteSnapshotPort(path, closer), cfg)
-	launchLocalUI(a, cfg, apps)
-}
-
-func enterLocalMySQL(a fyne.App, cfg *config.Config, db *sqlx.DB) {
-	log.Printf("database connected: %s@%s:%d/%s", cfg.DB.User, cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
-	res, err := migrate.Run(db, migrate.Options{
-		DSN:           cfg.DB.DSN,
-		MysqldumpPath: cfg.MysqldumpPath,
-		BackupDir:     paths.BackupDir(),
-	})
-	if err != nil {
-		log.Printf("migration failed: %v", err)
-		winmsg.Error("RFERP 数据库升级失败",
-			err.Error()+"\n\n升级前的备份（如有）已保留，请检查后重试。")
-		return
-	}
-	if len(res.Applied) > 0 {
-		log.Printf("migration applied: %v (backup: %s)", res.Applied, res.BackupPath)
-	}
-
-	apps := service.New(repository.New(db), cfg.DB.DSN, cfg.MysqldumpPath, cfg)
-	launchLocalUI(a, cfg, apps)
 }
 
 func launchLocalUI(a fyne.App, cfg *config.Config, apps usecase.Applications) {

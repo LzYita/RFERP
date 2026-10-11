@@ -79,9 +79,11 @@ var moduleAccess = map[string]map[Role]Access{
 	ModuleParts:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessWrite, RoleProduction: AccessRead, RoleViewer: AccessRead},
 	ModuleBOM:       {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
 	ModuleBatch:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessWrite, RoleViewer: AccessRead},
-	ModuleAudit:     {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleBackup:    {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone},
-	ModuleUsers:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
+	// 操作记录含操作人账号、时间与具体动作，2026-10-10 定：只读角色不得查看。
+	// 改成 AccessNone 后，usecase.Allow 与 HTTP 层自动收紧，前端导航也据此隐藏入口。
+	ModuleAudit:  {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone},
+	ModuleBackup: {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone},
+	ModuleUsers:  {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
 }
 
 func AccessFor(role Role, module string) Access {
@@ -91,6 +93,24 @@ func AccessFor(role Role, module string) Access {
 		}
 	}
 	return AccessNone
+}
+
+// AllModules 返回全部权限模块的键，顺序与 moduleAccess 的字面量一致。
+//
+// 前端导航要靠它枚举模块，但不该自己维护一份模块列表——
+// 模块增减必须同时反映到权限表、导航与界面上，从一处派生才不会漂移。
+func AllModules() []string {
+	return []string{
+		ModuleDashboard,
+		ModuleStats,
+		ModuleProducts,
+		ModuleParts,
+		ModuleBOM,
+		ModuleBatch,
+		ModuleAudit,
+		ModuleBackup,
+		ModuleUsers,
+	}
 }
 
 const (

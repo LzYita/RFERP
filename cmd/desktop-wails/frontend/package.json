@@ -1,0 +1,10 @@
+{
+  "name": "rferp-frontend-shim",
+  "private": true,
+  "//": "Wails v2 硬性要求项目目录下存在 frontend/，且不支持把命令指向别处。真正的 Vite 工程在 ../../../web/（本目录出发上溯三级），这里只做转发，避免用目录联接（junction 在 git 与 CI 上都不可靠）。",
+  "scripts": {
+    "install": "cd ../../../web && npm install",
+    "build": "cd ../../../web && npm run build:embed",
+    "dev": "cd ../../../web && npm run dev"
+  }
+}

@@ -3,16 +3,13 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
-	"time"
 
 	"app/internal/auth"
 	"app/internal/model"
@@ -33,15 +30,34 @@ type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 
+	// remember 保存「记住登录」凭证，与普通会话分开管理。
+	remember *rememberStore
+
+	// rememberEnabled 把「记住登录」限制在**单机桌面形态**。
+	//
+	// 原因：handleLoadRemember 会把明文长期凭证返回给调用方，而这几个端点
+	// 刻意不挂 s.auth（使用时用户还没有会话）。它们的安全边界只有启动 token
+	// 网关——即"同机其它程序拿不到 Cookie"。
+	//
+	// cmd/server 监听 :8080 全网卡、给多人 MySQL 形态用，且**没有**启动 token。
+	// 若在那里挂载 remember，任何能连到端口的人都能取走本机记住的凭证，
+	// 无需密码直接冒用该用户。所以它只能由桌面入口显式开启。
+	rememberEnabled bool
+
+	// rememberFile 覆盖凭证落盘路径；空值表示用 %AppData%\RFERP\remember.bin。
+	rememberFile string
+
+	// startupToken 非空时启用启动 token 门（阶段 A 内嵌服务）。
+	// cmd/server 留空，走 Bearer + 网络边界。
+	startupToken string
+
+	// staticFS/staticDir 非空时挂载前端构建产物（阶段 A 内嵌服务用它同时提供 API 与页面）。
+	staticFS  fs.FS
+	staticDir string
+
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
-}
-
-type session struct {
-	Token     string
-	User      *model.User
-	ExpiresAt time.Time
 }
 
 // Option 用于可选装配（保持 New 的旧调用点不变）。
@@ -52,11 +68,40 @@ func WithVersion(v string) Option {
 	return func(s *Server) { s.version = v }
 }
 
+// WithStaticFS 挂载前端构建产物。
+// 单 exe 发行传 go:embed 得到的 fs.FS；开发期传 os.DirFS("web/dist")。
+// dir 是资源在 fsys 内的前缀（嵌入式布局下为 "dist"）。
+func WithStaticFS(fsys fs.FS, dir string) Option {
+	return func(s *Server) {
+		s.staticFS = fsys
+		s.staticDir = dir
+	}
+}
+
+// WithRemember 开启「记住登录」，并指定凭证落盘路径。
+//
+// 传空路径表示用默认位置（%AppData%\RFERP\remember.bin）。
+// 只有 cmd/desktop-wails（单机桌面形态，带启动 token 网关）才应该调用它；
+// cmd/server 必须保持关闭——见 Server.rememberEnabled 的说明。
+func WithRemember(path string) Option {
+	return func(s *Server) {
+		s.rememberEnabled = true
+		s.rememberFile = path
+	}
+}
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
-	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session)}
+	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
 	for _, opt := range opts {
 		opt(s)
+	}
+	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
+	s.remember.file = s.rememberFile
+	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
+	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。
+	if s.rememberEnabled {
+		s.restoreRemember()
 	}
 	return s
 }
@@ -74,6 +119,23 @@ func (s *Server) Handler() http.Handler {
 	// 未登录可读用户数，供首启判断（仅 count）。
 	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
+	// 当前用户的模块权限：前端导航据此显示，不在前端另抄一份权限矩阵。
+	mux.HandleFunc("GET /api/me/permissions", s.auth(s.handleMyPermissions, ""))
+
+	// 记住登录。注意这三个端点**不**挂 s.auth：它们在还没有用户会话时使用，
+	// 安全边界是启动 token 网关（同机其它程序拿不到 Cookie）。
+	//
+	// 因此仅在 WithRemember 开启时挂载：cmd/server 无启动 token，挂上去等于
+	// 把明文长期凭证开放给网络上任何客户端。
+	if s.rememberEnabled {
+		mux.HandleFunc("POST /api/remember/save", s.handleSaveRemember)
+		mux.HandleFunc("GET /api/remember/load", s.handleLoadRemember)
+		mux.HandleFunc("POST /api/remember/forget", s.handleForgetRemember)
+		mux.HandleFunc("POST /api/remember/exchange", s.handleExchangeRemember)
+	}
+	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
+	// 旧 token 在服务端仍然有效。
+	mux.HandleFunc("DELETE /api/session", s.auth(s.handleLogout, ""))
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
 	mux.HandleFunc("POST /api/parts/adjust-stock", s.auth(s.handleAdjustStock, "Inventory.AdjustStock"))
@@ -115,7 +177,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
-	return mux
+
+	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
+	// /api/ 前缀不会被静态文件截走。
+	if s.staticFS != nil {
+		mux.Handle("/", serveStatic(s.staticFS, s.staticDir))
+	}
+	return s.withStartupGate(mux)
 }
 
 type apiUser struct {
@@ -179,6 +247,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		// Remember 为真时额外签发长期凭证（见 remember.go）。
+		// 客户端拿它去本地端点 DPAPI 加密落盘，下次启动换会话用。
+		Remember bool `json:"remember"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid login body")
@@ -194,10 +265,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "session unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"token": tok,
 		"user":  toAPIUser(u),
-	})
+	}
+	if body.Remember {
+		rt, err := s.remember.issue(u)
+		if err != nil {
+			// 记住登录失败不该挡住正常登录：用户照样能用，只是下次要输密码。
+			log.Printf("issue remember credential: %v", err)
+		} else {
+			out["remember_token"] = rt
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
@@ -228,36 +309,6 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
-}
-
-func (s *Server) issueSession(u *model.User) (string, error) {
-	var raw [24]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	tok := hex.EncodeToString(raw[:])
-	s.mu.Lock()
-	s.sessions[tok] = &session{Token: tok, User: u, ExpiresAt: time.Now().Add(12 * time.Hour)}
-	s.mu.Unlock()
-	return tok, nil
-}
-
-func (s *Server) userFromRequest(r *http.Request) (*model.User, bool) {
-	h := r.Header.Get("Authorization")
-	if h == "" || !strings.HasPrefix(h, "Bearer ") {
-		return nil, false
-	}
-	tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sess, ok := s.sessions[tok]
-	if !ok || time.Now().After(sess.ExpiresAt) {
-		if ok {
-			delete(s.sessions, tok)
-		}
-		return nil, false
-	}
-	return sess.User, true
 }
 
 // auth 包装鉴权与用例权限点；opName 为空表示仅需登录。

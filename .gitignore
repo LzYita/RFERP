@@ -25,5 +25,23 @@ release-notes.full.md
 # 临时文件
 *.tmp
 
-# �����˹����չ������� / local manual-acceptance build
+# �����˹����չ������� / local manual-acceptance build
 manual-verify/
+# Wails 构建产物（wails build 生成，不入库）
+cmd/desktop-wails/build/
+
+# 前端构建产物（由 web/ 的 npm run build 生成，不入库）
+web/node_modules/
+web/dist/
+
+# 嵌入目录：只保留 .gitkeep。
+# 必须先取消忽略目录本身——上面第 12 行的 dist/ 匹配任何层级名为 dist 的目录，
+# 而 Git 不允许在「被排除的父目录」下重新包含文件，所以顺序不能颠倒。
+!internal/webassets/dist/
+internal/webassets/dist/*
+!internal/webassets/dist/.gitkeep
+
+# wails build 生成物。本应用前端只走 HTTP，不使用 JS<->Go 绑定，
+# 所以 wailsjs 目录是死代码；package.json.md5 只是构建状态文件。
+cmd/desktop-wails/frontend/wailsjs/
+cmd/desktop-wails/frontend/package.json.md5

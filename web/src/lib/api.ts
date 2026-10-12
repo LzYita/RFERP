@@ -38,13 +38,43 @@ export class ApiError extends Error {
 }
 
 /**
+ * 401 广播。
+ *
+ * 之前只有 `setToken(null)`，而 App 决定「是否回到登录页」看的是 `me`，
+ * 于是会话过期后界面停在旧数据上：看起来一切正常，点什么都是 401，
+ * 用户既不知道为什么，也不知道该重新登录。
+ *
+ * `setToken` 只负责清凭据、抛异常；**要不要跳登录页**必须由持有 `me` 的
+ * App 来决定，所以这里用订阅把这件事通知出去，而不是在 api 层直接改 UI。
+ *
+ * 只在「本来带着 token」的情况下广播：登录接口自己返回 401（密码错）
+ * 不该触发——那会让登录页自己把用户踢走。
+ */
+type UnauthorizedListener = () => void
+const unauthorizedListeners = new Set<UnauthorizedListener>()
+
+export function onUnauthorized(fn: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(fn)
+  return () => {
+    unauthorizedListeners.delete(fn)
+  }
+}
+
+function broadcastUnauthorized() {
+  for (const fn of unauthorizedListeners) {
+    try {
+      fn()
+    } catch {
+      // 一个订阅者出错不该影响其余订阅者，也不该让 401 本身报错
+    }
+  }
+}
+
+/**
  * 统一请求入口。
  *
  * 凭据用 `Authorization: Bearer` 而不是 Cookie：阶段 A 的启动 Cookie 由
  * Wails 代理注入、HttpOnly，页面 JS 读不到也不该读；用户会话才走 Bearer。
- *
- * 401 一律清掉本地 token 并交给上层跳登录——包括管理员改角色触发的强制下线，
- * 否则界面会停在半可用状态，用户看到的是「按钮点了没反应」而不是「请重新登录」。
  */
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken()
@@ -63,7 +93,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       /* 响应不是 JSON，用状态文本 */
     }
-    if (resp.status === 401) setToken(null)
+    if (resp.status === 401) {
+      setToken(null)
+      // 只在携带凭据时广播：登录本身失败不是「会话过期」
+      if (token) broadcastUnauthorized()
+    }
     throw new ApiError(resp.status, msg)
   }
   if (resp.status === 204) return undefined as T

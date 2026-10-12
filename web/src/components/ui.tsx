@@ -298,7 +298,8 @@ export function fmtQty(n: number): string {
 }
 
 /** 去掉年份：省约 60px，代价是跨年数据需要靠筛选区分。 */
-export function shortTime(iso: string): string {
+export function shortTime(iso: string | undefined): string {
+  if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
   const p = (x: number) => String(x).padStart(2, '0')

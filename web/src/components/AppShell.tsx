@@ -16,6 +16,7 @@ export function AppShell({
   active,
   onNavigate,
   onLogout,
+  onRefresh,
   version,
   children,
 }: {
@@ -24,6 +25,7 @@ export function AppShell({
   active: string
   onNavigate: (key: string, path: string) => void
   onLogout: () => void
+  onRefresh: () => void
   version: string
   children: ReactNode
 }) {
@@ -65,15 +67,18 @@ export function AppShell({
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[42px] shrink-0 items-center gap-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-[13px]">
-          <div className="flex h-[26px] max-w-60 flex-1 items-center rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px] text-[var(--color-fg-subtle)]">
-            搜索零件、批次、操作记录…
-          </div>
+<header className="flex h-[42px] shrink-0 items-center gap-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-[13px]">
+          {/* 这里原来有一个"搜索零件、批次或追踪码…"的框。它是个 div，不是
+              input——长得能骗过人，点了打字都没反应。
+              移除而不是接线：全局搜索不在任何一轮计划里，Fyne 版也没有，
+              而且它承诺的三样东西里，批次与追踪要等 Round 4 才有数据可搜。
+              各屏左上角已有各自的筛选框，那个是真能用的。 */}
           <div className="ml-auto flex items-center gap-2 text-[11.5px] text-[var(--color-fg-muted)]">
             <span>v{version}</span>
             <button
               type="button"
               className="h-[26px] rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px] hover:bg-[var(--color-canvas)]"
+              onClick={onRefresh}
             >
               刷新
             </button>

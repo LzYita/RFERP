@@ -19,9 +19,18 @@ import { api, ApiError, remember, type LoginResult } from '../lib/api'
 export function LoginScreen({
   onLoggedIn,
   version = '1.3.0',
+  notice = '',
 }: {
   onLoggedIn: (t: string, m: LoginResult['user']) => void
   version?: string
+  /**
+   * 由 App 传入的说明（例如「会话已失效」）。
+   *
+   * 单独一个 prop 而不是复用下面的 error：登录**失败**是用户自己密码不对，
+   * 红色、就地显示；会话**过期**不是他做错了什么，不该用错误色，也不该
+   * 出现在密码框下面——那会让人以为是自己输错了。
+   */
+  notice?: string
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -217,6 +226,15 @@ export function LoginScreen({
                 记住登录（下次打开只需点登录）
               </label>
             </>
+          )}
+
+          {notice && (
+            <div
+              role="status"
+              className="mb-4 rounded-[8px] border border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)] px-3 py-2 text-[12px] text-[var(--color-warn)]"
+            >
+              {notice}
+            </div>
           )}
 
           {error && (

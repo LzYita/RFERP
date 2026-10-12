@@ -10,6 +10,8 @@ import type { ModuleKey } from '../lib/nav'
 import { AuditScreen } from './AuditScreen'
 import { DashboardScreen } from './DashboardScreen'
 import { PartsScreen } from './PartsScreen'
+import { ProductsScreen } from './ProductsScreen'
+import { BOMScreen } from './BOMScreen'
 import { PlaceholderScreen } from './PlaceholderScreen'
 import { StatsScreen } from './StatsScreen'
 
@@ -28,8 +30,8 @@ export const REGISTRY: Record<ModuleKey, Factory> = {
   stats: () => <StatsScreen />,
   parts: () => <PartsScreen />,
   // Round 3 交付主数据 CRUD；Round 4 起交付批次/事务。
-  products: () => <PlaceholderScreen title="产品管理" />,
-  bom: () => <PlaceholderScreen title="BOM管理" />,
+  products: () => <ProductsScreen />,
+  bom: () => <BOMScreen />,
   batch: () => <PlaceholderScreen title="批次追溯" />,
   audit: () => <AuditScreen />,
   // Round 5 交付；且依赖目录枚举端点替代 nativefiledialog。

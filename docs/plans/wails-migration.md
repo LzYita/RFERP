@@ -463,10 +463,29 @@ RFERP/
 
 ### Round 3 · 主数据 CRUD（Round 2 完成后展开）
 
-- [ ] 产品 / 零件 / BOM 的列表与编辑
-- [ ] BOM 搜索选择器（级联与查询框双向同步）
+- [x] 产品 / 零件 / BOM 的列表与编辑
+- [x] BOM 搜索选择器（级联与查询框双向同步）
 
-**关口**：并发编辑、BOM 级联与 Fyne 版结果一致。
+**关口**：并发编辑、BOM 级联与 Fyne 版结果一致 —— **已达成（2026-10-12）**
+
+编辑走 `PUT` 并回传 `version`（后端 `WHERE id=? AND version=?` 乐观锁），
+并发编辑由版本号拒绝，与 Fyne 版同源。
+
+两处**刻意与 Fyne 不同**，都是修 Fyne 的 bug：
+  - 编辑保留 `status` —— Fyne 的「启用」复选框建完即丢（`_ = status`）且
+    保存时写死 `st := 1`，编辑一条停用记录会把它悄悄启用
+  - 低库存判定改为 `warn>0 && stock<warn` —— Round 2 写的 `stock<=warn`
+    没有 `warn>0` 守卫，会把所有未设预警线的零件全标成「低库存」
+
+两处**刻意不照抄 Fyne**：
+  - 产品编码不加重复校验 —— 迁移 v4 主动删掉了 `products.code` 的唯一索引
+    （系列号允许重复，migrate.go:260-267），加了就是凭空发明规矩
+  - BOM 加行时不查库存 —— Fyne 也不查；缺料属于**建批次时**的检查
+    （batch.go:335-371，那里能列出零件名并中止建批次）
+
+副产品：建了 `components/form.tsx`（Round 3 之前除 `Btn` 外没有任何表单基元，
+26px 输入框已散落三份副本）、`lib/catalog.ts`（DTO 有 `DisallowUnknownFields`，
+请求体必须逐字段写死），并给 web/ 接上 vitest（13 条用例，CI 已加 `npm run test`）。
 
 ### Round 4 · 事务
 

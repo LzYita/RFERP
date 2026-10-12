@@ -1,0 +1,332 @@
+/**
+ * 生产批次：类型、接口、状态机、消耗量计算。
+ *
+ * 这一屏与前三屏最大的不同是：**服务端在校验上比界面宽松**。四条必须记住的：
+ *
+ * 1. `GET /api/batches` 零行时返回 **null 而不是 []**（Go 的 `var list []T`
+ *    从不初始化）。同理 `/api/batches/skipped`。
+ *
+ * 2. `POST /api/batches` 的响应**不能当权威**。服务层把请求体解到结构体、
+ *    只回填了 `id`，于是 `version` 是 0、`created_at` 是零值时间、
+ *    `produced_qty` 是请求里的回显。必须重新拉列表。
+ *
+ * 3. `CreateBatch` **不校验 status**。直接 POST `status:2` 能造出一个
+ *    "已完成" 但没有冻结消耗记录的批次，而它之后就撤销不了
+ *    （`批次缺少冻结的库存消耗记录，无法安全撤销`）。所以表单永远发
+ *    `status: 0`，界面也不让用户选状态。
+ *
+ * 4. **完成生产时库存不足会被静默夹取**，不是报错：
+ *    `actualDeduct = min(请求量, 现有库存)`，扣到 0，批次照样标记完成
+ *    （service.go:563-572）。唯一的痕迹在审计的 `requested_deduct` vs
+ *    `deduct`。所以界面必须在完成**之前**再查一次库存——Fyne 只在建批次时
+ *    查，而库存会变，旧批次被完成时早就缺料了。
+ *
+ * 另：相同状态的更新 API 不拦（Fyne 在界面拦），所以状态机判断放在前端。
+ */
+
+import { api } from './api'
+import type { BOMItem, Part, Product } from './catalog'
+
+export interface Batch {
+  id: number
+  batch_no: string
+  product_id: number
+  plan_qty: number
+  produced_qty: number
+  status: number
+  version: number
+  created_at?: string
+  updated_at?: string
+  operator?: string
+  customer?: string
+  consumption_recorded: number
+  /** 关联字段，列表接口才有；新建响应里是 undefined */
+  product_name?: string
+  product_code?: string
+}
+
+export interface BatchTrace {
+  id: number
+  batch_id: number
+  part_id: number
+  part_batch_no?: string
+  used_qty: number
+  supplier?: string
+  created_at?: string
+  operator?: string
+}
+
+/* ---------------- 状态 ---------------- */
+
+/** 状态常量在 Go 侧没有命名常量，硬编码在三处。别新增第四处。 */
+export const BATCH_STATUS = {
+  pending: 0,
+  running: 1,
+  done: 2,
+  paused: 3,
+  revoked: 4,
+} as const
+
+export type BatchStatus = (typeof BATCH_STATUS)[keyof typeof BATCH_STATUS]
+
+export function statusText(s: number): string {
+  switch (s) {
+    case 0:
+      return '待生产'
+    case 1:
+      return '生产中'
+    case 2:
+      return '已完成'
+    case 3:
+      return '已暂停'
+    case 4:
+      return '已撤销'
+    default:
+      return '未知'
+  }
+}
+
+/** 徽章色沿用 Fyne 版的主题表（internal/ui/util.go:286-300）。 */
+export function statusKind(s: number): 'ok' | 'warn' | 'neutral' | 'danger' {
+  switch (s) {
+    case 1:
+      return 'neutral'
+    case 2:
+      return 'ok'
+    case 3:
+      return 'warn'
+    case 4:
+      return 'danger'
+    default:
+      return 'neutral'
+  }
+}
+
+/**
+ * 「这个操作现在能不能做」。
+ *
+ * 前端承担这个判断是因为 API 不承担：
+ *  - 相同状态重复提交：API 会成功，还写一条状态没变的审计
+ *  - 已撤销/已完成改状态：API 会拒，但文案是内部字符串
+ *  - 已完成/已撤销改跳过零件：API 会拒，同样是内部字符串
+ *
+ * Fyne 在界面上拦（batch.go:170-172 / 526-529），这里保持一致，
+ * 只是把文案改成说清楚是哪一种，不复用 Fyne 那句对已撤销批次不准确的
+ * 「已完成的批次不能更改状态」。
+ */
+export function canChangeStatus(b: Batch, to: number): { ok: true } | { ok: false; msg: string } {
+  if (b.status === BATCH_STATUS.revoked) {
+    return { ok: false, msg: '已撤销的批次不能更改状态' }
+  }
+  if (b.status === BATCH_STATUS.done) {
+    return { ok: false, msg: '已完成的批次不能更改状态；如需撤销请使用「撤销」' }
+  }
+  if (b.status === to) {
+    return { ok: false, msg: `批次已处于【${statusText(to)}】状态` }
+  }
+  return { ok: true }
+}
+
+export function canEditSkips(b: Batch): { ok: true } | { ok: false; msg: string } {
+  if (b.status === BATCH_STATUS.done) {
+    return { ok: false, msg: '已完成的批次不能跳过零件' }
+  }
+  if (b.status === BATCH_STATUS.revoked) {
+    return { ok: false, msg: '已撤销的批次不能跳过零件' }
+  }
+  return { ok: true }
+}
+
+/* ---------------- 消耗量 ---------------- */
+
+/**
+ * 计划数量下某个 BOM 项的零件消耗量。
+ *
+ * 与 `internal/service/service.go` 的 `bomConsume` **逐行等价** ——
+ * 界面用它预警，服务端用它扣库存，两者不一致的话预警就是假的。
+ * 注意服务端扣之前还会 `quantizeQuantity`（两位小数取整），所以这里是
+ * 一个下界：真实扣减可能因为取整比这个略小一点。
+ *
+ *   use_mode=0  每台用 N 个   → 计划数 × N × (1+损耗率%)
+ *   use_mode=1  每 M 台用 1 个 → ceil(计划数/M) × (1+损耗率%)，再向上取整
+ */
+export function bomConsume(planQty: number, b: Pick<BOMItem, 'quantity' | 'loss_rate' | 'use_mode'>): number {
+  let base = planQty * b.quantity
+  if (b.use_mode === 1) {
+    const m = b.quantity > 0 ? b.quantity : 1
+    base = Math.ceil(planQty / m)
+  }
+  let consume = base * (1 + b.loss_rate / 100)
+  if (b.use_mode === 1) consume = Math.ceil(consume)
+  return consume
+}
+
+export interface Shortage {
+  partId: number
+  name: string
+  code: string
+  needed: number
+  have: number
+}
+
+/**
+ * 找出库存不足的零件。
+ *
+ * 与 Fyne build.go:352-361 逐条对应：
+ *  - `PartID` 在零件表里找不到 → **跳过**，不报缺料（Fyne batch.go:354-356）
+ *  - 判据是 `needed > stock`，严格大于：正好等于不算缺
+ *  - 跳过的零件（skippedPartIds）不参与——完成时不扣它们
+ *
+ * Fyne 在建批次时查一次。这里在**完成前**也查一次，因为库存会变，
+ * 而服务端的静默夹取不会告诉任何人。
+ */
+export function findShortages(
+  planQty: number,
+  bomItems: BOMItem[],
+  parts: Part[],
+  skippedPartIds: number[] = [],
+): Shortage[] {
+  const partMap = new Map(parts.map((p) => [p.id, p]))
+  const skip = new Set(skippedPartIds)
+  const out: Shortage[] = []
+  for (const bi of bomItems) {
+    if (skip.has(bi.part_id)) continue
+    const part = partMap.get(bi.part_id)
+    if (!part) continue
+    const needed = bomConsume(planQty, bi)
+    if (needed > part.stock_qty) {
+      out.push({
+        partId: bi.part_id,
+        name: bi.part_name ?? '',
+        code: bi.part_code ?? '',
+        needed,
+        have: part.stock_qty,
+      })
+    }
+  }
+  return out
+}
+
+/** Fyne 的文案格式：`%s [%s]: 需要 %.2f，当前 %.2f`（batch.go:359-360）。 */
+export function shortageLine(s: Shortage): string {
+  return `${s.name} [${s.code}]: 需要 ${s.needed.toFixed(2)}，当前 ${s.have.toFixed(2)}`
+}
+
+/* ---------------- 接口 ---------------- */
+
+export const batches = {
+  /** 零行时后端返回 null，这里统一成 []。 */
+  list: async (): Promise<Batch[]> => (await api.get<Batch[] | null>('/api/batches')) ?? [],
+
+  /** 响应不可靠（version=0、时间零值），调用方应重新 list()。 */
+  create: (b: {
+    batch_no: string
+    product_id: number
+    plan_qty: number
+    status: number
+    customer?: string
+  }) => api.post<Batch>('/api/batches', b),
+
+  setStatus: (id: number, status: number) =>
+    api.post<{ status: string }>('/api/batches/status', { id, status }),
+
+  revoke: (id: number) => api.post<{ status: string }>('/api/batches/revoke', { id }),
+
+  skipped: async (batchId: number): Promise<number[]> =>
+    (await api.get<number[] | null>(`/api/batches/skipped?batch_id=${batchId}`)) ?? [],
+
+  // 注意不对称：新增用 body，删除用查询参数。后端就是这样，不是笔误。
+  addSkip: (batchId: number, partId: number) =>
+    api.post<{ status: string }>('/api/batches/skip', { batch_id: batchId, part_id: partId }),
+  removeSkip: (batchId: number, partId: number) =>
+    api.del<{ status: string }>(`/api/batches/skip?batch_id=${batchId}&part_id=${partId}`),
+}
+
+export const traces = {
+  byBatch: async (batchId: number): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
+
+  /** 整批提交，一个事务：任一条失败则全部回滚。 */
+  recordBatch: (rows: {
+    batch_id: number
+    part_id: number
+    used_qty: number
+    part_batch_no?: string
+    supplier?: string
+  }[]) => api.post<{ status: string }>('/api/traces/batch', rows),
+}
+
+/* ---------------- 选产品 ---------------- */
+
+/**
+ * 产品级联：名称 → 编码 → 规格。
+ *
+ * 与 Fyne batch.go:217-274 同构。同一套级联在 BOM 屏也用着，
+ * 但两处的启用规则不同：BOM 屏不选就不能加零件，批次屏不选就不能建批次。
+ */
+
+export interface CascadeOptions {
+  names: string[]
+  codes: string[]
+  specs: string[]
+}
+
+export function cascadeFor(products: Product[], name: string, code: string): CascadeOptions {
+  const names = [...new Set(products.map((p) => p.name).filter(Boolean))].sort()
+  if (!name) return { names, codes: [], specs: [] }
+
+  const codes = [
+    ...new Set(products.filter((p) => p.name === name).map((p) => p.code)),
+  ]
+    .filter(Boolean)
+    .sort()
+  if (!code) return { names, codes, specs: [] }
+
+  const specs = [
+    ...new Set(
+      products
+        .filter((p) => p.name === name && p.code === code && p.spec)
+        .map((p) => p.spec as string),
+    ),
+  ].sort()
+  return { names, codes, specs }
+}
+
+/**
+ * 把三级选择解析成一个产品。
+ *
+ * 规格只在**有多个可选规格时**才参与：若某编码下存在规格，说明这几个产品
+ * 同名同编码，只能靠规格区分，选第一个就是选错。
+ */
+export function resolveProduct(
+  products: Product[],
+  name: string,
+  code: string,
+  spec: string,
+): Product | null {
+  if (!name || !code) return null
+  const cands = products.filter((p) => p.name === name && p.code === code)
+  if (!cands.length) return null
+  const specs = [
+    ...new Set(cands.filter((p) => p.spec).map((p) => p.spec as string)),
+  ]
+  if (specs.length > 0) {
+    if (!spec) return null
+    return cands.find((p) => p.spec === spec) ?? null
+  }
+  return cands[0]
+}
+
+/** Fyne 的默认批次号：`BATCH` + `20060102150405` 格式（batch.go:277）。 */
+export function defaultBatchNo(d = new Date()): string {
+  const p = (x: number) => String(x).padStart(2, '0')
+  return (
+    'BATCH' +
+    d.getFullYear() +
+    p(d.getMonth() + 1) +
+    p(d.getDate()) +
+    p(d.getHours()) +
+    p(d.getMinutes()) +
+    p(d.getSeconds())
+  )
+}

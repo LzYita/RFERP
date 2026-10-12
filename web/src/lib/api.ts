@@ -169,3 +169,41 @@ export function usePermissions(): {
 
   return { modules, loading, reload }
 }
+
+/**
+ * 首启向导用到的接口。
+ *
+ * 单独成组，因为它们与登录流程无关：只有「一个用户都没有」的空库才会被调用，
+ * 且用户数与建管理员都是**未登录**端点——此刻还没有会话可带。
+ */
+export const setup = {
+/**
+   * 本机用户数。0 表示从未初始化，登录页应改显示建管理员向导。
+   *
+   * 响应是 `{count: N}` 而不是裸数字——注意解包，别把整个对象当数字用。
+   */
+  async userCount(): Promise<number> {
+    const r = await request<{ count: number }>('/api/users/count')
+    return r.count
+  },
+  /**
+   * 创建第一个管理员。
+   *
+   * 仅在用户数为 0 时可用，服务端会再查一次并对重复调用返回 409——
+   * 前端的检查只是省一次往返，真正的闸门在服务端。
+   */
+  async createInitialAdmin(
+    username: string,
+    password: string,
+    displayName: string,
+  ): Promise<Me> {
+    return request<Me>('/api/bootstrap-admin', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        display_name: displayName,
+      }),
+    })
+  },
+}

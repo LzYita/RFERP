@@ -1,0 +1,470 @@
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+
+/**
+ * 列表屏的输入与弹层基元。
+ *
+ * Round 3 之前没有这些：`Btn` 之外一切控件都是各屏内联的 Tailwind 字符串，
+ * 于是同一个「26px 输入框」在 PartsScreen、AuditScreen、LoginScreen 里各存一份
+ * 副本，已经漂移出三种高度（26 / 30 / 无固定高度）。三张编辑表单要复用同一套
+ * 控件，再散落副本只会更乱。
+ *
+ * 密度是刻意的两档，不要互相借用：
+ *  - **26px / 11.5px**：列表屏与弹窗内的控件（筛选、表格、编辑表单）
+ *  - 30px / 13px：登录与首启向导这类独立全屏表单
+ * 弹窗属于列表屏语境，因此走 26px 一档。
+ */
+
+const inputCls =
+  'h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)] disabled:text-[var(--color-fg-subtle)]'
+
+export function TextInput({
+  value,
+  onChange,
+  placeholder,
+  mono,
+  disabled,
+  autoFocus,
+  onEnter,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  mono?: boolean
+  disabled?: boolean
+  autoFocus?: boolean
+  onEnter?: () => void
+}) {
+  return (
+    <input
+      className={inputCls}
+      style={mono ? { fontFamily: 'Consolas, monospace' } : undefined}
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      autoFocus={autoFocus}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnter) {
+          e.preventDefault()
+          onEnter()
+        }
+      }}
+    />
+  )
+}
+
+export function Select<T extends string>({
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: readonly (T | { value: T; label: string })[]
+  disabled?: boolean
+}) {
+  return (
+    <select
+      className={inputCls}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value as T)}
+    >
+      {options.map((o) => {
+        const v = typeof o === 'string' ? o : o.value
+        const label = typeof o === 'string' ? o : o.label
+        return (
+          <option key={v} value={v}>
+            {label}
+          </option>
+        )
+      })}
+    </select>
+  )
+}
+
+/**
+ * 可输入的下拉框，对应 Fyne 的 widget.NewSelectEntry。
+ *
+ * 用于「单位」「分类」这类「给了几个常用值，但允许自定义」的字段。纯 <select>
+ * 做不到：库里已有的值不在常用列表里时，用户会发现自己无法保持原值——
+ * 打开表单看到的是别的选项，一保存就把数据改了。
+ *
+ * options 只影响补全候选，**不限制**输入。
+ */
+export function ComboInput({
+  value,
+  onChange,
+  options,
+  placeholder,
+  mono,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: readonly string[]
+  placeholder?: string
+  mono?: boolean
+}) {
+  const id = useComboId()
+  return (
+    <>
+      <input
+        className={inputCls}
+        list={id}
+        style={mono ? { fontFamily: 'Consolas, monospace' } : undefined}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <datalist id={id}>
+        {options.map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
+    </>
+  )
+}
+
+// ComboInput 需要把 list 绑到 input 上，故单独保留一个带 id 的实现
+function useComboId() {
+  const ref = useRef<string>('')
+  if (!ref.current) ref.current = `combo-${Math.random().toString(36).slice(2, 9)}`
+  return ref.current
+}
+
+export function Checkbox({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  disabled?: boolean
+}) {
+  return (
+    <label
+      className="flex h-[26px] cursor-pointer select-none items-center gap-1.5 text-[11.5px]"
+      style={disabled ? { opacity: 0.55, cursor: 'default' } : undefined}
+    >
+      <input
+        type="checkbox"
+        className="m-0 accent-[var(--color-primary)]"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      {label}
+    </label>
+  )
+}
+
+/** 数字输入：保留自由文本，失焦/提交时才校验，避免边打边报错。 */
+export function NumberInput({
+  value,
+  onChange,
+  placeholder,
+  step,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  step?: string
+}) {
+  return (
+    <input
+      className={inputCls + ' tabular-nums'}
+      inputMode="decimal"
+      step={step}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
+}
+
+/**
+ * 弹窗。
+ *
+ * 与 Fyne 的 dialog 对应，但不做「拖到边缘关掉」——桌面应用里点击遮罩关闭足够，
+ * 拖拽行为在小窗口下容易把表单半路丢掉。
+ *
+ * Esc 关闭、上锁遮罩、打开时锁 body 滚动。三个都不是装饰：编辑表单可能有很多行，
+ * 锁滚动能避免底层表格跟着一起滚。
+ */
+export function Modal({
+  title,
+  onClose,
+  children,
+  footer,
+  width = 440,
+}: {
+  title: string
+  onClose: () => void
+  children: ReactNode
+  footer?: ReactNode
+  width?: number
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.42)] p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="flex max-h-full w-full flex-col overflow-hidden rounded-[8px] bg-[var(--color-surface)] shadow-lg"
+        style={{ maxWidth: width }}
+      >
+        <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2.5">
+          <h2 className="text-[13px] font-semibold">{title}</h2>
+          <button
+            type="button"
+            aria-label="关闭"
+            className="text-[14px] leading-none text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto px-4 py-3.5">{children}</div>
+        {footer ? (
+          <footer className="flex justify-end gap-2 border-t border-[var(--color-border)] bg-[#fafbfd] px-4 py-2.5">
+            {footer}
+          </footer>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** 弹窗内的一行标签 + 控件。 */
+export function FormRow({
+  label,
+  children,
+  hint,
+}: {
+  label: string
+  children: ReactNode
+  hint?: string
+}) {
+  return (
+    <label className="mb-2.5 flex flex-col gap-[3px]">
+      <span className="text-[11px] text-[var(--color-fg-muted)]">{label}</span>
+      {children}
+      {hint ? <span className="text-[10.5px] text-[var(--color-fg-subtle)]">{hint}</span> : null}
+    </label>
+  )
+}
+
+export function FormError({ text }: { text: string }) {
+  if (!text) return null
+  return (
+    <div
+      role="alert"
+      className="mb-2.5 rounded-[6px] border border-[var(--color-danger)]/30 bg-[var(--color-danger-bg)] px-2.5 py-1.5 text-[11.5px] text-[var(--color-danger)]"
+    >
+      {text}
+    </div>
+  )
+}
+
+/** 二次确认。删除是不可撤销的，不能只靠一个「删除」按钮就执行。 */
+export function ConfirmDialog({
+  title,
+  message,
+  danger,
+  confirmLabel = '确定',
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string
+  message: ReactNode
+  danger?: boolean
+  confirmLabel?: string
+  busy?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <Modal
+      title={title}
+      onClose={onCancel}
+      width={360}
+      footer={
+        <>
+          <button
+            type="button"
+            disabled={busy}
+            className="inline-flex h-[26px] items-center rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[11.5px] hover:bg-[var(--color-canvas)]"
+            onClick={onCancel}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            className={
+              'inline-flex h-[26px] items-center rounded-[6px] px-3 text-[11.5px] text-white disabled:opacity-60 ' +
+              (danger
+                ? 'border border-[var(--color-danger)] bg-[var(--color-danger)]'
+                : 'border border-[var(--color-primary)] bg-[var(--color-primary)]')
+            }
+            onClick={onConfirm}
+          >
+            {busy ? '处理中…' : confirmLabel}
+          </button>
+        </>
+      }
+    >
+      <div className="text-[12px] leading-relaxed text-[var(--color-fg)]">{message}</div>
+    </Modal>
+  )
+}
+
+/**
+ * 搜索选择器：输入编码/名称过滤，点选一项。
+ *
+ * 对应 Fyne 的 internal/ui/searchselect.go。保留它的「四级解析阶梯」，
+ * 因为老用户的肌肉记忆是「直接把完整编码敲进去」：
+ *
+ *   1. 明确点选过 → 就是它
+ *   2. 输入文本与某项 label 忽略大小写相等 → 是它
+ *   3. 过滤后只剩一项 → 自动采纳（敲了个唯一编码，直接回车就能过）
+ *   4. 否则 → 未选定，调用方必须报错而不是猜一个
+ *
+ * 第 4 条是关键：**宁可不选，也不猜**。猜错会让用户把 BOM 挂到别的产品上。
+ */
+export function SearchSelect<T extends { id: number; label: string }>({
+  all,
+  value,
+  onChange,
+  placeholder = '输入编码/名称查询',
+  disabled,
+}: {
+  all: readonly T[]
+  value: T | null
+  onChange: (v: T | null) => void
+  placeholder?: string
+  disabled?: boolean
+}) {
+  const [text, setText] = useState('')
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  // value 由父级持有（清空选择时要一并清掉输入框），但输入过程是本地的：
+  // 受控成 value.label 会让用户没法编辑——每敲一个字都会被回显覆盖。
+  // 于是用「本地的上一次 value」做同步触发。
+  const [echo, setEcho] = useState<string | null>(null)
+  const seen = useRef<T | null>(null)
+  useEffect(() => {
+    if (seen.current === value) return
+    seen.current = value
+    if (value) setEcho(value.label)
+    else setText('')
+    setOpen(false)
+  }, [value])
+
+  const shown = text.trim() === '' ? [] : filter(all, text)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <input
+        className={inputCls}
+        value={echo ?? text}
+        placeholder={placeholder}
+        disabled={disabled}
+        onFocus={() => {
+          if (echo !== null) {
+            setText(echo)
+            setEcho(null)
+          }
+          if (text.trim() !== '') setOpen(true)
+        }}
+        onChange={(e) => {
+          setEcho(null)
+          setText(e.target.value)
+          setOpen(e.target.value.trim() !== '')
+        }}
+      />
+      {open && shown.length > 0 ? (
+        <ul className="absolute z-50 mt-1 max-h-[180px] w-full overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] py-0.5 shadow-md">
+          {shown.map((o) => (
+            <li key={o.id}>
+              <button
+                type="button"
+                className="block w-full px-2.5 py-1 text-left text-[11.5px] hover:bg-[var(--color-primary-subtle)]"
+                onClick={() => {
+                  onChange(o)
+                  setText(o.label)
+                  setEcho(o.label)
+                  setOpen(false)
+                }}
+              >
+                {o.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+function filter<T extends { label: string }>(all: readonly T[], q: string): T[] {
+  const n = q.trim().toLowerCase()
+  return all.filter((o) => o.label.toLowerCase().includes(n))
+}
+
+/**
+ * 把「输入框里现在是什么」解析成一个确定的对象，或 null。
+ *
+ * 与 SearchSelect 分开，是因为**解析必须在提交时做**，不能靠组件内部状态：
+ * 弹窗可能整段重挂载，组件状态不该是判定的唯一依据。
+ */
+export function resolvePick<T extends { id: number; label: string }>(
+  all: readonly T[],
+  picked: T | null,
+  text: string,
+): T | null {
+  if (picked) return picked
+  const t = text.trim().toLowerCase()
+  if (t === '') return null
+  const exact = all.find((o) => o.label.toLowerCase() === t)
+  if (exact) return exact
+  const m = all.filter((o) => o.label.toLowerCase().includes(t))
+  return m.length === 1 ? m[0] : null
+}
+
+/** 弹窗内两列栅格：短字段并排，省纵向空间。 */
+export function FormGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-x-2.5">{children}</div>
+}

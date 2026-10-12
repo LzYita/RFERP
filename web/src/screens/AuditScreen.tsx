@@ -23,7 +23,7 @@ interface AuditLog {
   created_at: string
 }
 
-const PAGE_SIZE = 20
+const DEFAULT_PAGE_SIZE = 20
 // 与 Fyne 版一致：一次取 500 条，筛选与分页都在这份快照内完成。
 // 服务端没有分页参数，加游标要改 API，超出本轮「不加端点」的范围。
 const FETCH_LIMIT = 500
@@ -32,6 +32,7 @@ export function AuditScreen() {
   const [logs, setLogs] = useState<AuditLog[] | null>(null)
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [q, setQ] = useState('')
   const [table, setTable] = useState('')
 
@@ -75,9 +76,9 @@ export function AuditScreen() {
     return rows
   }, [logs, q, table])
 
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const current = Math.min(page, pages)
-  const rows = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)
+  const rows = filtered.slice((current - 1) * pageSize, current * pageSize)
 
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
@@ -146,22 +147,22 @@ export function AuditScreen() {
             <thead>
               <tr>
                 <th style={{ width: 96 }}>时间</th>
-                <th style={{ width: 96 }}>对象</th>
-                <th style={{ width: 88 }}>动作</th>
+                <th className="mid" style={{ width: 88 }}>对象</th>
+                <th className="mid" style={{ width: 96 }}>动作</th>
                 <th>摘要</th>
-                <th style={{ width: 110 }}>操作人</th>
+                <th className="mid" style={{ width: 110 }}>操作人</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((l) => (
                 <tr key={l.id}>
                   <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(l.created_at)}</td>
-                  <td>{tableLabel(l.table_name)}</td>
-                  <td>{actionLabel(l.action)}</td>
+                  <td className="mid">{tableLabel(l.table_name)}</td>
+                  <td className="mid">{actionLabel(l.action)}</td>
                   <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
                     {shortSummary(l)}
                   </td>
-                  <td>{l.operator ?? '—'}</td>
+                  <td className="mid">{l.operator ?? '—'}</td>
                 </tr>
               ))}
               {rows.length === 0 && (
@@ -174,7 +175,19 @@ export function AuditScreen() {
             </tbody>
           </table>
         </div>
-        <Pagination total={filtered.length} shown={rows.length} page={current} pages={pages} onPage={setPage} unit="条" />
+        <Pagination
+        total={filtered.length}
+        shown={rows.length}
+        page={current}
+        pages={pages}
+        pageSize={pageSize}
+        onPage={setPage}
+        onPageSize={(n) => {
+          setPageSize(n)
+          setPage(1)
+        }}
+        unit="条"
+      />
       </Panel>
     </>
   )

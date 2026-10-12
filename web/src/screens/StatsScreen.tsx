@@ -222,11 +222,11 @@ function RankPanel({ title, rows, unit }: { title: string; rows: [string, number
             暂无数据
           </div>
         ) : (
-          <table className="data-table">
+          <table className="data-table is-compact">
             <tbody>
               {rows.map(([name, v], i) => (
                 <tr key={name + i}>
-                  <td style={{ width: 28, color: 'var(--color-fg-subtle)' }}>{i + 1}</td>
+                  <td className="mid" style={{ width: 28, color: 'var(--color-fg-subtle)' }}>{i + 1}</td>
                   <td>{name}</td>
                   <td style={{ width: '38%' }}>
                     <span
@@ -234,7 +234,7 @@ function RankPanel({ title, rows, unit }: { title: string; rows: [string, number
                       style={{ width: `${Math.round((v / max) * 100)}%` }}
                     />
                   </td>
-                  <td style={{ width: 72, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                  <td className="num" style={{ width: 72 }}>
                     {fmtQty(v)}
                     {unit}
                   </td>

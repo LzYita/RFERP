@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
-import { tableLabel, actionLabel } from '../lib/auditLabels'
+import { tableLabel, actionLabel, shortSummary } from '../lib/auditLabels'
 import { Badge, Panel, ScreenError, classifyLoadError, fmtQty, shortTime } from '../components/ui'
 
 interface Part {
@@ -36,8 +36,11 @@ interface Batch {
 interface AuditLog {
   id: number
   table_name: string
+  record_id: number
   action: string
   operator?: string
+  new_data?: Record<string, unknown> | null
+  old_data?: Record<string, unknown> | null
   created_at: string
 }
 
@@ -133,24 +136,22 @@ useEffect(() => {
                 暂无预警
               </div>
             ) : (
-              <table className="data-table">
+<table className="data-table is-compact">
                 <thead>
                   <tr>
-                    <th>编码</th>
+                    <th style={{ width: 96 }}>编码</th>
                     <th>名称</th>
-                    <th style={{ textAlign: 'right' }}>库存</th>
-                    <th>状态</th>
+                    <th className="num" style={{ width: 64 }}>库存</th>
+                    <th className="mid" style={{ width: 68 }}>状态</th>
                   </tr>
                 </thead>
                 <tbody>
                   {alerts.slice(0, 8).map((p) => (
                     <tr key={p.id}>
-                      <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
+<td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
                       <td>{p.name}</td>
-                      <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                        {fmtQty(p.stock_qty)}
-                      </td>
-                      <td>
+                      <td className="num">{fmtQty(p.stock_qty)}</td>
+                      <td className="mid">
                         <Badge kind={p.status !== 1 ? 'neutral' : 'warn'}>
                           {p.status !== 1 ? '停用' : '低库存'}
                         </Badge>
@@ -174,22 +175,34 @@ useEffect(() => {
                 暂无操作记录
               </div>
             ) : (
-              <table className="data-table">
+<table className="data-table is-compact">
                 <thead>
                   <tr>
-                    <th style={{ width: 76 }}>时间</th>
-                    <th>对象</th>
-                    <th style={{ width: 60 }}>动作</th>
-                    <th style={{ width: 76 }}>操作人</th>
+                    <th style={{ width: 84 }}>时间</th>
+                    <th className="mid" style={{ width: 68 }}>对象</th>
+                    <th className="mid" style={{ width: 76 }}>动作</th>
+                    <th>摘要</th>
+                    <th className="mid" style={{ width: 76 }}>操作人</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(logs ?? []).map((l) => (
                     <tr key={l.id}>
                       <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(l.created_at)}</td>
-                      <td>{tableLabel(l.table_name)}</td>
-                      <td>{actionLabel(l.action)}</td>
-                      <td>{l.operator ?? '—'}</td>
+                      <td className="mid">{tableLabel(l.table_name)}</td>
+                      <td className="mid">{actionLabel(l.action)}</td>
+                      <td
+                        style={{
+                          fontFamily: 'Consolas, monospace',
+                          fontSize: 12,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {shortSummary(l)}
+                      </td>
+                      <td className="mid">{l.operator ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>

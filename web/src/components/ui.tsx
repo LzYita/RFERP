@@ -114,19 +114,22 @@ export function PageBox({
   onClick,
   active,
   disabled,
+  title,
 }: {
   children: ReactNode
   onClick: () => void
   active?: boolean
   disabled?: boolean
+  title?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={[
-        'grid h-[22px] min-w-[22px] place-items-center rounded-[4px] border text-[11.5px] disabled:opacity-40',
+        'grid h-[22px] min-w-[22px] place-items-center rounded-[4px] border px-1 text-[11.5px] disabled:opacity-40',
         active
           ? 'border-[var(--color-primary)] bg-[var(--color-primary)] font-semibold text-white'
           : 'border-[var(--color-border)] bg-[var(--color-surface)]',
@@ -140,44 +143,132 @@ export function PageBox({
 /**
  * 分页条。
  *
- * 抽出来是因为三张表都要它，而每处重写一遍页码算法很容易在某张屏上
- * 漏掉「当前页被过滤条件缩小后越界」这个边界——current 已经夹过一次。
+ * 三件套：总数/页码导航、每页条数选择、跳页输入。
+ *
+ * 默认 20 条的依据（实测默认窗口 1360x860）：表格可视区 605px、表头 29px、
+ * 单行 31px，恰好容纳 18 行。10 条会空出 298px——一大片留白会让界面显得没做完；
+ * 20 条填满，是这几个档位里最合适的默认。
  */
 export function Pagination({
   total,
   shown,
   page,
   pages,
+  pageSize,
   onPage,
+  onPageSize,
   unit = '条',
 }: {
   total: number
   shown: number
   page: number
   pages: number
+  pageSize: number
   onPage: (n: number) => void
+  onPageSize: (n: number) => void
   unit?: string
 }) {
   return (
-    <div className="flex items-center gap-2.5 border-t border-[var(--color-border)] px-2.5 py-2 text-[11.5px] text-[var(--color-fg-muted)]">
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-t border-[var(--color-border)] px-2.5 py-2 text-[11.5px] text-[var(--color-fg-muted)]">
       <span>
         共 {total} {unit} · 本页 {shown} {unit}
       </span>
+
+      {/* 每页条数 */}
+      <label className="flex items-center gap-1">
+        每页
+        <select
+          value={pageSize}
+          onChange={(e) => {
+            // 换档后回到第一页：留在第 5 页而每页从 10 变 30，
+            // 用户会突然看到一个不相干的页码。
+            onPageSize(Number(e.target.value))
+          }}
+          aria-label="每页显示条数"
+          className="h-[22px] rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-1 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
+        >
+          {[10, 20, 30].map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        {unit}
+      </label>
+
+      {/* 跳页 */}
+      {pages > 1 && (
+        <label className="flex items-center gap-1">
+          跳至
+          <input
+            type="number"
+            min={1}
+            max={pages}
+            defaultValue={page}
+            key={page}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              const n = Number((e.target as HTMLInputElement).value)
+              if (!Number.isFinite(n)) return
+              // 越界就夹回去，而不是跳到一个空白页
+              onPage(Math.min(pages, Math.max(1, Math.round(n))))
+            }}
+            onBlur={(e) => {
+              // 失焦时也归位，避免输入框里停着一个无效数字
+              e.target.value = String(page)
+            }}
+            aria-label="跳转到页码"
+            className="h-[22px] w-[46px] rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-1 text-center text-[11.5px] outline-none focus:border-[var(--color-primary)]"
+          />
+          {unit === '条' ? '页' : ''}
+        </label>
+      )}
+
       <div className="ml-auto flex items-center gap-1">
-        <PageBox onClick={() => onPage(1)} disabled={page === 1}>
+        <PageBox onClick={() => onPage(1)} disabled={page === 1} title="第一页">
+          «
+        </PageBox>
+        <PageBox onClick={() => onPage(Math.max(1, page - 1))} disabled={page === 1} title="上一页">
           ‹
         </PageBox>
-        {Array.from({ length: Math.min(pages, 5) }, (_, i) => i + 1).map((n) => (
-          <PageBox key={n} onClick={() => onPage(n)} active={n === page}>
-            {n}
-          </PageBox>
+        {pageWindow(page, pages).map((n, i) => (
+          <span key={i} className="contents">
+            {n === '…' ? (
+              <span className="px-0.5 text-[var(--color-fg-subtle)]">…</span>
+            ) : (
+              <PageBox key={n} onClick={() => onPage(n as number)} active={n === page}>
+                {n}
+              </PageBox>
+            )}
+          </span>
         ))}
-        <PageBox onClick={() => onPage(pages)} disabled={page === pages}>
+        <PageBox onClick={() => onPage(Math.min(pages, page + 1))} disabled={page === pages} title="下一页">
           ›
+        </PageBox>
+        <PageBox onClick={() => onPage(pages)} disabled={page === pages} title="最后一页">
+          »
         </PageBox>
       </div>
     </div>
   )
+}
+
+/**
+ * 页码窗口：始终显示首末页，当前页两侧各留一页，其余折叠为「…」。
+ *
+ * 原来固定取 1..5，在 30 条/页、几百条数据时会算出几十页，
+ * 用户只能一格格点——这就是要加跳页输入的原因。
+ */
+function pageWindow(page: number, pages: number): (number | '…')[] {
+  if (pages <= 7) return Array.from({ length: pages }, (_, i) => i + 1)
+  const out: (number | '…')[] = [1]
+  const from = Math.max(2, page - 1)
+  const to = Math.min(pages - 1, page + 1)
+  if (from > 2) out.push('…')
+  for (let i = from; i <= to; i++) out.push(i)
+  if (to < pages - 1) out.push('…')
+  out.push(pages)
+  return out
 }
 
 /** 页头 + 右侧动作区，三张屏共用。 */

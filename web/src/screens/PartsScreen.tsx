@@ -23,7 +23,7 @@ interface Part {
   updated_at: string
 }
 
-const PAGE_SIZE = 10
+const DEFAULT_PAGE_SIZE = 20
 
 /**
  * 零件列表：Round 1 的「一个真实列表屏」关口。
@@ -41,6 +41,7 @@ export function PartsScreen() {
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [q, setQ] = useState('')
   const [lowOnly, setLowOnly] = useState(false)
 
@@ -75,9 +76,9 @@ export function PartsScreen() {
     return rows
   }, [parts, q, lowOnly])
 
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const current = Math.min(page, pages)
-  const rows = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)
+  const rows = filtered.slice((current - 1) * pageSize, current * pageSize)
 
   const allChecked = rows.length > 0 && rows.every((p) => selected.has(p.id))
 
@@ -174,16 +175,17 @@ export function PartsScreen() {
           <table className="data-table">
             <thead>
               <tr>
-                <th style={{ width: 34 }}>
+                <th className="mid" style={{ width: 34 }}>
                   <input type="checkbox" checked={allChecked} onChange={toggleAll} aria-label="全选本页" />
                 </th>
                 <th>编码</th>
                 <th>名称</th>
                 <th>规格</th>
-                <th style={{ textAlign: 'right' }}>库存</th>
-                <th>状态</th>
+                <th className="num">库存</th>
+                <th className="num">预警值</th>
+                <th className="mid">状态</th>
                 <th>更新时间</th>
-                <th className="col-fix" style={{ width: 120 }}>
+                <th className="mid col-fix" style={{ width: 120 }}>
                   操作
                 </th>
               </tr>
@@ -193,7 +195,7 @@ export function PartsScreen() {
                 const low = p.stock_qty <= p.warn_qty
                 return (
                   <tr key={p.id} data-selected={selected.has(p.id)}>
-                    <td>
+                    <td className="mid">
                       <input
                         type="checkbox"
                         checked={selected.has(p.id)}
@@ -205,17 +207,22 @@ export function PartsScreen() {
                     <td>{p.name}</td>
                     <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.spec ?? '—'}</td>
                     {/* 单位并入库存，省一列 */}
-                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                    <td className="num">
                       {fmtQty(p.stock_qty)} {p.unit}
                     </td>
-                    <td>
+                    {/* 预警值：与库存并排才看得出差多少。藏在详情里的话，
+                        用户只会看到"低库存"两个字，不知道差多少、补多少。 */}
+                    <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
+                      {fmtQty(p.warn_qty)} {p.unit}
+                    </td>
+                    <td className="mid">
                       <Badge kind={p.status === 1 && !low ? 'ok' : low ? 'warn' : 'neutral'}>
                         {p.status !== 1 ? '停用' : low ? '低库存' : '正常'}
                       </Badge>
                     </td>
                     {/* 去年份：年份由筛选/排序语境承担 */}
                     <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(p.updated_at)}</td>
-                    <td className="col-fix">
+                    <td className="mid col-fix">
                       <button className="mr-2 text-[var(--color-primary)]">编辑</button>
                       <button className="text-[var(--color-primary)]">更多 ▾</button>
                     </td>
@@ -224,7 +231,7 @@ export function PartsScreen() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                  <td colSpan={9} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                     没有符合条件的零件
                   </td>
                 </tr>
@@ -234,7 +241,18 @@ export function PartsScreen() {
         </div>
 
         {/* 分页 */}
-        <Pagination total={filtered.length} shown={rows.length} page={current} pages={pages} onPage={setPage} />
+        <Pagination
+        total={filtered.length}
+        shown={rows.length}
+        page={current}
+        pages={pages}
+        pageSize={pageSize}
+        onPage={setPage}
+        onPageSize={(n) => {
+          setPageSize(n)
+          setPage(1)
+        }}
+      />
       </section>
     </>
   )

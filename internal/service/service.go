@@ -63,6 +63,11 @@ const (
 	maxLossRate     = 100.0
 	quantityScale   = 100.0
 	quantityEpsilon = 1e-9
+
+	// batchStatusPending 是新建批次的唯一合法初始状态。状态字面量在 Go 侧
+	// 至今没有命名常量，散落在本文件多处；这里先把「新建」这一处命名，
+	// 其余待后续统一（见 docs/plans 的 Round 4 记录）。
+	batchStatusPending = 0
 )
 
 func validatePlanQty(qty int) error {
@@ -474,6 +479,17 @@ func (s *Service) CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error
 	if err := validatePlanQty(b.PlanQty); err != nil {
 		return nil, err
 	}
+	// 状态由服务端定，不接受客户端指定。
+	//
+	// 缺这一条时，任何有 Production.CreateBatch 权限的账号（**包括生产员，
+	// 不是只有管理员**）都能 POST status=2 建出一个"已完成"批次：它不会触发
+	// 任何库存扣减（扣减只发生在 UpdateBatchStatus 转到 2 的路径上），
+	// consumption_recorded 停在 0，于是又永远撤销不掉
+	//（批次缺少冻结的库存消耗记录，无法安全撤销）。等于凭空造出一批不耗料的
+	// 完成记录，库存账实不符且无从纠正。
+	//
+	// 前端本来就恒发 status:0（web/src/lib/batch.ts），这里是第二道。
+	b.Status = batchStatusPending
 	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		prod, err := tx.GetProduct(b.ProductID)
 		if err != nil {

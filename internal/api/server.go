@@ -132,8 +132,10 @@ func (s *Server) Handler() http.Handler {
 	// 「应用」会替换正在运行的 exe，必须带 confirm；不配置更新源时这三个端点
 	// 仍可调用，但一律返回 enabled:false / 400，不发任何网络请求。
 	mux.HandleFunc("GET /api/update/check", s.handleCheckUpdate)
-	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
-	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
+	// download/apply 必须带权限点：之前这里是空字符串，而 auth() 对空权限点
+	// 直接放行 —— 任何登录用户（含只读 viewer）都能替换正在运行的程序。
+	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, "System.DownloadUpdate"))
+	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, "System.ApplyUpdate"))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

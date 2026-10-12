@@ -455,7 +455,17 @@ func runFirstRunSetup(base *config.Config) {
 		go finishFirstRunSetup(setupCtx, base, backend, token)
 	}))
 
-	srv := &http.Server{Handler: backend, ReadHeaderTimeout: 10 * time.Second}
+	// 首启阶段的 handler 是 cmd 侧自建的 mux，不经过 Server.Handler()，
+	// 因此**不会**自动带上启动凭据闸门。必须显式套一层，否则在本机任何
+	// 进程都能调用 /api/setup/apply 改写配置、/api/setup/create-admin
+	// 建管理员——而首启窗口的默认宽度只有 720，用户根本不会注意到后台
+	// 发生了什么。
+	//
+	// WebView 侧不受影响：下面的 embeddedServer 会给每个请求注入 Cookie。
+	srv := &http.Server{
+		Handler:           api.StartupGate(token, backend),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go srv.Serve(ln)
 	defer srv.Close()
 

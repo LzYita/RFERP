@@ -60,6 +60,13 @@ var permissions = []UseCasePermission{
 	// Stats / dashboard 只读
 	{Name: "Stats.GetStockStats", Module: auth.ModuleStats, Access: auth.AccessRead},
 
+	// 应用自身维护。AccessWrite 的三项都会落到「替换可执行文件」，因此只有
+	// ModuleSystem.AccessWrite（= admin）能通过；download/apply 手工不点确认
+	// 也换不来权限。
+	{Name: "System.CheckUpdate", Module: auth.ModuleSystem, Access: auth.AccessRead},
+	{Name: "System.DownloadUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
+	{Name: "System.ApplyUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
+
 	// Backup / export / clear
 	{Name: "Backup.DataDir", Module: auth.ModuleBackup, Access: auth.AccessRead},
 	{Name: "Backup.SetDataDir", Module: auth.ModuleBackup, Access: auth.AccessWrite},

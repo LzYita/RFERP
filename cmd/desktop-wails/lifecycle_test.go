@@ -19,7 +19,7 @@ func TestFixedPortConflictGivesActionableError(t *testing.T) {
 	defer blocker.Close()
 	addr := blocker.Addr().String()
 
-	_, _, err = serveOn(&stubApps{}, addr)
+	_, _, err = serveOn(&stubApps{}, addr, "")
 	if err == nil {
 		t.Fatal("端口被占用时 serveOn 应当失败")
 	}
@@ -46,7 +46,7 @@ func TestSuggestedPortIsActuallyFree(t *testing.T) {
 func TestKernelAllocatedPortNeverConflicts(t *testing.T) {
 	var addrs []string
 	for i := 0; i < 5; i++ {
-		emb, stop, err := serveOn(&stubApps{}, "127.0.0.1:0")
+		emb, stop, err := serveOn(&stubApps{}, "127.0.0.1:0", "")
 		if err != nil {
 			t.Fatalf("第 %d 次启动失败: %v", i, err)
 		}
@@ -69,7 +69,7 @@ func TestKernelAllocatedPortNeverConflicts(t *testing.T) {
 
 // 停止后端口必须释放，否则反复启停会耗尽端口（Round 1 关口：异常退出清理）。
 func TestStopReleasesFixedPortForReuse(t *testing.T) {
-	emb, stop, err := serveOn(&stubApps{}, "127.0.0.1:0")
+	emb, stop, err := serveOn(&stubApps{}, "127.0.0.1:0", "")
 	if err != nil {
 		t.Fatal(err)
 	}

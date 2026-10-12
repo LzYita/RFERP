@@ -35,7 +35,7 @@ func startWithDB(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = res.Close() })
 
-	emb, stop, err := serve(res.Apps)
+	emb, stop, err := serve(res.Apps, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}

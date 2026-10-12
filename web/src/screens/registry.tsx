@@ -15,6 +15,7 @@ import { BOMScreen } from './BOMScreen'
 import { BatchScreen } from './BatchScreen'
 import { PlaceholderScreen } from './PlaceholderScreen'
 import { StatsScreen } from './StatsScreen'
+import { UsersScreen } from './UsersScreen'
 
 /**
  * 每个条目返回的是 **JSX 元素**，不是组件本身。
@@ -24,7 +25,19 @@ import { StatsScreen } from './StatsScreen'
  * 切屏时挂载的 hook 数量随之变化，React 直接抛 #310（渲染的 hook 比上次多），
  * 整页白屏——而且 TypeScript 不会报错，只有真跑起来才看得见。
  */
-type Factory = () => ReactNode
+/**
+ * 工厂拿得到当前用户。
+ *
+ * 用户管理屏需要它做两个自我守卫（不能停用/删除/降级自己），Fyne 版读的是
+ * uth.Current()。Web 侧原本没有任何屏拿得到 me——它只被 AppShell 持有，
+ * 屏之间没有上下文。与其再加一层 Context（为一处用法引入新的跨屏依赖），
+ * 不如给工厂加一个参数。
+ */
+export interface ScreenContext {
+  meId: number
+}
+
+type Factory = (ctx: ScreenContext) => ReactNode
 
 export const REGISTRY: Record<ModuleKey, Factory> = {
   dashboard: () => <DashboardScreen />,
@@ -37,11 +50,10 @@ export const REGISTRY: Record<ModuleKey, Factory> = {
   audit: () => <AuditScreen />,
   // Round 5 交付；且依赖目录枚举端点替代 nativefiledialog。
   backup: () => <PlaceholderScreen title="备份导出" />,
-  // Round 6 交付用户与权限矩阵。
-  users: () => <PlaceholderScreen title="用户管理" />,
+  users: (ctx) => <UsersScreen meId={ctx.meId} />,
 }
 
-export function renderScreen(key: string): ReactNode {
+export function renderScreen(key: string, ctx: ScreenContext): ReactNode {
   const factory = REGISTRY[key as ModuleKey]
-  return factory ? factory() : <PlaceholderScreen title="设置" />
+  return factory ? factory(ctx) : <PlaceholderScreen title="设置" />
 }

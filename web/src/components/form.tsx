@@ -157,6 +157,62 @@ export function Checkbox({
   )
 }
 
+/**
+ * 口令输入。
+ *
+ * Round 6 之前没有这个基元，于是 LoginScreen、SetupScreen 各手写了一份
+ * <input type="password">，用的是自己复制的 className——与 TextInput 的
+ * 样式已经开始漂移。收在这里，带上「显示/隐藏」眼睛按钮。
+ *
+ * 两个要点：
+ *  - Edge/WebView2 在字段有内容时会自己画一个 `::-ms-reveal`，和我们的眼睛
+ *    并排出现且随焦点闪烁。`index.css` 里用 `::-ms-reveal { display:none }`
+ *    屏蔽掉，别在这里重复处理。
+ *  - 眼睛按钮是 `type="button"`，不包在 <label> 里：包进去会点一下就切换，
+ *    而用户点它多半是想聚焦输入框。
+ */
+export function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+  autoFocus,
+  onEnter,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  autoFocus?: boolean
+  onEnter?: () => void
+}) {
+  const [shown, setShown] = useState(false)
+  return (
+    <div className="relative">
+      <input
+        type={shown ? 'text' : 'password'}
+        className={inputCls + ' pr-7'}
+        value={value}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && onEnter) {
+            e.preventDefault()
+            onEnter()
+          }
+        }}
+      />
+      <button
+        type="button"
+        aria-label={shown ? '隐藏密码' : '显示密码'}
+        className="absolute right-0 top-0 flex h-[26px] w-7 items-center justify-center text-[12px] leading-none text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
+        onClick={() => setShown((s) => !s)}
+      >
+        {shown ? '🙈' : '👁'}
+      </button>
+    </div>
+  )
+}
+
 /** 数字输入：保留自由文本，失焦/提交时才校验，避免边打边报错。 */
 export function NumberInput({
   value,

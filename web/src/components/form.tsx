@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 /**
  * 列表屏的输入与弹层基元。
@@ -106,7 +106,9 @@ export function ComboInput({
   placeholder?: string
   mono?: boolean
 }) {
-  const id = useComboId()
+  // useId 而不是 Math.random()：后者在渲染期求值是纯度违规，且每次重渲染都会
+  // 换一个 id。datalist 与 input 的 list 属性虽能对上，但没有理由让身份漂移。
+  const id = useId()
   return (
     <>
       <input
@@ -124,13 +126,6 @@ export function ComboInput({
       </datalist>
     </>
   )
-}
-
-// ComboInput 需要把 list 绑到 input 上，故单独保留一个带 id 的实现
-function useComboId() {
-  const ref = useRef<string>('')
-  if (!ref.current) ref.current = `combo-${Math.random().toString(36).slice(2, 9)}`
-  return ref.current
 }
 
 export function Checkbox({
@@ -374,6 +369,10 @@ export function SearchSelect<T extends { id: number; label: string }>({
   // value 由父级持有（清空选择时要一并清掉输入框），但输入过程是本地的：
   // 受控成 value.label 会让用户没法编辑——每敲一个字都会被回显覆盖。
   // 于是用「本地的上一次 value」做同步触发。
+  //
+  // 这个 setState-in-effect 是 lint 会报的那一类，属于刻意取舍：要同时满足
+  // 「父级能清空」与「用户能自由输入」，就必须有一条从 prop 回灌本地的路径。
+  // 纯派生的写法（直接用 value.label）会把输入框锁死。
   const [echo, setEcho] = useState<string | null>(null)
   const seen = useRef<T | null>(null)
   useEffect(() => {

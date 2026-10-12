@@ -2,7 +2,6 @@ package repository
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -68,5 +67,4 @@ func TestTranslatePassesThroughOthers(t *testing.T) {
 	if twice.Error() != once.Error() {
 		t.Errorf("二次翻译改动了文案：%q -> %q", once.Error(), twice.Error())
 	}
-	fmt.Sprint(twice) // 保活 fmt 导入
 }

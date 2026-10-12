@@ -135,7 +135,7 @@ export function Checkbox({
   disabled,
 }: {
   checked: boolean
-  onChange: (v: boolean) => void
+  onChange?: (v: boolean) => void
   label: string
   disabled?: boolean
 }) {
@@ -148,8 +148,9 @@ export function Checkbox({
         type="checkbox"
         className="m-0 accent-[var(--color-primary)]"
         checked={checked}
+        // 只读展示（disabled）时 onChange 可以不给——它本来就点不动
         disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={(e) => onChange?.(e.target.checked)}
       />
       {label}
     </label>
@@ -162,17 +163,20 @@ export function NumberInput({
   onChange,
   placeholder,
   step,
+  autoFocus,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   step?: string
+  autoFocus?: boolean
 }) {
   return (
     <input
       className={inputCls + ' tabular-nums'}
       inputMode="decimal"
       step={step}
+      autoFocus={autoFocus}
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}

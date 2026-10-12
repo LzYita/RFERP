@@ -3,6 +3,7 @@ import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
+import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
 import { ConfirmDialog } from '../components/form'
 import {
   Badge,
@@ -64,6 +65,12 @@ export function PartsScreen() {
   const [formErr, setFormErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<Part | null>(null)
+  // 入库 / 盘点 / 批量。三个都是 Round 3 之前完全不存在的入口 ——
+  // 后端端点与权限点早就有了，只差 UI。
+  const [stockFor, setStockFor] = useState<Part | null>(null)
+  const [stockMode, setStockMode] = useState<StockMode>('in')
+  const [batchInOpen, setBatchInOpen] = useState(false)
+  const [batchDelList, setBatchDelList] = useState<Part[] | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -161,6 +168,74 @@ export function PartsScreen() {
     }
   }
 
+  function openStock(p: Part, mode: StockMode) {
+    setStockFor(p)
+    setStockMode(mode)
+    setFormErr('')
+  }
+
+  async function doStock(qty: number) {
+    if (!stockFor) return
+    setBusy(true)
+    setFormErr('')
+    try {
+      if (stockMode === 'in') await partsApi.stockIn(stockFor.id, qty)
+      else await partsApi.adjustStock(stockFor.id, qty)
+      setStockFor(null)
+      await reload()
+    } catch (e) {
+      setFormErr(e instanceof Error ? e.message : '操作失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 批量入库：对所选每个零件各加 qty。逐个 await，中途失败不吞掉前面的结果。 */
+  async function doBatchStockIn(ids: number[], qty: number) {
+    setBusy(true)
+    setFormErr('')
+    try {
+      for (const id of ids) {
+        await partsApi.stockIn(id, qty)
+      }
+      setBatchInOpen(false)
+      setSelected(new Set())
+      await reload()
+    } catch (e) {
+      // 已成功的部分不会回滚——库存变动本身逐条入审计，没有"整体撤销"这回事。
+      // 这里如实说明已经做了一半。
+      setFormErr(
+        (e instanceof Error ? e.message : '批量入库失败') + '（已完成的零件不会回滚）',
+      )
+      setBatchInOpen(false)
+      await reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doBatchDelete() {
+    if (!batchDelList) return
+    setBusy(true)
+    setFormErr('')
+    try {
+      for (const p of batchDelList) {
+        await partsApi.remove(p.id)
+      }
+      setSelected(new Set())
+      setBatchDelList(null)
+      await reload()
+    } catch (e) {
+      setFormErr(
+        (e instanceof Error ? e.message : '批量删除失败') + '（已删除的不会回滚）',
+      )
+      setBatchDelList(null)
+      await reload()
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function doDelete() {
     if (!deleting) return
     setBusy(true)
@@ -237,9 +312,13 @@ export function PartsScreen() {
             取消选择
           </button>
           <div className="ml-auto flex gap-2">
-            <Btn>批量导出</Btn>
-            <Btn primary>批量入库</Btn>
-            <Btn danger>批量删除</Btn>
+            <Btn primary onClick={() => setBatchInOpen(true)} disabled={selected.size === 0}>
+              批量入库
+            </Btn>
+            <Btn danger onClick={() => setBatchDelList(rows.filter((p) => selected.has(p.id)))}
+              disabled={selected.size === 0}>
+              批量删除
+            </Btn>
           </div>
         </div>
       )}
@@ -311,6 +390,20 @@ export function PartsScreen() {
                           >
                             编辑
                           </button>
+                          {/* 库存变动与主数据编辑分开成两个动作：
+                              编辑表单里库存是只读的。 */}
+                          <button
+                            className="mr-2 text-[var(--color-primary)]"
+                            onClick={() => openStock(p, 'in')}
+                          >
+                            入库
+                          </button>
+                          <button
+                            className="mr-2 text-[var(--color-primary)]"
+                            onClick={() => openStock(p, 'adjust')}
+                          >
+                            盘点
+                          </button>
                           <button
                             className="text-[var(--color-primary)]"
                             onClick={() => setDeleting(p)}
@@ -361,6 +454,45 @@ export function PartsScreen() {
           err={formErr}
           onSubmit={submit}
           onClose={() => setFormOpen(false)}
+        />
+      ) : null}
+
+      {stockFor ? (
+        <StockModal
+          part={stockFor}
+          mode={stockMode}
+          busy={busy}
+          err={formErr}
+          onSubmit={doStock}
+          onClose={() => setStockFor(null)}
+        />
+      ) : null}
+
+      {batchInOpen ? (
+        <BatchStockInModal
+          items={rows.filter((p) => selected.has(p.id))}
+          busy={busy}
+          err={formErr}
+          onSubmit={doBatchStockIn}
+          onClose={() => setBatchInOpen(false)}
+        />
+      ) : null}
+
+      {batchDelList ? (
+        <ConfirmDialog
+          title="确认批量删除"
+          danger
+          busy={busy}
+          message={
+            <>
+              确定删除选中的 <b>{batchDelList.length}</b> 个零件？
+              <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+                若其中任一被 BOM 引用，整个操作会中断，且已删除的不会回滚。
+              </div>
+            </>
+          }
+          onConfirm={doBatchDelete}
+          onCancel={() => setBatchDelList(null)}
         />
       ) : null}
 

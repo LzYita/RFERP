@@ -3,7 +3,16 @@ import { AppShell } from './components/AppShell'
 import { LoginScreen } from './screens/LoginScreen'
 import { SetupScreen } from './screens/SetupScreen'
 import { renderScreen } from './screens/registry'
-import { api, getToken, logout, setToken, setup, usePermissions, type Me } from './lib/api'
+import {
+  api,
+  getToken,
+  logout,
+  onUnauthorized,
+  setToken,
+  setup,
+  usePermissions,
+  type Me,
+} from './lib/api'
 
 const VERSION = '1.3.0'
 
@@ -23,6 +32,9 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [needsSetup, setNeedsSetup] = useState(false)
   const [screen, setScreen] = useState<Screen>({ kind: 'login' })
+  // 会话在别处失效时给一句说明；否则用户只看到自己被弹回登录页，
+  // 不知道是超时了、被踢了，还是程序出错了。
+  const [sessionNotice, setSessionNotice] = useState('')
   const { modules, reload } = usePermissions()
 
   // 会话 token 只在内存里，进程启动时必然为空 —— 登录页一定会出现。
@@ -63,6 +75,7 @@ export default function App() {
     setToken(token)
     setMe(user)
     setNeedsSetup(false)
+    setSessionNotice('')
     setScreen({ kind: 'shell', key: 'dashboard' })
     reload()
   }, [reload])
@@ -86,6 +99,20 @@ export default function App() {
     setScreen({ kind: 'login' })
   }, [])
 
+  // 会话在别处失效（空闲超时、绝对上限到了、管理员改角色强制下线）时，
+  // api 层只清 token 并广播；界面归谁负责、要不要提示，由这里决定。
+  //
+  // 没有这条时：界面停在过期前的旧数据上，看起来一切正常，点什么都是 401。
+  useEffect(
+    () =>
+      onUnauthorized(() => {
+        setMe(null)
+        setScreen({ kind: 'login' })
+        setSessionNotice('登录状态已失效，请重新登录')
+      }),
+    [],
+  )
+
   if (!ready) {
     return <div className="grid h-full place-items-center text-[13px] text-[var(--color-fg-muted)]">正在加载…</div>
   }
@@ -96,7 +123,7 @@ export default function App() {
   }
 
   if (screen.kind !== 'shell' || !me) {
-    return <LoginScreen onLoggedIn={onLoggedIn} version={VERSION} />
+    return <LoginScreen onLoggedIn={onLoggedIn} version={VERSION} notice={sessionNotice} />
   }
 
   const activeKey = screen.key

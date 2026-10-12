@@ -80,7 +80,7 @@ func TestLogoutInvalidatesToken(t *testing.T) {
 	}
 }
 
-// 空闲超时：超过 30min 没有请求就失效。
+// 超过空闲超时未使用则失效
 func TestSessionExpiresAfterIdleTimeout(t *testing.T) {
 	s := newTestServer(t)
 	tok := issue(t, s, user(1, "admin", auth.RoleAdmin))
@@ -220,5 +220,29 @@ func TestMissingAuthorizationHeader(t *testing.T) {
 	}
 	if w := getWithToken(t, s, "GET", "/api/me", "garbage"); w.Code != http.StatusUnauthorized {
 		t.Errorf("畸形 token = %d, want 401", w.Code)
+	}
+}
+
+// 会话时长是产品决策，代码里是常量。锁住当前值，免得以后有人"顺手调整"
+// 时没人注意到这会改变用户的登录习惯。
+//
+// 2026-10-12 由用户从 12h/30min 改为 24h/2h。
+func TestSessionTTLs(t *testing.T) {
+	if sessionAbsoluteTTL != 24*time.Hour {
+		t.Errorf("绝对上限 = %v, want 24h", sessionAbsoluteTTL)
+	}
+	if sessionIdleTTL != 2*time.Hour {
+		t.Errorf("空闲超时 = %v, want 2h", sessionIdleTTL)
+	}
+	// 绝对上限必须严格大于空闲超时，否则「滑动续期」这个说法不成立：
+	// 两者相等时滑动窗口永远追不上固定上限。
+	if sessionAbsoluteTTL <= sessionIdleTTL {
+		t.Errorf("绝对上限(%v) 必须大于空闲超时(%v)，否则滑动续期失效",
+			sessionAbsoluteTTL, sessionIdleTTL)
+	}
+	// 空闲超时应短于绝对上限的合理比例，否则「滑动」没有意义。
+	if sessionIdleTTL*4 > sessionAbsoluteTTL {
+		t.Errorf("空闲超时 %v 相对绝对上限 %v 过长，滑动窗口形同虚设",
+			sessionIdleTTL, sessionAbsoluteTTL)
 	}
 }

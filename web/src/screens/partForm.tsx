@@ -11,6 +11,7 @@ import {
 } from '../components/form'
 import { Btn } from '../components/ui'
 import { PART_TYPES, opt, type Part, type PartWrite } from '../lib/catalog'
+import { parseQuantity, hasTooManyDecimals } from '../lib/num'
 
 /**
  * 零件新增 / 编辑弹窗。
@@ -81,11 +82,7 @@ export function partToDraft(p: Part): PartDraft {
 
 /** 小数位超过 2 位一律拒绝，与后端 representableQuantity 同规则。 */
 export function tooManyDecimals(t: string): boolean {
-  const m = /^(\d*)(?:\.(\d*))?$/.exec(t.trim())
-  if (!m) return false
-  const frac = m[2] ?? ''
-  // 末尾多余的 0 不算精度：「1.500」和「1.5」是同一个数
-  return frac.replace(/0+$/, '').length > 2
+  return hasTooManyDecimals(t)
 }
 
 export function validatePartDraft(
@@ -94,21 +91,27 @@ export function validatePartDraft(
 ): { ok: true } | { ok: false; msg: string } {
   if (!d.code.trim()) return { ok: false, msg: '请填写零件编码' }
   if (!d.name.trim()) return { ok: false, msg: '请填写零件名称' }
-  if (tooManyDecimals(d.warn)) return { ok: false, msg: '预警库存最多支持两位小数' }
 
+  // 预警值在新增与编辑时都要校验
+  const warn = parseQuantity(d.warn, '预警库存')
+  if (!warn.ok) {
+    return {
+      ok: false,
+      msg: warn.msg.includes('只能填数字') ? '预警库存必须是非负有效数值' : warn.msg,
+    }
+  }
+  if (warn.value < 0) return { ok: false, msg: '预警库存必须是非负有效数值' }
+
+  // 库存只在新增时可填；编辑时库存走「入库 / 盘点」，不在这里
   if (!editing) {
-    if (tooManyDecimals(d.stock)) return { ok: false, msg: '库存最多支持两位小数' }
-    const q = Number(d.stock)
-    const w = Number(d.warn)
-    if (!Number.isFinite(q) || !Number.isFinite(w)) {
-      return { ok: false, msg: '库存和预警库存必须是有效数值' }
+    const stock = parseQuantity(d.stock, '库存')
+    if (!stock.ok) {
+      return {
+        ok: false,
+        msg: stock.msg.includes('只能填数字') ? '库存和预警库存必须是有效数值' : stock.msg,
+      }
     }
-    if (q < 0 || w < 0) return { ok: false, msg: '库存和预警库存不能为负' }
-  } else {
-    const w = Number(d.warn)
-    if (!Number.isFinite(w) || w < 0) {
-      return { ok: false, msg: '预警库存必须是非负有效数值' }
-    }
+    if (stock.value < 0) return { ok: false, msg: '库存和预警库存不能为负' }
   }
   return { ok: true }
 }

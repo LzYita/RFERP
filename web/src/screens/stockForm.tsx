@@ -8,6 +8,7 @@ import {
 } from '../components/form'
 import { Btn } from '../components/ui'
 import { parts as partsApi, type Part } from '../lib/catalog'
+import { parseQuantity } from '../lib/num'
 
 /**
  * 入库 / 盘点调整。
@@ -29,27 +30,19 @@ import { parts as partsApi, type Part } from '../lib/catalog'
 
 export type StockMode = 'in' | 'adjust'
 
-function tooManyDecimals(t: string): boolean {
-  const m = /^(\d*)(?:\.(\d*))?$/.exec(t.trim())
-  if (!m) return false
-  const frac = (m[2] ?? '').replace(/0+$/, '')
-  return frac.length > 2
-}
-
 export function validateStock(
   mode: StockMode,
   raw: string,
 ): { ok: true; qty: number } | { ok: false; msg: string } {
-  const t = raw.trim()
-  if (t === '') return { ok: false, msg: mode === 'in' ? '请填写入库数量' : '请填写调整后数量' }
-  if (!Number.isFinite(Number(t))) {
-    return { ok: false, msg: '请输入有效数值' }
-  }
-  if (tooManyDecimals(t)) return { ok: false, msg: '数量最多支持两位小数' }
+  const label = mode === 'in' ? '入库数量' : '调整后数量'
 
-  const qty = Number(t)
+  // 字面量闸门，见 lib/num.ts：1e5 / 0x10 / +5 / abc / 全角数字都在这里拒掉。
+  const n = parseQuantity(raw, label)
+  if (!n.ok) return n
+
+  const qty = n.value
   if (mode === 'in') {
-    // 与 Fyne 一致：入库数量必须大于 0。
+    // 与 Fyne part.go:462 一致：入库数量必须大于 0。
     // 填 0 之所以不给过，是因为它几乎总是「忘了填」，而不是真的要入库 0 个。
     if (qty <= 0) return { ok: false, msg: '数量必须大于0' }
   } else {

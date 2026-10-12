@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { ApiError, api, setup, type LoginResult, type Me } from '../lib/api'
+import { EyeIcon } from '../components/form'
 
 /**
  * 首启向导：创建一个管理员账号。
@@ -211,38 +212,3 @@ function Field({
   )
 }
 
-/**
- * 眼睛 / 闭眼图标，16px 线性描边，取 currentColor 跟随 hover 态。
- *
- * 图标表示**当前状态**：密码不可见时是闭眼。传 `!showPwd` 而非 `showPwd`
- * —— 与 LoginScreen 保持一致，详见那里的注释。
- */
-function EyeIcon({ hidden }: { hidden: boolean }) {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {hidden ? (
-        <>
-          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-          <line x1="2" y1="2" x2="22" y2="22" />
-        </>
-      ) : (
-        <>
-          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-          <circle cx="12" cy="12" r="3" />
-        </>
-      )}
-    </svg>
-  )
-}

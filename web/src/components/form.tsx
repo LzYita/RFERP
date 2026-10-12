@@ -158,18 +158,61 @@ export function Checkbox({
 }
 
 /**
+ * 口令可见性图标。
+ *
+ * 原本定义在 LoginScreen 里，SetupScreen 各自复制过一份。Round 6 收进
+ * components/form.tsx —— 三处不同步就会是「登录页是眼睛、用户管理页是
+ * 闭眼」这种只有对比才发现得了的问题。
+ *
+ * **hidden 的语义是反的**：传 true 画闭眼、false 画睁眼。
+ * 曾经把 showPwd 直接传进去，于是点「显示密码」后图标变成闭眼，看着像
+ * "现在被遮住了"，与实际情况相反。所以调用方一律传 `!shown`。
+ *
+ * 无障碍标签描述**动作**（点了会发生什么），图标描述**状态**，两者分工不同。
+ */
+export function EyeIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {hidden ? (
+        <>
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+          <line x1="2" y1="2" x2="22" y2="22" />
+        </>
+      ) : (
+        <>
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+/**
  * 口令输入。
  *
  * Round 6 之前没有这个基元，于是 LoginScreen、SetupScreen 各手写了一份
  * <input type="password">，用的是自己复制的 className——与 TextInput 的
- * 样式已经开始漂移。收在这里，带上「显示/隐藏」眼睛按钮。
+ * 样式已经开始漂移。
  *
- * 两个要点：
- *  - Edge/WebView2 在字段有内容时会自己画一个 `::-ms-reveal`，和我们的眼睛
- *    并排出现且随焦点闪烁。`index.css` 里用 `::-ms-reveal { display:none }`
- *    屏蔽掉，别在这里重复处理。
- *  - 眼睛按钮是 `type="button"`，不包在 <label> 里：包进去会点一下就切换，
- *    而用户点它多半是想聚焦输入框。
+ * 要点：
+ *  - 眼睛按钮是 `type="button"`，且**不包在 <label> 里**：包进去点一下会
+ *    连带切换焦点，而用户点它多半是想直接操作输入框。
+ *  - Edge/WebView2 在字段有内容时会自己画一个 `::-ms-reveal`，与我们的眼睛
+ *    并排且随焦点闪烁。`index.css` 用 `::-ms-reveal { display:none }` 屏蔽，
+ *    这里不要再重复处理。
  */
 export function PasswordInput({
   value,
@@ -189,7 +232,7 @@ export function PasswordInput({
     <div className="relative">
       <input
         type={shown ? 'text' : 'password'}
-        className={inputCls + ' pr-7'}
+        className={inputCls + ' pr-8'}
         value={value}
         placeholder={placeholder}
         autoFocus={autoFocus}
@@ -203,11 +246,13 @@ export function PasswordInput({
       />
       <button
         type="button"
+        onClick={() => setShown((v) => !v)}
         aria-label={shown ? '隐藏密码' : '显示密码'}
-        className="absolute right-0 top-0 flex h-[26px] w-7 items-center justify-center text-[12px] leading-none text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
-        onClick={() => setShown((s) => !s)}
+        aria-pressed={shown}
+        title={shown ? '隐藏密码' : '显示密码'}
+        className="absolute top-1/2 right-1 flex h-[22px] w-[26px] -translate-y-1/2 items-center justify-center rounded-[4px] text-[var(--color-fg-subtle)] hover:bg-[var(--color-canvas)] hover:text-[var(--color-primary)]"
       >
-        {shown ? '🙈' : '👁'}
+        <EyeIcon hidden={!shown} />
       </button>
     </div>
   )

@@ -57,6 +57,16 @@ jobs:
           npm run build:embed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # 表单与校验逻辑（数量精度、编辑时库存回传、必填项）没有 Go 侧对应物，
+      # 只能在这里拦。放在 Build frontend 之后：build:embed 会跑 tsc，
+      # 类型错误先失败，vitest 只负责运行时行为。
+      - name: Test frontend
+        shell: pwsh
+        working-directory: web
+        run: |
+          npm run test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Set up MSYS2 UCRT64 GCC
         id: msys2
         uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2

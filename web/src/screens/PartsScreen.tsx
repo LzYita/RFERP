@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api } from '../lib/api'
+import { usePermissions } from '../lib/api'
+import { canWrite } from '../lib/permissions'
+import { parts as partsApi, type Part } from '../lib/catalog'
+import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
+import { ConfirmDialog } from '../components/form'
 import {
   Badge,
   Btn,
@@ -11,19 +15,24 @@ import {
   shortTime,
 } from '../components/ui'
 
-interface Part {
-  id: number
-  code: string
-  name: string
-  spec?: string
-  unit: string
-  stock_qty: number
-  warn_qty: number
-  status: number
-  updated_at: string
-}
 
 const DEFAULT_PAGE_SIZE = 20
+
+/**
+ * 低库存判定。
+ *
+ * 必须与 Fyne 版 `isLowStock`（internal/ui/part.go:35）逐字一致：
+ *
+ *   1. `warnQty > 0` 守卫 —— 预警值设为 0 表示「不预警」。少了这条，所有
+ *      未设预警的零件都会被算成低库存，预警列表直接失去意义。
+ *   2. 严格小于 —— 库存正好等于预警线不算低。「已到线」与「已跌破」是两件事，
+ *      `stock <= warn` 会把前者也标成「库存紧张」，让用户提前补货却没有依据。
+ *
+ * Round 2 这里写的是 `stock_qty <= p.warn_qty`，两条都不对。
+ */
+function isLowStock(p: { stock_qty: number; warn_qty: number }): boolean {
+  return p.warn_qty > 0 && p.stock_qty < p.warn_qty
+}
 
 /**
  * 零件列表：Round 1 的「一个真实列表屏」关口。
@@ -44,11 +53,22 @@ export function PartsScreen() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [q, setQ] = useState('')
   const [lowOnly, setLowOnly] = useState(false)
+  // Round 3：编辑弹窗 / 删除确认。零件的写权限里 **admin 和仓库员都有**，
+  // 只读角色（viewer、生产员）连行内按钮都不该看到——但前端隐藏不是安全边界，
+  // 后端 Catalog.UpdatePart 才是。
+  const { modules } = usePermissions()
+  const canEdit = canWrite(modules, 'parts')
+  const [formOpen, setFormOpen] = useState(false)
+  const [editing, setEditing] = useState<Part | null>(null)
+  const [draft, setDraft] = useState<PartDraft>(emptyPartDraft())
+  const [formErr, setFormErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [deleting, setDeleting] = useState<Part | null>(null)
 
   useEffect(() => {
     let alive = true
-    api
-      .get<Part[]>('/api/parts')
+    partsApi
+      .list()
       .then((rows) => {
         if (alive) {
           setParts(rows)
@@ -72,7 +92,7 @@ export function PartsScreen() {
       const k = q.trim().toLowerCase()
       rows = rows.filter((p) => p.code.toLowerCase().includes(k) || p.name.toLowerCase().includes(k))
     }
-    if (lowOnly) rows = rows.filter((p) => p.stock_qty <= p.warn_qty)
+    if (lowOnly) rows = rows.filter(isLowStock)
     return rows
   }, [parts, q, lowOnly])
 
@@ -100,6 +120,67 @@ export function PartsScreen() {
     })
   }
 
+  function openCreate() {
+    setEditing(null)
+    setDraft(emptyPartDraft())
+    setFormErr('')
+    setFormOpen(true)
+  }
+
+  function openEdit(p: Part) {
+    setEditing(p)
+    setDraft(partToDraft(p))
+    setFormErr('')
+    setFormOpen(true)
+  }
+
+  async function reload() {
+    const rows = await partsApi.list()
+    setParts(rows)
+  }
+
+  async function submit() {
+    const v = validatePartDraft(draft, editing !== null)
+    if (!v.ok) {
+      setFormErr(v.msg)
+      return
+    }
+    setBusy(true)
+    setFormErr('')
+    try {
+      const body = draftToWrite(draft, editing !== null, editing ?? undefined)
+      if (editing) await partsApi.update(body as never)
+      else await partsApi.create(body)
+      await reload()
+      setFormOpen(false)
+    } catch (e) {
+      // 直接把后端文案放进表单：唯一键冲突等都已经翻成中文了
+      setFormErr(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doDelete() {
+    if (!deleting) return
+    setBusy(true)
+    try {
+      await partsApi.remove(deleting.id)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        next.delete(deleting.id)
+        return next
+      })
+      setDeleting(null)
+      await reload()
+    } catch (e) {
+      setFormErr(e instanceof Error ? e.message : '删除失败')
+      setDeleting(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
   return (
@@ -107,8 +188,7 @@ export function PartsScreen() {
       <div className="flex items-center gap-2.5">
         <h1 className="text-[15px] font-bold">零件管理</h1>
         <div className="ml-auto flex gap-2">
-          <Btn>导出</Btn>
-          <Btn primary>+ 新增零件</Btn>
+          {canEdit ? <Btn primary onClick={openCreate}>+ 新增零件</Btn> : null}
         </div>
       </div>
 
@@ -192,7 +272,7 @@ export function PartsScreen() {
             </thead>
             <tbody>
               {rows.map((p) => {
-                const low = p.stock_qty <= p.warn_qty
+                const low = isLowStock(p)
                 return (
                   <tr key={p.id} data-selected={selected.has(p.id)}>
                     <td className="mid">
@@ -223,8 +303,24 @@ export function PartsScreen() {
                     {/* 去年份：年份由筛选/排序语境承担 */}
                     <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(p.updated_at)}</td>
                     <td className="mid col-fix">
-                      <button className="mr-2 text-[var(--color-primary)]">编辑</button>
-                      <button className="text-[var(--color-primary)]">更多 ▾</button>
+                      {canEdit ? (
+                        <>
+                          <button
+                            className="mr-2 text-[var(--color-primary)]"
+                            onClick={() => openEdit(p)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            className="text-[var(--color-primary)]"
+                            onClick={() => setDeleting(p)}
+                          >
+                            删除
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-[var(--color-fg-subtle)]">—</span>
+                      )}
                     </td>
                   </tr>
                 )
@@ -254,6 +350,37 @@ export function PartsScreen() {
         }}
       />
       </section>
+
+      {formOpen ? (
+        <PartFormModal
+          draft={draft}
+          setDraft={setDraft}
+          editing={editing !== null}
+          orig={editing ?? undefined}
+          busy={busy}
+          err={formErr}
+          onSubmit={submit}
+          onClose={() => setFormOpen(false)}
+        />
+      ) : null}
+
+      {deleting ? (
+        <ConfirmDialog
+          title="确认删除"
+          danger
+          busy={busy}
+          message={
+            <>
+              确定删除零件 <b>{deleting.code}</b>（{deleting.name}）？
+              <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+                若该零件已被 BOM 引用，删除会被拒绝。
+              </div>
+            </>
+          }
+          onConfirm={doDelete}
+          onCancel={() => setDeleting(null)}
+        />
+      ) : null}
     </>
   )
 }

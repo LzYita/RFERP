@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { LoginScreen } from './screens/LoginScreen'
 import { SetupScreen } from './screens/SetupScreen'
@@ -35,6 +35,8 @@ export default function App() {
   // 会话在别处失效时给一句说明；否则用户只看到自己被弹回登录页，
   // 不知道是超时了、被踢了，还是程序出错了。
   const [sessionNotice, setSessionNotice] = useState('')
+  // 每次 +1 就让当前屏重挂载，实现「刷新」
+  const [refreshToken, setRefreshToken] = useState(0)
   const { modules, reload } = usePermissions()
 
   // 会话 token 只在内存里，进程启动时必然为空 —— 登录页一定会出现。
@@ -128,6 +130,17 @@ export default function App() {
 
   const activeKey = screen.key
 
+  // 「刷新」用改 key 强制重挂载当前屏，而不是逐屏暴露一个 reload()。
+  // 九个屏都在 mount 时自己取数，所以重挂载就等于重新取数——顺带把筛选、
+  // 页码、勾选一并复位，这正是刷新该做的事。要逐屏加 reload 回调，就得在
+  // 每个屏里多维护一份与自身逻辑重复的状态出口。
+  //
+  // 用 Fragment 而不是 cloneElement：renderScreen 的返回类型是 ReactNode，
+  // 里面可能有非元素节点，cloneElement 对那种输入没有重载。
+  const screenNode = (
+    <Fragment key={refreshToken}>{renderScreen(activeKey)}</Fragment>
+  )
+
   return (
     <AppShell
       me={me}
@@ -136,8 +149,9 @@ export default function App() {
       version={VERSION}
       onNavigate={(key) => setScreen({ kind: 'shell', key })}
       onLogout={onLogout}
+      onRefresh={() => setRefreshToken((n) => n + 1)}
     >
-      {renderScreen(activeKey)}
+      {screenNode}
     </AppShell>
   )
 }

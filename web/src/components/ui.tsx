@@ -59,11 +59,19 @@ export function classifyLoadError(err: unknown, subject: string): { kind: 'forbi
   return { kind: 'server', text: `无法加载${subject}：${(err as Error).message}` }
 }
 
-export function Badge({ kind, children }: { kind: 'ok' | 'warn' | 'neutral'; children: ReactNode }) {
+export function Badge({
+  kind,
+  children,
+}: {
+  kind: 'ok' | 'warn' | 'neutral' | 'danger'
+  children: ReactNode
+}) {
   const map = {
     ok: 'bg-[var(--color-ok-bg)] text-[var(--color-ok)]',
     warn: 'bg-[var(--color-warn-bg)] text-[var(--color-warn)]',
     neutral: 'bg-[var(--color-neutral-bg)] text-[var(--color-neutral)]',
+    // 批次状态「已撤销」用。Fyne 版是 badgeError，色值同 --color-danger。
+    danger: 'bg-[var(--color-danger-bg)] text-[var(--color-danger)]',
   }
   return (
     <span className={['rounded-[4px] px-[7px] py-px text-[10.5px] font-semibold', map[kind]].join(' ')}>

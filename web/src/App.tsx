@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { AppShell } from './components/AppShell'
+import { ConfirmDialog } from './components/form'
 import { LoginScreen } from './screens/LoginScreen'
 import { SetupScreen } from './screens/SetupScreen'
 import { renderScreen } from './screens/registry'
@@ -35,6 +36,8 @@ export default function App() {
   // 会话在别处失效时给一句说明；否则用户只看到自己被弹回登录页，
   // 不知道是超时了、被踢了，还是程序出错了。
   const [sessionNotice, setSessionNotice] = useState('')
+  // 会话已失效但用户还没确认回登录：弹窗期间保留 me，让界面停在原处
+  const [sessionExpired, setSessionExpired] = useState(false)
   // 每次 +1 就让当前屏重挂载，实现「刷新」
   const [refreshToken, setRefreshToken] = useState(0)
   const { modules, reload } = usePermissions()
@@ -104,16 +107,26 @@ export default function App() {
   // 会话在别处失效（空闲超时、绝对上限到了、管理员改角色强制下线）时，
   // api 层只清 token 并广播；界面归谁负责、要不要提示，由这里决定。
   //
-  // 没有这条时：界面停在过期前的旧数据上，看起来一切正常，点什么都是 401。
+  // 这里**不立刻 setMe(null)** —— 那样会直接跳登录页，用户还没反应过来，
+  // 正在填的表单就消失了。改为原地弹窗：屏保/离开时回来看到的是原界面
+  // 加一个说明，点确认才回登录。会话已经没了，所以弹窗不可取消。
+  //
+  // 弹窗期间 me 仍在，于是壳照常渲染。遮罩挡住交互，底下的旧数据既点不到
+  // 也看不真切——不是把它藏起来，是不再假装它还能用。
   useEffect(
     () =>
       onUnauthorized(() => {
-        setMe(null)
-        setScreen({ kind: 'login' })
-        setSessionNotice('登录状态已失效，请重新登录')
+        setSessionExpired(true)
       }),
     [],
   )
+
+  const goToLoginAfterExpiry = useCallback(() => {
+    setSessionExpired(false)
+    setMe(null)
+    setScreen({ kind: 'login' })
+    setSessionNotice('登录状态已失效，请重新登录')
+  }, [])
 
   if (!ready) {
     return <div className="grid h-full place-items-center text-[13px] text-[var(--color-fg-muted)]">正在加载…</div>
@@ -152,6 +165,25 @@ export default function App() {
       onRefresh={() => setRefreshToken((n) => n + 1)}
     >
       {screenNode}
+
+      {/* 会话失效：原地弹窗，确认后才回登录。
+          放在壳内部而不是壳外——壳外就意味着整棵树已经换成登录页了，
+          「在原界面弹窗」的前提是原界面还在。 */}
+      {sessionExpired ? (
+        <ConfirmDialog
+          title="登录状态已失效"
+          confirmLabel="重新登录"
+          message={
+            <>
+              登录已超时（长时间未操作，或已达单次登录上限）。
+              <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+                为保护数据，需要重新登录后才能继续。未保存的编辑内容会丢失。
+              </div>
+            </>
+          }
+          onConfirm={goToLoginAfterExpiry}
+        />
+      ) : null}
     </AppShell>
   )
 }

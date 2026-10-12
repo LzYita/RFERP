@@ -226,13 +226,13 @@ func TestMissingAuthorizationHeader(t *testing.T) {
 // 会话时长是产品决策，代码里是常量。锁住当前值，免得以后有人"顺手调整"
 // 时没人注意到这会改变用户的登录习惯。
 //
-// 2026-10-12 由用户从 12h/30min 改为 24h/2h。
+// 2026-10-12 由用户从 12h/30min 改为 24h/2h，再把空闲调到 4h。
 func TestSessionTTLs(t *testing.T) {
 	if sessionAbsoluteTTL != 24*time.Hour {
 		t.Errorf("绝对上限 = %v, want 24h", sessionAbsoluteTTL)
 	}
-	if sessionIdleTTL != 2*time.Hour {
-		t.Errorf("空闲超时 = %v, want 2h", sessionIdleTTL)
+	if sessionIdleTTL != 4*time.Hour {
+		t.Errorf("空闲超时 = %v, want 4h", sessionIdleTTL)
 	}
 	// 绝对上限必须严格大于空闲超时，否则「滑动续期」这个说法不成立：
 	// 两者相等时滑动窗口永远追不上固定上限。

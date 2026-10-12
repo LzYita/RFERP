@@ -199,25 +199,37 @@ export function Modal({
   children,
   footer,
   width = 440,
+  dismissible = true,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   width?: number
+  /**
+   * false 时隐藏右上角的 ✕、Esc 与点遮罩都不再关闭。
+   *
+   * 留着一个按了没反应的 ✕ 比没有它更糟——用户会以为程序卡住了。不可取消
+   * 的弹窗就只给一个出口。
+   */
+  dismissible?: boolean
 }) {
   useEffect(() => {
+    if (!dismissible) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose, dismissible])
+
+  useEffect(() => {
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
-      document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prev
     }
-  }, [onClose])
+  }, [])
 
   return (
     <div
@@ -226,7 +238,7 @@ export function Modal({
       aria-modal="true"
       aria-label={title}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
+        if (dismissible && e.target === e.currentTarget) onClose()
       }}
     >
       <div
@@ -235,14 +247,18 @@ export function Modal({
       >
         <header className="flex items-center justify-between border-b border-[var(--color-border)] px-4 py-2.5">
           <h2 className="text-[13px] font-semibold">{title}</h2>
-          <button
-            type="button"
-            aria-label="关闭"
-            className="text-[14px] leading-none text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
-            onClick={onClose}
-          >
-            ✕
-          </button>
+          {dismissible ? (
+            <button
+              type="button"
+              aria-label="关闭"
+              className="text-[14px] leading-none text-[var(--color-fg-subtle)] hover:text-[var(--color-fg)]"
+              onClick={onClose}
+            >
+              ✕
+            </button>
+          ) : (
+            <span className="w-[14px]" />
+          )}
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-4 py-3.5">{children}</div>
         {footer ? (
@@ -286,7 +302,13 @@ export function FormError({ text }: { text: string }) {
   )
 }
 
-/** 二次确认。删除是不可撤销的，不能只靠一个「删除」按钮就执行。 */
+/**
+ * 二次确认。删除是不可撤销的，不能只靠一个「删除」按钮就执行。
+ *
+ * `onCancel` 可选：省略时只有一个确认按钮，且 Esc 与点遮罩都不再关闭。
+ * 会话失效就是这种情形——会话已经没了，「取消」没有可返回的状态，
+ * 摆一个关不掉的按钮只会让人反复去按它。
+ */
 export function ConfirmDialog({
   title,
   message,
@@ -302,26 +324,31 @@ export function ConfirmDialog({
   confirmLabel?: string
   busy?: boolean
   onConfirm: () => void
-  onCancel: () => void
+  onCancel?: () => void
 }) {
+  const dismiss = () => onCancel?.()
   return (
     <Modal
       title={title}
-      onClose={onCancel}
+      onClose={dismiss}
+      dismissible={Boolean(onCancel)}
       width={360}
       footer={
         <>
+          {onCancel ? (
+            <button
+              type="button"
+              disabled={busy}
+              className="inline-flex h-[26px] items-center rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[11.5px] hover:bg-[var(--color-canvas)]"
+              onClick={onCancel}
+            >
+              取消
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={busy}
-            className="inline-flex h-[26px] items-center rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-[11.5px] hover:bg-[var(--color-canvas)]"
-            onClick={onCancel}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            disabled={busy}
+            autoFocus
             className={
               'inline-flex h-[26px] items-center rounded-[6px] px-3 text-[11.5px] text-white disabled:opacity-60 ' +
               (danger

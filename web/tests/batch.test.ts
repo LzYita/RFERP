@@ -33,7 +33,7 @@ describe('bomConsume', () => {
     expect(bomConsume(101, { quantity: 10, loss_rate: 0, use_mode: 1 })).toBe(11)
   })
 
-  it('use_mode=1 且用�� ≤ 0 时退化为每 1 台 1 个（与 Go 的守卫一致）', () => {
+  it('use_mode=1 且用量 ≤ 0 时退化为每 1 台 1 个（与 Go 的守卫一致）', () => {
     // Go: m := item.Quantity; if m <= 0 { m = 1 }
     expect(bomConsume(100, { quantity: 0, loss_rate: 0, use_mode: 1 })).toBe(100)
     expect(bomConsume(100, { quantity: -5, loss_rate: 0, use_mode: 1 })).toBe(100)

@@ -203,7 +203,7 @@ export function LoginScreen({
                     title={showPwd ? '隐藏密码' : '显示密码'}
                     className="absolute top-1/2 right-1 flex h-[22px] w-[26px] -translate-y-1/2 items-center justify-center rounded-[4px] text-[var(--color-fg-subtle)] hover:bg-[var(--color-canvas)] hover:text-[var(--color-primary)]"
                   >
-                    <EyeIcon hidden={showPwd} />
+                    <EyeIcon hidden={!showPwd} />
                   </button>
                 </div>
               </label>
@@ -247,8 +247,17 @@ export function LoginScreen({
 }
 /**
  * 眼睛 / 闭眼图标，16px 线性描边，取 currentColor 跟随 hover 态。
- * 不用 emoji：👁 / 🙈 是彩色字形，与这套克制的界面不搭，
- * 且跨 Windows 字体渲染差异很大。
+ *
+ * **图标表示密码的当前状态**，不是点击后的结果：
+ *   密码不可见（显示点）→ 闭眼   hidden = true
+ *   密码可见 （显示明文）→ 睁眼   hidden = false
+ *
+ * 写成 hidden={showPwd} 会把它反过来——曾经这么错过一次：
+ * 点「显示密码」后图标变成闭眼，像是"现在被遮住了"，与实际情况相反。
+ * 所以调用方传的是 `!showPwd`，不要直接传 showPwd。
+ *
+ * 无障碍标签仍描述**动作**（点了会发生什么），两者分工不同：
+ * 图标给视觉用户一个即时状态，label 给读屏用户一个可预期的操作。
  */
 function EyeIcon({ hidden }: { hidden: boolean }) {
   return (

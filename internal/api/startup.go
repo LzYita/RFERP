@@ -40,14 +40,35 @@ const StartupCookieName = startupCookieName
 // hasStartupToken 判断请求是否携带正确的启动凭据。常量时间比较，
 // 避免按前缀提前返回泄露信息。
 func (s *Server) hasStartupToken(r *http.Request) bool {
-	if s.startupToken == "" {
+	return HasStartupToken(s.startupToken, r)
+}
+
+// HasStartupToken 是 hasStartupToken 的包级版本。
+//
+// 存在的理由：cmd 侧的首启向导自建了一个 mux（不经过 Server.Handler()），
+// 若没有这个函数就**绕过了这道闸门** —— 首启期间本机任何进程都能调用
+// /api/setup/apply 改写配置、/api/setup/create-admin 建管理员。
+func HasStartupToken(tok string, r *http.Request) bool {
+	if tok == "" {
 		return true // 未启用网关：恒通过（cmd/server 的情形）
 	}
 	c, err := r.Cookie(startupCookieName)
 	if err != nil || c.Value == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.startupToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(c.Value), []byte(tok)) == 1
+}
+
+// StartupGate 把 handler 包在启动凭据闸门内，供 cmd 侧自建的 handler 使用。
+// tok 为空表示不启用，与 Server 内的行为一致。
+func StartupGate(tok string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !HasStartupToken(tok, r) {
+			writeErr(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // withStartupGate 包住整个服务。
@@ -55,13 +76,7 @@ func (s *Server) hasStartupToken(r *http.Request) bool {
 // 页面与 /api/ 一并受保护：只锁 API 会出现「页面进不去但接口能打」这种
 // 前后端不一致的半可用状态，比直接拒绝更难排查。
 func (s *Server) withStartupGate(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.hasStartupToken(r) {
-			writeErr(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+	return StartupGate(s.startupToken, next)
 }
 
 // serveStatic 挂载前端构建产物。资源缺失时给出明确提示，

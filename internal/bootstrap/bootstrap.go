@@ -193,7 +193,9 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 			opts.logf("bootstrap: ensure MySQL failed (will still try to connect): %v", err)
 		}
 	}
-	opts.logf("bootstrap: storage=mysql dsn=%s", cfg.DB.DSN)
+	// DSN 里含明文密码，日志文件会被用户复制、粘贴、发到群里，
+	// 而日志是要长期留在数据目录里的。只记能定位问题的部分。
+	opts.logf("bootstrap: storage=mysql %s:%d/%s", cfg.DB.Host, cfg.DB.Port, cfg.DB.DBName)
 
 	db, err := sqlx.Connect("mysql", cfg.DB.DSN)
 	if err != nil {

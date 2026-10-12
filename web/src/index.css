@@ -73,6 +73,11 @@
 
   /* 表格最小宽度。低于此值时横向滚动，而不是把列压扁。 */
   --spacing-table-min: 720px;
+
+  /* 嵌入面板内的紧凑表格（工作台两栏、统计榜单）专用。
+     720px 是按整屏列表屏量的，放进半宽面板会把表格撑出面板、最右一列被裁掉，
+     同时把「名称」「对象」这类弹性列拉得过宽。紧凑档允许收缩到面板宽度。 */
+  --spacing-table-min-compact: 0px;
 }
 
 /* 表格通用密度与阈值：所有数据表共用，避免逐表写死 */
@@ -82,6 +87,24 @@
     min-width: var(--spacing-table-min);
     border-collapse: collapse;
     font-size: var(--text-table);
+  }
+  /* 面板内的紧凑表格：允许缩到面板宽度，列宽改由 table-layout: fixed + th 宽度决定 */
+  .data-table.is-compact {
+    min-width: var(--spacing-table-min-compact);
+    table-layout: fixed;
+  }
+
+  /* 列对齐：按**数据语义**定，不按视觉偏好。
+     左 = 文本标识（编码/名称/摘要）；右 = 数量（比大小需要数轴位对齐）；
+     居中 = 短枚举与窄操作列（词表固定、字宽 2-4 字，左对齐会让右缘参差）。
+     抽成语义类而不是内联 style，是为了保证 th 与 td 永远同一种对齐——
+     两者不一致时表头和数据看着是错位的。 */
+  .data-table .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .data-table .mid {
+    text-align: center;
   }
   .data-table th {
     text-align: left;
@@ -144,4 +167,23 @@ input,
 textarea,
 [data-selectable] {
   user-select: text;
+}
+
+/**
+ * 关掉 Edge / WebView2 自带的密码显示按钮。
+ *
+ * 它是 `::-ms-reveal` 伪元素，**只在字段有内容时**渲染，且画在 input 内部右侧。
+ * 我们自己已经有一个 EyeIcon 按钮了，两个会并排出现（原生睁眼 + 我们的闭眼），
+ * 看起来像"突然多出一个图标"，焦点变化重绘时还会一闪而过。
+ *
+ * `::-ms-clear` 是同一个系列的清除按钮（输入框右侧的 ×），一并关掉——
+ * 那个同样会和我们自己的图标区打架。
+ *
+ * Chrome 没有这两个伪元素，所以这行只对 Edge 系生效，对 Chrome 无副作用。
+ */
+input[type='password']::-ms-reveal,
+input[type='password']::-ms-clear,
+input[type='text']::-ms-reveal,
+input[type='text']::-ms-clear {
+  display: none;
 }

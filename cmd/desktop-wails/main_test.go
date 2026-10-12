@@ -18,7 +18,7 @@ type stubApps struct{ usecase.Applications }
 // startEmbedded 起一个真实的内嵌服务（随机回环端口），返回地址与代理。
 func startEmbedded(t *testing.T) (*embeddedServer, string, http.Handler) {
 	t.Helper()
-	emb, stop, err := serve(&stubApps{})
+	emb, stop, err := serve(&stubApps{}, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestEachStartGetsDistinctPortAndToken(t *testing.T) {
 
 // 停止后端口应当释放，否则反复启停会耗尽端口。
 func TestStopReleasesPort(t *testing.T) {
-	emb, stop, err := serve(&stubApps{})
+	emb, stop, err := serve(&stubApps{}, "")
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}

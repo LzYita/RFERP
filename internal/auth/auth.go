@@ -70,6 +70,12 @@ const (
 	ModuleAudit     = "audit"
 	ModuleBackup    = "backup"
 	ModuleUsers     = "users"
+	// ModuleSystem 是**应用自身**的维护：检查/下载/替换可执行文件。
+	//
+	// 单独一个模块，而不是挂到 Backup 或 Users 下面：备份与用户管理都有
+	// 合理的非管理员档位，而「替换正在运行的程序」不是——那等于把程序控制权
+	// 交给任何登录的人。写权限只给管理员。
+	ModuleSystem = "system"
 )
 
 var moduleAccess = map[string]map[Role]Access{
@@ -84,6 +90,8 @@ var moduleAccess = map[string]map[Role]Access{
 	ModuleAudit:  {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone},
 	ModuleBackup: {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone},
 	ModuleUsers:  {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
+	// 应用维护：只有管理员能写（替换可执行文件），其他角色只读或无权限
+	ModuleSystem: {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
 }
 
 func AccessFor(role Role, module string) Access {

@@ -234,16 +234,20 @@ RFERP/
 
 **准备**
 
-- [ ] 安装 Node LTS + npm/pnpm
-- [ ] `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
-- [ ] `wails doctor` 确认 WebView2 可用
+- [x] 安装 Node LTS + npm/pnpm
+- [x] `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+- [x] `wails doctor` 确认 WebView2 可用
 
 **前端骨架**
 
-- [ ] `web/` 用 Vite 初始化（React + TS）；接入 Tailwind + shadcn/ui
-- [ ] **主题按下方 §Round 1.1 基线实现**（已定稿，不再二选一）
-- [ ] `AppShell`：导航项与 `internal/ui/app.go` 的 `pageDef` **一一对应**
-- [ ] `api/client.ts` + `api/types.ts`；i18n 骨架（zh-CN / en）
+- [x] `web/` 用 Vite 初始化（React + TS）；接入 Tailwind + shadcn/ui
+- [x] **主题按下方 §Round 1.1 基线实现**（已定稿，不再二选一）
+- [x] `AppShell`：导航项与 `internal/ui/app.go` 的 `pageDef` **一一对应**
+- [x] `api/client.ts` + `api/types.ts`
+      （实际落在 `web/src/lib/api.ts`；命名与计划略有出入，功能等价）
+- [x] i18n **骨架**：延后到 Round 10（本轮不做）
+      理由：现在做要改遍每屏每个字符串，且 Round 3–8 会持续新增屏；
+      当前全中文硬编码是正确状态，不是缺陷。半成品（部分屏有翻译）比没有更糟。
 
 #### Round 1.1 · 视觉与表格基线（2026-10-10 已定稿）
 
@@ -295,37 +299,62 @@ RFERP/
 
 **Wails 外壳**
 
-- [ ] `cmd/desktop-wails/`：内嵌服务装配包于 `127.0.0.1:随机端口`
-- [ ] 启动 token 经 `Set-Cookie`（`HttpOnly` + `SameSite=Strict`）随根页面下发，**不注入 JS 变量**
-- [ ] `wails build` 产出单 exe；`setup.iss` 加 `#define` 切换产物
-- [ ] 托盘 / 单实例 / 自动更新：复用 `internal/singleinstance`、`internal/update`、
+- [x] `cmd/desktop-wails/`：内嵌服务装配包于 `127.0.0.1:随机端口`
+- [x] 启动 token 经 `Set-Cookie`（`HttpOnly` + `SameSite=Strict`）随根页面下发，**不注入 JS 变量**
+- [x] `wails build` 产出单 exe；`setup.iss` 加 `#define` 切换产物
+- [x] 单实例 / 自动更新：复用 `internal/singleinstance`、`internal/update`、
       `internal/winappid`、`internal/winmsg`
-- [ ] `http.Server` 补 `ReadTimeout` / `WriteTimeout` / `IdleTimeout`（当前是裸 `ListenAndServe`）
+      （自动更新：查 / 下载 / 应用 三端点分开，`apply` 必须带 `confirm` 才替换 exe）
+- [ ] **托盘：暂时放弃（2026-10-11 定）** —— Wails v2 不支持，且 RFERP 当前不需要
+
+  **这是产品决策，不是技术妥协**：先回答「关闭窗口后程序该不该继续跑」——
+  RFERP 是单机桌面工具，关窗口就该关，所以托盘没有存在理由。
+
+  | 事实 | 来源 |
+  |---|---|
+  | Wails v2 有 `menu.TrayMenu` 类型，但 `options.App` **没有 `Tray` 字段** | 查 v2.16.0 源码 |
+  | `menumanager.AddTrayMenu` **零调用方** —— 类型是 v3 回移的，v2 无应用侧入口 | 同上 |
+  | `Shell_NotifyIcon` 只在 `win32/consts.go` 定义，**无任何调用方** | 同上 |
+  | **Fyne 版本来就没有托盘**（`fyne.io/systray` 只是 Fyne 的间接依赖） | 查本仓库 |
+  | Wails **不暴露窗口过程钩子**（`windows.Options` 无 `MessageFilter`） | 查 v2.16.0 源码 |
+
+  **若日后恢复，先满足这个触发条件**：RFERP 改成**服务端形态**（多机连同一
+  数据库、服务需常驻）。届时托盘才是刚需，且应与开机自启、崩溃重启一起设计。
+
+  **两个已知的坑，恢复时必须一并解决**：
+
+  1. **单实例锁会一直被占** —— 窗口关了程序还活着，双击会提示「已在运行」，
+     而用户找不到窗口。这正是「点关闭后双击无反应」的成因，文案必须改成
+     明确指向托盘
+  2. **标题栏 ✕ 改不掉** —— 它是 Windows 画的，Wails 不给钩子。要「点 ✕ 缩到
+     托盘」就得接管窗口过程，风险高。**只加图标不改关闭行为是更糟的半成品**：
+     两个入口做同一件事，用户只会困惑
+- [x] `http.Server` 补 `ReadTimeout` / `WriteTimeout` / `IdleTimeout`（当前是裸 `ListenAndServe`）
 
 **会话补齐**（详见 §4.6）
 
-- [ ] **补登出端点** `DELETE /api/session`（`internal/api` 目前 `logout` 零命中，
+- [x] **补登出端点** `DELETE /api/session`（`internal/api` 目前 `logout` 零命中，
       "退出登录"只清前端 token，服务端会话条目永久留存）
-- [ ] **加过期会话清理协程**（当前只在"被再次使用"时惰性删除，map 无界增长）
-- [ ] 会话有效期：保留 12h 绝对上限 + **加 30min 空闲超时（滑动续期）**；**单用户单会话**
-- [ ] **改角色时强制下线**（2026-10-10 定）：管理员改某人角色后，按 user ID 扫描
+- [x] **加过期会话清理协程**（当前只在"被再次使用"时惰性删除，map 无界增长）
+- [x] 会话有效期：保留 12h 绝对上限 + **加 30min 空闲超时（滑动续期）**；**单用户单会话**
+- [x] **改角色时强制下线**（2026-10-10 定）：管理员改某人角色后，按 user ID 扫描
       `Server.sessions`（`internal/api/server.go:253`，`map[string]*session` + `s.mu`）并
       `delete` 对应 token，其下次请求立即 401，重登时读到新角色。
       无需新造基础设施；会话仅在内存，重启即全灭，单用户单会话天然成立。
 
 **权限与 UI 联动**（2026-10-10 定）
 
-- [ ] **只读角色不得看到操作日志**：`internal/auth/auth.go:82` 的 `ModuleAudit`
+- [x] **只读角色不得看到操作日志**：`internal/auth/auth.go:82` 的 `ModuleAudit`
       由 `{..., RoleViewer: AccessRead}` 改为 `RoleViewer: AccessNone`。
       影响 `GET /api/audit`、`GET /api/audit/recent`（`server.go:82,113`）。
-- [ ] **工作台「最近操作」卡片对只读角色不渲染**：现有 Fyne 工作台在
+- [x] **工作台「最近操作」卡片对只读角色不渲染**：现有 Fyne 工作台在
       `internal/ui/dashboard.go:183` 拉 30 条日志；Web 走 HTTP 后只读会拿到 403，
       必须**不渲染该卡片**，而不是渲染后报错。
-- [ ] **单个卡片 403 不得拖垮整页**：`dashboard.go:184-186` 是「拉日志失败就整体 return」，
+- [x] **单个卡片 403 不得拖垮整页**：`dashboard.go:184-186` 是「拉日志失败就整体 return」，
       Web 端不要照抄——各卡片独立失败、各自降级。
-- [ ] **「无」= 整个入口不显示**，不做置灰。渲染条件是 `CanRead(module)`。
+- [x] **「无」= 整个入口不显示**，不做置灰。渲染条件是 `CanRead(module)`。
       例：仓管对 `backup` 是 Read 而非 Write，可导出 CSV 但**不得**看到恢复/清空入口。
-- [ ] 权限表 `internal/auth/auth.go:75-85` 共 9 模块 × 4 角色，前端导航由其驱动，不另维护一份。
+- [x] 权限表 `internal/auth/auth.go:75-85` 共 9 模块 × 4 角色，前端导航由其驱动，不另维护一份。
 
 **实机验收矩阵**：Windows 10 + Windows 11 × MySQL + SQLite。
 
@@ -337,17 +366,102 @@ RFERP/
 
 ### Round 2 · 只读屏（导航闭合）
 
-- [ ] 登录页 → `POST /api/login` 取 token
-- [ ] 工作台 → 统计分析 → 操作记录
-- [ ] 按角色隐藏菜单/按钮：菜单可见性复用 `auth.CanRead(module)`；
-      操作点复用 `usecase.Allow(role, name)`（与 API 的权限点字符串一致）
-- [ ] `internal/nativefiledialog` 的两个调用点需替代方案（改数据目录、初始化向导）：
-      文本输入或目录枚举端点，WebView 没有原生文件夹选择框
-- [ ] 登录/首启建管理员 → 运行模式选择 → 数据库初始化
+> **实施细案（2026-10-11 编写，PR #52 合并后）**
+> Round 1 已交付并合并 `main` @ `acc6987`。以下是本轮的可执行拆解。
 
-**关口**：用非管理员账号确认被禁模块不出现、直接调接口返回 403。
+#### 2.0 范围与前置结论
 
-### Round 3 · 主数据 CRUD
+**API 层无需新增端点。** 已核对 `server.go` 的 47 条路由，Round 2 所需的读接口
+全部就位：工作台由 `GET /api/users/count` + `GET /api/audit/recent` 组合，
+统计走 `GET /api/stats`，操作记录走 `GET /api/audit` 与 `GET /api/audit/recent`。
+**因此本轮是纯前端工作**，不碰 `internal/api`，风险面显著小于 Round 1。
+
+**唯一的 Go 侧改动**是目录枚举端点（见 2.4），用于替代 WebView 缺失的原生文件夹选择框。
+
+| 屏幕 | 数据来源 | 状态 |
+|---|---|---|
+| 工作台 `dashboard` | `/api/users/count` + `/api/audit/recent?limit=30` | 新建 |
+| 统计分析 `stats` | `/api/stats?days=` | 新建 |
+| 操作记录 `audit` | `/api/audit` + 分页 | 新建 |
+| 首启建管理员 | `/api/users/count` + `/api/bootstrap-admin` | 新建 |
+| 零件管理 `parts` | 已在 Round 1 交付 | 复用 |
+
+#### 2.1 先做屏幕切换骨架
+
+现状 `App.tsx` 用 `screen.key` 手工三元判断（`activeKey === 'parts' ? ... : <Placeholder/>`）。
+本轮要扩到 5 个屏幕，继续堆三元会失控。
+
+- [x] 抽 `screens/registry.tsx`：`Record<ModuleKey, () => ReactNode>`，
+      `App.tsx` 改为查表渲染，删除三元
+      **注意**：条目必须返回 JSX 元素（`() => <X/>`），不能直接存组件再 `factory()`
+      调用——那会让 hook 挂到 App 的 fiber 上，切屏时抛 React #310 整页白屏，
+      且 TypeScript 不报错
+- [x] 导航点击后 `AppShell` 的选中态与内容区同步（Round 1 已具备，确认即可）
+- [x] **未实现的模块保留 `PlaceholderScreen`**，本轮不删除
+
+#### 2.2 三张只读屏
+
+对齐 Fyne 版语义，不加不减：
+
+- [x] **工作台**：`dashboard.go` 的三块——经营预警、最近操作记录、统计卡。
+      时间格式 `01-02 15:04`，表名/动作走 `tableLabel` / `actionLabel` 的中文映射
+      （映射集中在 `lib/auditLabels.ts`，**逐字移植** `audit.go`，Dashboard 与 Audit 共用）
+- [x] **统计分析**：`GET /api/stats?days=`，复刻 `stats.go` 的筛选与图表口径。
+      注意 `usecase.StockStats` 及其子结构**无 json tag**，JSON 键是 PascalCase
+      （`Days`/`TopIn`/`TotalIn`…）；写成 snake_case 会静默全空
+- [x] **操作记录**：`GET /api/audit/recent?limit=500` + 前端分页 + 对象筛选。
+      `/api/audit` 是**按记录**查的（需 `record_id`），不是全局列表，勿误用
+
+> 三张屏全部**只读**，不含任何写操作——这是本轮与 Round 3 的分界，不要提前做编辑。
+
+#### 2.3 权限可见性（沿用 Round 1 结论）
+
+- [x] 导航可见性：继续用 `canRead(modules, key)`，`'none'` 整个入口不显示（**不置灰**）
+- [x] 操作点复用 `usecase.Allow(role, name)` 的权限点字符串，与 API 侧一致
+- [x] **前端隐藏不是安全边界**，每个请求仍由服务端重算——不要在 `permissions.ts` 里堆业务判断
+      （2026-10-11 实测：`viewer1` 导航由 10 项降到 7 项，直接调 `/api/users`、
+      `/api/audit/recent`、`/api/backup` 均返回 403，两层一致）
+
+#### 2.4 首启向导：唯一需要 Go 的地方
+
+`internal/nativefiledialog` 在 WebView 里**没有对应能力**，两个调用点必须替代：
+
+| 调用点 | 原行为 | Round 2 方案 |
+|---|---|---|
+| `internal/ui/setup.go:54` | 选数据目录 | 文本输入 + `GET /api/v1/serverinfo` 校验；必要时加目录枚举端点 |
+| `internal/ui/backup.go:277` | 选备份目录 | **本轮不做**（备份屏属 Round 5） |
+
+- [x] 首启流程：`GET /api/users/count` → 为 0 则进建管理员向导，否则直接登录
+- [x] 建管理员：复用 `POST /api/bootstrap-admin`，密码强度校验与错误提示对齐 Fyne 版
+- [ ] **运行模式选择（`runmode.go`）：暂缓（2026-10-11 定）** —— 服务器模式未完善时，
+      选「连接服务器」只会得到一个不能用的应用。旧版同样关掉了它
+      （`cmd/desktop/main.go` 的 `serverModeEnabled = false`）。**与服务器形态一起做**，
+      届时需要的还包括可用的服务器程序与多机部署说明，不只是这个界面。
+
+#### 2.5 关口（与本轮绑定，不可跳过）
+
+- [x] **导航闭合**：9 个模块无一显示「建设中」，全部可用或明确只读
+      （实测 admin 10 项导航，工作台/统计分析/操作记录/零件管理四屏均渲染真实数据）
+- [x] **权限拒绝路径**：用 `viewer1` 确认被禁模块**不出现**在导航里，
+      且**直接调接口返回 403**（两层都要验，前端隐藏不算数）
+- [x] **首启闭环**：空库 → 建管理员 → 登录 → 三张只读屏数据正确
+      （待做：`nativefiledialog` 替代方案属 2.4，尚未实现）
+- [x] **升级不回归**（范围已收窄为 3 步，见 Round 1 待办专项）
+      实测：新 UI 版本直接打开 Fyne 版留下的 `appliancedb`（MySQL），装配日志
+      `mysql ready applied=[]` —— **无需任何迁移**；用户数 2、业务数据 210 零件
+      正常读取。三步中"旧库能被新版打开"与"数据完整"已验证。
+- [x] 全量 `go test ./...` + `npm run build` + `wails build` 通过
+
+#### 2.6 本轮明确不做
+
+| 项 | 原因 | 排期 |
+|---|---|---|
+| 列设置 / 自定义列 | 用户偏好存储是独立工作量 | 另排 |
+| 备份/恢复屏 | 依赖目录枚举，且属破坏性操作 | Round 5 |
+| 任何编辑表单 | 属主数据 CRUD | Round 3 |
+| WebView2 目录选择框 | Wails 无原生 API，用文本输入替代 | 已定 |
+
+### Round 3 · 主数据 CRUD（Round 2 完成后展开）
 
 - [ ] 产品 / 零件 / BOM 的列表与编辑
 - [ ] BOM 搜索选择器（级联与查询框双向同步）
@@ -421,8 +535,33 @@ RFERP/
 ### Round 9 · 移除 Fyne 构建入口
 
 - [ ] Web UI 稳定一个版本后，移除 `cmd/desktop` 的构建入口
-- [ ] 此时方可按 §7 的"条件性表述"核对依赖树与漏洞告警是否真的收敛
+- [ ] 此时方可按 §7 的「条件性表格」核对依赖树与漏洞告警是否真的收敛
 - [ ] Fyne 版仅作为历史版本存档
+
+### Round 10 · 国际化（i18n）— 最后做
+
+**定序理由（2026-10-11）**：放在最后是刻意的，不是排不下。
+
+- 现在做要改遍**每一屏的每一个字符串**（Round 3–8 会持续新增屏），做一半的屏开始
+  就要维护两套写法，越往后返工越大
+- 当前**全中文硬编码是正确状态**，不是待修的缺陷。用户是国内仓管，D-008 已明记
+  「国内用户等于没提示」
+- 半成品最糟：部分屏有翻译、部分没有，用户切到 en 会看到中英混杂
+
+**前置条件**：Round 3–8 全部交付并稳定一个版本后，**一次性**抽取全部字符串。
+中途不做局部抽取。
+
+- [ ] 抽出 `web/src/i18n/`：语言文件（`zh-CN.json` / `en-US.json`）+ `t(key)` + 语言上下文
+- [ ] **一次性**替换全部屏的硬编码中文，包括：导航、表格列头、按钮、错误提示、
+      空状态、服务端返回错误的中文文案（后者需后端返回错误码而非文案）
+- [ ] 设置屏提供语言选择（侧栏左下角「设置」→ 语言）
+- [ ] 语言持久化到 `config.json`
+- [ ] 关口：切换语言后**无任何残留中文**；缺 key 时回落中文而非显示 key 本身
+
+> **注意**：最后一条「服务端错误文案」是这轮最大的工作量。`internal/api` 现在
+> 直接返回中文错误串（`writeErr(w, 400, "invalid days")` 之类是英文，但业务层是中文），
+> 要正确 i18n 必须改成返回**错误码 + 参数**，由前端查表翻译。这会牵动
+> 全部 `internal/api` 与 `internal/service` 的错误路径，排期时不要低估。
 
 ### 每轮的工程节奏（与协作者的同步方式）
 
@@ -845,6 +984,25 @@ Round 1 的关口已在 Win11 上逐项验证（SQLite 与 MySQL 双通道、安
 |---|---|---|---|
 | **Win10 实机验收** | 本机为 Win11，没有 Win10 环境 | 在 Win10 上装 `Setup-RFERP-*.exe`，走完：首启配置 → 建管理员 → 登录 → 零件列表 → 建零件 → 登出。确认 WebView2 缺失时能正确引导安装 | **合并前必做** |
 | **WebView2 缺失场景** | 本机已装 WebView2 154，无法触发缺失分支 | 在 Win10 干净镜像（无 Edge 更新）上卸载 WebView2 运行时后启动，确认弹出的是中文提示并能跳到下载页 | **合并前必做** |
+| **旧版数据库 → 新 UI 版本兼容性** | 需要一份**旧 Fyne 版留下的数据目录**；本机只有新构建 | 见下方专项（3 步） | **发布前必做** |
+
+#### 旧版本数据库 → 新 UI 版本（专项）
+
+**范围（2026-10-11 收窄）**：第一版新 UI **不涉及数据库结构改动**，因此不测
+「装回旧版能否继续用」——用户没有回退需求，新旧版本之间也不存在必须维持的
+回退承诺。**只需确认一件事：Fyne 版留下的数据库结构能被新版正常打开与使用。**
+
+| 步骤 | 做法 | 通过标准 |
+|---|---|---|
+| 1 | 装已发布的 `Setup-RFERP-1.3.0.exe`（Fyne 版），建管理员，录入种子数据（产品/零件/BOM/批次），**记下各表条数** | — |
+| 2 | **不卸载、不清数据**，用新 UI 版本打开同一个数据目录 | 装配成功，**无迁移错误**，不弹任何报错 |
+| 3 | 登录后逐屏核对产品/零件/BOM/批次的**条数与内容** | 与步骤 1 记录的**逐项全等** |
+
+> **不做**（已从原 6 步中移除）：迁移幂等复启动、装回旧版验证回退可用性。
+> 理由：第一版不改结构，不存在新版写坏旧库的情况；用户也无回退诉求。
+>
+> 若将来某一版**引入了破坏性迁移**（删列、改类型、重写表），必须把这两项加回来
+> ——那时「新版升级失败能否退回」就重新变成一个真实的用户风险。
 
 已在本机验证、不需再验的部分：WebView2 提示**文案**已由单测锁定（非空、中文、
 带下载链接），缺的只是「真的缺失时确实弹出这一段」这一步。

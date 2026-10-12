@@ -51,6 +51,10 @@ type Server struct {
 	// cmd/server 留空，走 Bearer + 网络边界。
 	startupToken string
 
+	// updater 承载软件更新。url 为空表示未配置更新源，此时不检查、不提示、
+	// 也不发任何网络请求（本地部署不需要联网）。
+	updater updateChecker
+
 	// staticFS/staticDir 非空时挂载前端构建产物（阶段 A 内嵌服务用它同时提供 API 与页面）。
 	staticFS  fs.FS
 	staticDir string
@@ -90,6 +94,17 @@ func WithRemember(path string) Option {
 	}
 }
 
+// WithUpdate 启用软件更新。url 为空（默认）表示不启用。
+//
+// 只有桌面入口该传：更新会替换用户正在运行的 exe，这是单机行为，
+// 不该在 cmd/server 上被触发。
+func WithUpdate(url, currentVersion string) Option {
+	return func(s *Server) {
+		s.updater.url = url
+		s.updater.cur = currentVersion
+	}
+}
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -113,6 +128,14 @@ func (s *Server) Handler() http.Handler {
 	// 未登录可读的服务端自描述（D-016）：供"接入服务器"预检使用。
 	// 只暴露版本与数据库身份，不含任何业务数据。
 	mux.HandleFunc("GET /api/v1/serverinfo", s.handleServerInfo)
+	// 软件更新：查 → 下载 → 应用，三步分开。
+	// 「应用」会替换正在运行的 exe，必须带 confirm；不配置更新源时这三个端点
+	// 仍可调用，但一律返回 enabled:false / 400，不发任何网络请求。
+	mux.HandleFunc("GET /api/update/check", s.handleCheckUpdate)
+	// download/apply 必须带权限点：之前这里是空字符串，而 auth() 对空权限点
+	// 直接放行 —— 任何登录用户（含只读 viewer）都能替换正在运行的程序。
+	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, "System.DownloadUpdate"))
+	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, "System.ApplyUpdate"))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

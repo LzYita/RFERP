@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"time"
 
+	"app/internal/windowsobj"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -39,11 +41,15 @@ import (
 	"app/internal/logging"
 	"app/internal/paths"
 	"app/internal/singleinstance"
+	"app/internal/update"
 	"app/internal/usecase"
 	"app/internal/webassets"
 	"app/internal/winappid"
 	"app/internal/winmsg"
 )
+
+// serveOnlyHint 供 setupwizard 判断是否无头运行（该文件不直接持有 flag 变量）。
+var serveOnlyHint = new(bool)
 
 var version = "dev"
 
@@ -58,8 +64,21 @@ func main() {
 	serveOnly := flag.Bool("serve", false, "只启动内嵌 HTTP 服务，不开窗口（开发/验证用）")
 	serveAddr := flag.String("serve-addr", "127.0.0.1:54321", "-serve 模式的监听地址")
 	flag.Parse()
+	*serveOnlyHint = *serveOnly
 
 	winappid.Set("LzYita.RFERP")
+
+	// 把整棵进程树钉进带 KILL_ON_JOB_CLOSE 的 Job Object。
+	//
+	// 实测结论：本机上 WebView2 在正常关闭和 Stop-Process -Force 下**都会自行退出**，
+	// 孤儿不是常态（做过无 Job Object 的对照构建，结论相同）。所以这不是修复，
+	// 是针对「崩溃 / 断电 / WebView2 刚派生子进程就被杀」这些无人值守场景的兜底——
+	// 由内核接管，不依赖宿主有机会跑清理。
+	//
+	// 位置重要：必须早于任何可能派生子进程的动作。失败只记录不退出。
+	if err := windowsobj.Guard(); err != nil {
+		log.Printf("windowsobj: 进程树保险未启用（%v）", err)
+	}
 
 	// 更新后重启时旧进程可能仍在退出，稍等它释放单实例锁。
 	var lockWait time.Duration
@@ -80,11 +99,41 @@ func main() {
 
 	cfg := config.Load()
 	paths.SetDataDir(cfg.DataDir)
+
+	// 更新源：配置优先，环境变量可覆盖（测试与灰度发布用）。
+	// AutoUpdate 关掉、或地址为空时完全不启用——不发请求、不弹窗。
+	updateURL := cfg.UpdateURL
+	if v := os.Getenv("RFERP_UPDATE_URL"); v != "" {
+		updateURL = v
+	}
+	if !cfg.AutoUpdate {
+		updateURL = ""
+	}
+	if updateURL != "" {
+		update.CleanupOld()
+	}
 	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
 		log.Printf("init log file failed: %v", err)
 	}
 
 	res, err := bootstrap.Build(cfg, bootstrap.Options{Logf: log.Printf})
+
+	// 全新安装：没有任何配置。此时业务服务一个都起不来（not configured），
+	// 但用户需要的不是一条错误，而是「数据怎么连」这个问题的答案。
+	//
+	// 注意这里**不弹浏览器、不重启进程**：配置页就显示在 Wails 窗口里。
+	// 用户要在这一页输 MySQL 密码——那是最需要确认「自己在给哪个软件输密码」
+	// 的一步，放到浏览器标签页里会显得与本软件无关。
+	//
+	// 做法是同一个监听端口、同一个窗口，只把后端 handler 换掉：
+	//   未配置 → handler = 配置页
+	//   配好且装配成功 → handler = 真正的业务服务，刷新窗口
+	if bootstrap.IsNotConfigured(err) {
+		log.Printf("bootstrap: not configured, showing first-run setup in-app")
+		runFirstRunSetup(cfg)
+		return
+	}
+
 	if err != nil {
 		// 无头模式下没有界面可以承载更详细的说明，直接退出即可；
 		// 弹系统对话框在无 GUI 的开发环境里既看不见也挡不住 CI。
@@ -107,7 +156,7 @@ func main() {
 		return
 	}
 
-	emb, stop, err := serve(res.Apps)
+	emb, stop, err := serve(res.Apps, updateURL)
 	if err != nil {
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
@@ -233,13 +282,13 @@ func randomPortSuggestion(addr string) int {
 }
 
 // serve 在 127.0.0.1 上启动内嵌服务。
-func serve(apps usecase.Applications) (*embeddedServer, func(), error) {
-	return serveOn(apps, "127.0.0.1:0")
+func serve(apps usecase.Applications, updateURL string) (*embeddedServer, func(), error) {
+	return serveOn(apps, "127.0.0.1:0", updateURL)
 }
 
 // serveOn 在指定地址启动内嵌服务。addr 为 ":0" 时由内核分配端口
 // （Round 1 关口：随机端口分配、就绪等待、异常退出清理）。
-func serveOn(apps usecase.Applications, addr string) (*embeddedServer, func(), error) {
+func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
@@ -248,6 +297,9 @@ func serveOn(apps usecase.Applications, addr string) (*embeddedServer, func(), e
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStartupToken(tok),
+		// 软件更新：只桌面形态启用。更新会替换用户正在运行的 exe，
+		// 那是单机行为，不该在 cmd/server 上被触发。
+		api.WithUpdate(updateURL, version),
 		// 单机桌面形态才开「记住登录」：这一档有启动 token 网关兜底，
 		// 且凭证是 DPAPI 绑本机的密文。cmd/server 监听全网卡且无网关，
 		// 在那里开等于把长期凭证开放给网络上任何客户端。

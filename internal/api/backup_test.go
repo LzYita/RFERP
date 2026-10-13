@@ -62,11 +62,22 @@ func (a *backupApps) ClearDatabase() (usecase.ClearResult, error) {
 }
 
 // newBackupServer 建服务器，并把数据目录指到临时目录。
-func newBackupServer(t *testing.T, apps *backupApps, opts ...Option) *Server {
+//
+// apps 取 usecase.Applications 而非 *backupApps：有些用例要额外实现可选端口
+// （如 usecase.BackupInspector），签死具体类型就传不进来。
+func newBackupServer(t *testing.T, apps usecase.Applications, opts ...Option) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	paths.SetDataDir(dir)
-	apps.dataDir = dir
+	// 有些用例传的是包装类型（实现了额外可选端口），但 DataDir 得落到被包的那个上，
+	// 否则断言看到的是包装类型自己那份空串。
+	if setter, ok := apps.(interface{ setDataDirForTest(string) }); ok {
+		setter.setDataDirForTest(dir)
+	} else if b, ok := apps.(*backupApps); ok {
+		b.dataDir = dir
+	} else if b, ok := apps.(*inspectingApps); ok {
+		b.dataDir = dir
+	}
 	t.Cleanup(func() { paths.SetDataDir("") })
 	return New(apps, opts...)
 }
@@ -581,6 +592,151 @@ func TestListBackupsReturnsNamesOnly(t *testing.T) {
 	}
 	if names["notes.txt"] {
 		t.Error("列表混入了非备份文件（.txt）——它不是合法的恢复源")
+	}
+}
+
+// 宿主**没有**实现 usecase.BackupInspector 时，列表必须照常工作：
+// 覆盖度字段整体省略，前端按「无法确认」处理，而不是把接口搞挂。
+//
+// 这一条是降级路径的关口：预检是增强，不能让它成为打开备份屏的前提。
+func TestListBackupsWorksWithoutInspector(t *testing.T) {
+	apps := &backupApps{} // 不实现 InspectBackupFile
+	s := newBackupServer(t, apps)
+	tok := issueAdmin(t, s)
+
+	dir := paths.BackupDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "backup_20260925_101530.sql"), []byte("-- Dump completed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := doJSON(t, s, "GET", "/api/backup/files", tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("未实现预检端口时列备份 = %d，期望 200（预检是增强，不是前提）", w.Code)
+	}
+	var out struct {
+		Files []backupEntry `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Files) != 1 {
+		t.Fatalf("应列出 1 个文件，实际 %d", len(out.Files))
+	}
+	if out.Files[0].Restorable {
+		t.Error("没做预检就不该声称 Restorable——那是没依据的断言")
+	}
+}
+
+// 实现了预检端口时，缺表与不可用要如实带到列表里：界面据此在**选中之前**提示。
+type inspectingApps struct {
+	backupApps
+	insp usecase.BackupInspection
+}
+
+func (a *inspectingApps) InspectBackupFile(string) (usecase.BackupInspection, error) {
+	return a.insp, nil
+}
+
+func TestListBackupsCarriesPreflightVerdict(t *testing.T) {
+	t.Run("缺表要报出来", func(t *testing.T) {
+		apps := &inspectingApps{insp: usecase.BackupInspection{
+			SchemaKnown: true, Usable: true, MissingTables: []string{"batch_consumptions"},
+		}}
+		s := newBackupServer(t, apps)
+		// 必须在建服务器之后播种：newBackupServer 会把数据目录指向本用例的临时目录，
+		// 在它之前播种的文件落在别的目录里，列表自然是空的。
+		seedBackupFile(t, "backup_20260922_123649.sql")
+		tok := issueAdmin(t, s)
+
+		var out struct {
+			Files []backupEntry `json:"files"`
+		}
+		w := doJSON(t, s, "GET", "/api/backup/files", tok, nil)
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Files) != 1 {
+			t.Fatalf("应列出 1 个文件，实际 %d", len(out.Files))
+		}
+		f := out.Files[0]
+		if !f.Restorable {
+			t.Error("可用文件却标成不可用")
+		}
+		if len(f.MissingTables) != 1 || f.MissingTables[0] != "batch_consumptions" {
+			t.Errorf("缺表没有带到列表：%v", f.MissingTables)
+		}
+	})
+
+	t.Run("覆盖度未知时不谎报缺表", func(t *testing.T) {
+		apps := &inspectingApps{insp: usecase.BackupInspection{SchemaKnown: false, Usable: true}}
+		s := newBackupServer(t, apps)
+		seedBackupFile(t, "backup_20260922_123649.sql")
+		tok := issueAdmin(t, s)
+
+		var out struct {
+			Files []backupEntry `json:"files"`
+		}
+		w := doJSON(t, s, "GET", "/api/backup/files", tok, nil)
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Files) != 1 {
+			t.Fatalf("应列出 1 个文件，实际 %d", len(out.Files))
+		}
+		if out.Files[0].SchemaKnown {
+			t.Error("SchemaKnown 应为 false，让界面显示「无法确认」")
+		}
+		if len(out.Files[0].MissingTables) != 0 {
+			t.Errorf("未知时不得列缺表：%v", out.Files[0].MissingTables)
+		}
+	})
+
+	t.Run("编码不兼容要标为不可用并带上原因", func(t *testing.T) {
+		apps := &inspectingApps{insp: usecase.BackupInspection{
+			Usable: false, Reason: "文件是 UTF-16LE 编码，无法作为恢复来源",
+		}}
+		s := newBackupServer(t, apps)
+		seedBackupFile(t, "pre_restore_20260924_172919.sql")
+		tok := issueAdmin(t, s)
+
+		var out struct {
+			Files []backupEntry `json:"files"`
+		}
+		w := doJSON(t, s, "GET", "/api/backup/files", tok, nil)
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Files[0].Restorable {
+			t.Error("UTF-16 文件必须标为不可用")
+		}
+		if !strings.Contains(out.Files[0].UnusableReason, "UTF-16") {
+			t.Errorf("不可用原因要透传给界面：%q", out.Files[0].UnusableReason)
+		}
+	})
+}
+
+// 编码不兼容的文件必须**在删除任何数据之前**被拒。
+//
+// 这条闸门的位置很要紧：service 侧还有 VerifyDumpFile 按字节找完成标记兜底
+// （UTF-16 文件没有那些字节，会被拦），但那时用户已经输完口令、点完确认了。
+func TestRestoreRejectsUnusableEncodingBeforeTouchingData(t *testing.T) {
+	apps := &inspectingApps{insp: usecase.BackupInspection{Usable: false, Reason: "文件是 UTF-16LE 编码，无法作为恢复来源"}}
+	s := newBackupServer(t, apps, WithHostOperations())
+	seedBackupFile(t, "pre_restore_20260924_172919.sql")
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/restore", tok, map[string]string{"file": "pre_restore_20260924_172919.sql"})
+	if w.Code == http.StatusOK {
+		t.Fatal("不可用的文件竟然恢复成功了")
+	}
+	if apps.restored != "" {
+		t.Fatalf("闸门位置不对：被拒时仍然调用了 RestoreDatabase(%q)", apps.restored)
+	}
+	if !strings.Contains(w.Body.String(), "UTF-16") {
+		t.Errorf("拒绝理由要指名原因，用户才知道该重新导出：%s", w.Body.String())
 	}
 }
 

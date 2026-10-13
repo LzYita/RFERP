@@ -26,6 +26,7 @@ import {
   classifyDirPick,
   isDirPickUnavailable,
   restoreTokenFor,
+  tablesLostOnRestore,
   type BackupFile,
   type ClearResult,
   type DataDirInfo,
@@ -36,6 +37,21 @@ import { ConfirmDialog, Modal } from '../components/form'
 import { OutcomeDialog, type OutcomeView } from './backupOutcome'
 
 const today = () => new Date().toISOString().slice(0, 10)
+
+/**
+ * 下拉框里每项的后缀标记。
+ *
+ * 放在文件名旁边而不是等到选中之后才提示，是因为下拉框是用户比较候选的唯一界面：
+ * 3 份同一时刻的备份（.sql / .upgraded.sql / .final.sql）光看名字分不出好坏，
+ * 而它们恰恰是回滚结果不同的那几份。
+ */
+function fileBadge(f: BackupFile): string {
+  if (f.restorable === false) return '　⚠ 不可用'
+  if (f.schemaKnown === false) return '　（覆盖度未确认）'
+  const lost = tablesLostOnRestore(f)
+  if (lost.length > 0) return `　⚠ 缺 ${lost.length} 张表`
+  return '　✓ 可完整回滚'
+}
 
 export function BackupScreen() {
   const { modules, hostOperations } = usePermissions()
@@ -104,6 +120,13 @@ export function BackupScreen() {
   const destructiveReady = canEdit && hostOperations
   const pickedFile = files.find((f) => f.name === picked) ?? null
   const wantToken = pickedFile ? restoreTokenFor(pickedFile.name) : null
+  // 令牌是**两道**门，不止文件名那一道：服务端已判这份文件不可用
+  // （非 UTF-8 编码）时不该再让用户输口令——输了也是在最后一步才失败。
+  const pickedUsable = pickedFile?.restorable !== false
+  const lostTables = pickedFile ? tablesLostOnRestore(pickedFile) : []
+  // schemaKnown === false：预检只读到文件开头，覆盖度**未知**。
+  // 把它当成"没问题"是不诚实的，但也绝不能反过来谎报缺哪几张表。
+  const coverageUnknown = pickedFile?.schemaKnown === false
 
   function onDestructiveError(op: string, e: unknown, safetyCopy?: string) {
     if (e instanceof ApiError) {
@@ -211,7 +234,7 @@ export function BackupScreen() {
   }
 
   async function doRestore() {
-    if (!pickedFile || !wantToken || token !== wantToken) return
+    if (!pickedFile || !wantToken || token !== wantToken || !pickedUsable) return
     setBusy('restore')
     setConfirmRestore(false)
     try {
@@ -386,7 +409,7 @@ export function BackupScreen() {
               <option value="">请选择…</option>
               {files.map((f) => (
                 <option key={f.name} value={f.name}>
-                  {f.name}（{f.modified}）
+                  {f.name}（{f.modified}）{fileBadge(f)}
                 </option>
               ))}
             </select>
@@ -405,15 +428,29 @@ export function BackupScreen() {
               // 稳定的可访问名：placeholder 会随状态变（「先选择一个备份文件」/「在此
               // 输入确认口令」），用它定位会在两处都叫「确认口令」时选错输入框。
               aria-label="恢复确认口令"
-              disabled={!wantToken || busy !== null}
-              placeholder={wantToken ? '在此输入确认口令' : '先选择一个备份文件'}
+              disabled={!wantToken || !pickedUsable || busy !== null}
+              placeholder={
+                !pickedUsable
+                  ? '这份备份不可用'
+                  : wantToken
+                    ? '在此输入确认口令'
+                    : '先选择一个备份文件'
+              }
               className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)]"
             />
           </Field>
         </div>
 
         {/* G1 的后半：选了文件但导不出令牌 → 直接拒绝，不给「下一步」 */}
-        {pickedFile && !wantToken ? (
+        {pickedFile && !pickedUsable ? (
+          <p className="mt-2 rounded-[6px] border border-[#E5A50A] bg-[#FFFBEB] px-2.5 py-1.5 text-[11.5px] text-[#8A6100]">
+            这份备份不能作为恢复来源：{pickedFile.unusableReason ?? '文件格式无法识别'}。
+            <div className="mt-1">
+              若它是用 PowerShell「另存为」或重定向生成的，请用 UTF-8 重新导出一份再恢复。
+            </div>
+          </p>
+        ) : null}
+        {pickedFile && pickedUsable && !wantToken ? (
           <p className="mt-2 rounded-[6px] border border-[#E5A50A] bg-[#FFFBEB] px-2.5 py-1.5 text-[11.5px] text-[#8A6100]">
             无法从文件名「{pickedFile.name}」识别备份时间戳，为避免恢复错文件已拒绝恢复。
             请选择形如
@@ -421,7 +458,20 @@ export function BackupScreen() {
             的文件；本应用生成的备份、以及导出后自行改名的副本（结尾加 .final / .upgraded 等）都可以用。
           </p>
         ) : null}
-        {wantToken ? (
+
+        {/* 覆盖度预检：恢复是「先清空、再回灌」，缺表 = 那张表的数据回不来 */}
+        {lostTables.length > 0 ? (
+          <p className="mt-2 rounded-[6px] border border-[#E5A50A] bg-[#FFFBEB] px-2.5 py-1.5 text-[11.5px] text-[#8A6100]">
+            这份备份早于部分表引入，恢复后下列数据会被清空且**无法从该备份回填**：
+            <b>{lostTables.join('、')}</b>。仍可继续恢复，操作前副本可用于退回。
+          </p>
+        ) : null}
+        {coverageUnknown ? (
+          <p className="mt-2 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2.5 py-1.5 text-[11.5px] text-[var(--color-fg-muted)]">
+            这份备份较大，只校验了开头部分，**无法确认**它是否覆盖全部当前数据表。
+          </p>
+        ) : null}
+        {wantToken && pickedUsable ? (
           <p className="mt-2 text-[11.5px] text-[var(--color-fg-muted)]">
             请在输入框中准确输入：
             <b style={{ fontFamily: 'Consolas, monospace' }}>{wantToken}</b>
@@ -431,7 +481,9 @@ export function BackupScreen() {
         <div className="mt-2">
           <Btn
             danger
-            disabled={!destructiveReady || !wantToken || token !== wantToken || busy !== null}
+            disabled={
+              !destructiveReady || !wantToken || !pickedUsable || token !== wantToken || busy !== null
+            }
             onClick={() => setConfirmRestore(true)}
           >
             {busy === 'restore' ? '恢复中…' : '整库恢复'}
@@ -529,6 +581,24 @@ export function BackupScreen() {
                   回灌在单个事务内完成；如提交结果不明或提交后核验失败，须先核对数据再重试
                 </li>
               </ol>
+              {/* 覆盖度预检：把「这张表的数据回不来」摆进后果清单里。
+                  不硬拦——回滚到某个历史时刻是正当需求，替用户决定不合适；
+                  但让他在按下确认之前就知道。 */}
+              {lostTables.length > 0 ? (
+                <div className="mt-2 rounded-[6px] border border-[#E5A50A] bg-[#FFFBEB] px-2.5 py-1.5 text-[11.5px] text-[#8A6100]">
+                  <b>这份备份回填不了下列数据表：</b>
+                  {lostTables.join('、')}
+                  <div className="mt-1">
+                    它们会被清空，且无法从该备份恢复——只能用操作前自动生成的副本找回。
+                    这说明该备份早于这些表引入。
+                  </div>
+                </div>
+              ) : null}
+              {coverageUnknown ? (
+                <div className="mt-2 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2.5 py-1.5 text-[11.5px] text-[var(--color-fg-muted)]">
+                  这份备份较大，只校验了开头部分，无法确认它是否覆盖全部当前数据表。
+                </div>
+              ) : null}
             </>
           }
           onConfirm={doRestore}

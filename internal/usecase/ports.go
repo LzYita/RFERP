@@ -31,6 +31,32 @@ type PrefixSnapshotPort interface {
 	PrefixSnapshot(saveDir, prefix string) (path string, err error)
 }
 
+// BackupInspection 是一份备份「能不能安全回滚」的预检结论（见 dbbackup.Coverage）。
+//
+// 之所以要把它送到界面上：恢复的实现是「先 DELETE 全部业务表，再回灌 INSERT」，
+// 所以一份早于某张表引入的备份，恢复后那张表会被清空且无处回填。
+// 用户在输完口令、点完确认之后才发现，是最晚的发现时机。
+type BackupInspection struct {
+	// SchemaKnown 为 false 表示预检只读到文件开头、没读到结尾，
+	// 无法断言覆盖度。界面此时必须说「无法确认」，不得显示缺哪几张表。
+	SchemaKnown bool
+	// MissingTables：当前业务表里、这份备份的 schema 中没有的表。
+	MissingTables []string
+	// Usable 为 false 时不可作为恢复来源（典型：非 UTF-8 编码）。
+	Usable bool
+	// Reason 是不可用的中文原因，直接展示给用户。
+	Reason string
+}
+
+// BackupInspector 是「预检一份备份文件」的可选端口。
+//
+// 用可选端口而不是加进 Applications：备份列表是只读的增强，
+// 没实现它时列表照常工作（前端把覆盖度当「无法确认」处理），
+// 而不是让所有实现方与测试桩都必须补一个方法。
+type BackupInspector interface {
+	InspectBackupFile(path string) (BackupInspection, error)
+}
+
 // SessionPort 在“关闭外键/唯一检查”的会话中执行 operation，用于批量导入/清库。
 // MySQL 实现使用会话级 FOREIGN_KEY_CHECKS / UNIQUE_CHECKS；
 // SQLite 实现应使用 PRAGMA 等价物或逐语句策略。Service 不得出现这些方言。

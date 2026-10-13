@@ -15,6 +15,32 @@ export interface BackupFile {
   name: string
   size: number
   modified: string
+
+  // ── 预检结论（服务端算，见 internal/api/backup.go handleListBackups）──
+  // 恢复的实现是「先 DELETE 全部业务表，再回灌 INSERT」，所以一份早于某张表
+  // 引入的备份，恢复后那张表会被清空且无处回填。这些字段把这件事提前说出来，
+  // 而不是等用户输完确认口令、点完恢复之后才发现。
+
+  /** false = 预检只读到文件开头、没读到结尾，覆盖度**未知**。 */
+  schemaKnown?: boolean
+  /** 当前业务表里、这份备份 schema 中没有的表。schemaKnown 为 false 时无意义。 */
+  missingTables?: string[]
+  /** false = 不能作为恢复来源（典型：非 UTF-8 编码）。 */
+  restorable?: boolean
+  unusableReason?: string
+}
+
+/**
+ * 这份备份恢复后会丢哪些表的数据。
+ *
+ * 返回空数组有两种含义，界面的措辞必须区分：
+ *   - 覆盖完整
+ *   - **无法确认**（schemaKnown=false，预检只读了文件开头）
+ * 所以调用方要看 schemaKnown，别只看这个数组的长度。
+ */
+export function tablesLostOnRestore(f: BackupFile): string[] {
+  if (f.schemaKnown === false) return []
+  return f.missingTables ?? []
 }
 
 export interface DataDirInfo {

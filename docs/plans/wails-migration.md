@@ -590,6 +590,49 @@ RFERP/
       并加 `backup_contract_test.go`：直接读 TS 源码里的正则、交给 **Node 求值**，
       与 Go 侧对同一批真实文件名逐一比对（不在 Go 里复刻一遍规则——复刻等于又写一份）
 
+### 备份可恢复性预检（2026-10-13，实机反馈驱动）
+
+查 `.final` / `.upgraded` 的来源时发现的、比命名严重得多的问题。
+
+**恢复的实现是「先 DELETE 全部业务表，再回灌 INSERT」**（`service/restore.go:107-113`），
+所以一份备份能否安全回滚，取决于它**schema 里有没有当前的每张业务表**：
+
+- 表存在但当时为空 → 无 INSERT，但 DELETE 后回填空 = 正确回滚，**不算缺**
+- 表**不存在** → 照样被 DELETE，且无处回填 → 若现在有行，这些行永久丢失
+
+实测 `D:\仓库数据\备份` 9 份备份：**7 份缺 `batch_consumptions`**，
+只有 `.upgraded.sql` 与 `.final.sql` 覆盖完整 —— 它们是用户管理迁移**之后**的版本。
+旧版 Fyne 的确认文案（`ui/backup.go:254`）只笼统写「账号、迁移记录与数据库身份会保留」，
+对表级覆盖只字不提。
+
+另一颗地雷：`pre_restore_20260924_172919.sql` 是 **UTF-16LE**（PowerShell 另存为的产物）。
+按 UTF-8 读它 **0 行 INSERT 匹配**。好在 `VerifyDumpFile` 在 `deleteBusinessTables`
+**之前**按字节找不到 `Dump completed` 会拦下，失败在删除之前——但用户已经输完口令、
+点完确认了，而且文案说「文件不完整」，而文件其实没缺任何东西。
+
+- [x] `internal/dbbackup.InspectDump`：编码探测 + 覆盖度，读取**有上限**（1MB）
+- [x] 读不完整个文件时返回 `SchemaKnown=false` 而不是猜测——
+      把「没读到」谎报成「备份里没有」，比不显示更糟
+- [x] `usecase.BackupInspector` **可选**端口（`service.InspectBackupFile`）：
+      没实现时列表照常工作，预检是增强而非前提
+- [x] `GET /api/backup/files` 随列表返回 `schemaKnown` / `missingTables` /
+      `restorable` / `unusableReason`
+- [x] 恢复端点**在删除任何数据之前**拒掉编码不兼容的文件
+- [x] 下拉框每项带标记：`✓ 可完整回滚` / `⚠ 缺 N 张表` / `（覆盖度未确认）` / `⚠ 不可用`
+- [x] G3 确认框逐条点名回填不了的表；**警告但允许**（用户明确决策：
+      回滚到某个历史时刻是正当需求，替用户决定不合适，但要让他在按下确认前知道）
+
+**顺带查清的旧版逻辑**（都不是程序产生的）：三个怪文件都出自 2026-09-24 那次
+人工迁移。证据三条 —— ① 全仓库含全部历史搜不到 `.final`/`.upgraded`；
+② 写任意前缀的能力 `BackupTo` 是 **09-29** 才引入的，而那些文件是 **09-24**，
+那时程序连 `pre_restore_*` 这个名字都产生不了；③ 程序写 dump 是
+`cmd.Stdout = outFile` 原始字节 + 写完自校验失败即删，Go 代码历史上从未用过 `Out-File`。
+
+**操作前自动副本功能仍在**：清空 → `pre_clear_*`（`service.go:1692`），
+恢复 → `pre_restore_*`（`restore.go:65/98`），迁移 → `backup_*`（`migrate.go:27`）。
+保留份数是 `safetyCopyKeep = 5`，**按前缀各自计数**（`restore.go:19`）。
+`backup_*`（手动备份 + 迁移前备份）永不自动清理。
+
 **CodeQL 现状（2026-10-13 复核）**：仓库实际未解决告警 **5 条**（3 × `go/path-injection`
 + 2 × `go/sql-injection`），都指向既有代码（`setupwizard.go` 等），**不落在本轮新增代码里**。
 PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的粗口径统计，与仓库实际

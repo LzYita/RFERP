@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"app/internal/paths"
+	"app/internal/usecase"
 )
 
 // 备份 / 恢复 / 清空 / 数据目录的端点。
@@ -26,10 +27,23 @@ import (
 // 因此：客户端**只按文件名**指认备份文件，服务端在备份目录内解析；列表也只给文件名。
 
 // backupEntry 是列表里的一项。只含文件名、大小与时间，没有完整路径。
+//
+// 后三个字段是「预检结论」，可缺失：宿主没实现 usecase.BackupInspector 时整段省略，
+// 前端据此显示「无法确认」而不是假装覆盖度没问题。
 type backupEntry struct {
 	Name     string `json:"name"`
 	Size     int64  `json:"size"`
 	Modified string `json:"modified"`
+
+	// SchemaKnown=false 表示预检只读到文件开头，没读到结尾，无法断言覆盖度。
+	SchemaKnown bool `json:"schemaKnown,omitempty"`
+	// MissingTables 是「当前业务表里、这份备份 schema 中没有」的表：
+	// 恢复时它们会被 DELETE 掉且无处回填。SchemaKnown 为 false 时本字段无意义。
+	MissingTables []string `json:"missingTables,omitempty"`
+	// Restorable=false 时该文件不能作为恢复来源（典型：非 UTF-8 编码），
+	// 界面应禁用它并显示 UnusableReason。
+	Restorable     bool   `json:"restorable,omitempty"`
+	UnusableReason string `json:"unusableReason,omitempty"`
 }
 
 // handleListBackups 列出可用于恢复的备份文件。
@@ -37,6 +51,9 @@ type backupEntry struct {
 // 恢复界面需要「先选文件、再确认」，而文件在服务器目录里、WebView2 没有原生的
 // 本地目录对话框（Fyne 版是 filepath.Walk 自己列的，ui/backup.go:332-370），
 // 所以这里提供列表端点。只回文件名：客户端不该知道服务器目录长什么样。
+//
+// 顺带做**预检**：每份备份能不能安全回滚（覆盖度）与能不能用（编码），
+// 在这里就告诉界面，而不是等用户输完确认口令、点完恢复才失败。
 func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
 	dir := paths.BackupDir()
 	entries, err := os.ReadDir(dir)
@@ -69,6 +86,22 @@ func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
 	}
 	// 新→旧：用户最可能要恢复的是最近那一份。
 	sort.Slice(out, func(i, j int) bool { return out[i].Modified > out[j].Modified })
+
+	// 预检是增强：宿主没实现这个端口就跳过，界面按「无法确认」处理。
+	if insp, ok := s.apps.(usecase.BackupInspector); ok {
+		for i := range out {
+			got, err := insp.InspectBackupFile(filepath.Join(dir, out[i].Name))
+			if err != nil {
+				out[i].Restorable = false
+				out[i].UnusableReason = "备份文件无法读取"
+				continue
+			}
+			out[i].SchemaKnown = got.SchemaKnown
+			out[i].MissingTables = got.MissingTables
+			out[i].Restorable = got.Usable
+			out[i].UnusableReason = got.Reason
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out})
 }
 
@@ -315,6 +348,19 @@ func (s *Server) resolveBackupFile(name string) (string, error) {
 	if err != nil || st.IsDir() {
 		return "", errBackupFileMissing
 	}
+	// 编码闸门：UTF-16 的 dump 按 UTF-8 读会一行 INSERT 都匹配不到，
+	// 于是「全部业务表被清空、零行回填」却报告成功。service 侧还有
+	// VerifyDumpFile 按字节找完成标记兜底（UTF-16 文件没有那些字节，会被拦），
+	// 但那已经是在用户输完口令、点完确认之后了。这里提前拒。
+	if insp, ok := s.apps.(usecase.BackupInspector); ok {
+		got, err := insp.InspectBackupFile(target)
+		if err != nil {
+			return "", errBackupFileUnreadable
+		}
+		if !got.Usable {
+			return "", errBackupFileEncoding(got.Reason)
+		}
+	}
 	return target, nil
 }
 
@@ -349,4 +395,11 @@ var (
 	errBackupFileNotInDir    = errors.New("备份文件必须位于本应用的备份目录内，不能指定路径")
 	errBackupFileMissing     = errors.New("备份文件不存在或无法访问，请重新选择")
 	errBackupFileNotARestore = errors.New("无法从该文件名识别备份时间戳，拒绝恢复")
+	errBackupFileUnreadable  = errors.New("备份文件无法读取")
+	errBackupFileEncoding    = func(reason string) error {
+		if reason == "" {
+			reason = "备份文件编码无法识别"
+		}
+		return errors.New(reason)
+	}
 )

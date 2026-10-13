@@ -5,7 +5,13 @@
 // 自己拍脑袋写的规则——同一份命名约定（backup_ / pre_restore / pre_clear + 时间戳）
 // 两端必须一致，否则用户照着旧文档猜口令会一直失败。
 import { describe, it, expect } from 'vitest'
-import { classifyDirPick, isDirPickUnavailable, restoreTokenFor } from '../src/lib/backup'
+import {
+  classifyDirPick,
+  isDirPickUnavailable,
+  restoreTokenFor,
+  tablesLostOnRestore,
+  type BackupFile,
+} from '../src/lib/backup'
 import { ApiError } from '../src/lib/api'
 
 describe('restoreTokenFor', () => {
@@ -107,5 +113,37 @@ describe('isDirPickUnavailable', () => {
 
   it('非 ApiError（网络断、解析失败）不降级', () => {
     expect(isDirPickUnavailable(new Error('network down'))).toBe(false)
+  })
+})
+
+// 覆盖度预检。恢复是「先 DELETE 全部业务表，再回灌 INSERT」，所以一份早于某张表
+// 引入的备份，恢复后那张表会被清空且无处回填——这是静默数据丢失。
+describe('tablesLostOnRestore', () => {
+  const f = (o: Partial<BackupFile>): BackupFile => ({
+    name: 'backup_20260922_123649.sql',
+    size: 1,
+    modified: '2026-09-22 12:36:49',
+    ...o,
+  })
+
+  it('覆盖完整 → 没有会丢的表', () => {
+    expect(tablesLostOnRestore(f({ schemaKnown: true, missingTables: [] }))).toEqual([])
+    expect(tablesLostOnRestore(f({ schemaKnown: true }))).toEqual([])
+  })
+
+  it('schemaKnown=false（只读到开头）→ 返回空数组，绝不谎报缺表', () => {
+    // 这条最容易写错：把"没读到"当成"备份里没有"，界面就会对着一份完全正常的
+    // 大备份说"这张表恢复后会被清空"。
+    expect(tablesLostOnRestore(f({ schemaKnown: false }))).toEqual([])
+  })
+
+  it('服务端没返回预检字段（旧版本）→ 空数组，不误报', () => {
+    expect(tablesLostOnRestore(f({}))).toEqual([])
+  })
+
+  it('真的缺表时如实返回', () => {
+    expect(
+      tablesLostOnRestore(f({ schemaKnown: true, missingTables: ['batch_consumptions'] })),
+    ).toEqual(['batch_consumptions'])
   })
 })

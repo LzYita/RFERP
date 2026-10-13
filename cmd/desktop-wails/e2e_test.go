@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"app/internal/auth"
 	"app/internal/bootstrap"
 	"app/internal/config"
 	"app/internal/paths"
@@ -157,9 +158,21 @@ func TestPermissionsEndpointReflectsAuthMatrix(t *testing.T) {
 		t.Fatalf("权限端点未返回 modules: admin=%v viewer=%v", adm, vw)
 	}
 
-	// 管理员：全部 9 个模块可见，audit 为 read。
-	if len(am) != 9 {
-		t.Errorf("管理员模块数 = %d, want 9", len(am))
+	// 管理员：全部模块可见，audit 为 read。
+	//
+	// 这里**不能**断言固定的模块个数。曾经写的是 `len(am) != 9`，把当时的
+	// 模块数钉死了——而 AllModules() 手写列表漏掉 ModuleSystem，这个断言
+	// 反而成了"漏掉也是对的"的证明。改为断言"每个权限表里的模块都在"。
+	if len(am) == 0 {
+		t.Fatalf("管理员权限为空：%v", adm)
+	}
+	for _, m := range auth.AllModules() {
+		if _, ok := am[m]; !ok {
+			t.Errorf("权限端点缺少模块 %q——前端将无法据此门控该入口", m)
+		}
+	}
+	if len(am) != len(auth.AllModules()) {
+		t.Errorf("管理员模块数 = %d, want %d（权限表里的每个模块）", len(am), len(auth.AllModules()))
 	}
 	if am["audit"] != "read" {
 		t.Errorf("管理员 audit = %v, want read", am["audit"])

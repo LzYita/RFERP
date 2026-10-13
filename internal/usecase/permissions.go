@@ -60,9 +60,14 @@ var permissions = []UseCasePermission{
 	// Stats / dashboard 只读
 	{Name: "Stats.GetStockStats", Module: auth.ModuleStats, Access: auth.AccessRead},
 
-	// 应用自身维护。AccessWrite 的三项都会落到「替换可执行文件」，因此只有
-	// ModuleSystem.AccessWrite（= admin）能通过；download/apply 手工不点确认
-	// 也换不来权限。
+	// 应用自身维护。download/apply 只给 ModuleSystem.AccessWrite（= admin）；
+	// 它们会替换正在运行的可执行文件，手工不点确认也换不来权限。
+	//
+	// CheckUpdate 是**登记性质**的：它列在这里是为了让权限表完整，但
+	// `GET /api/update/check` 实际不挂鉴权——登录页要在用户登录前提示可更新，
+	// 挂了 auth 就永远 401（update_authz_test.go 的 TestUpdateCheckStaysOpen
+	// 明确守着"不要顺手给它加上鉴权"）。所以：**不要**为了让路由与这一行对齐
+	// 而给 check 加 auth。internal/api 里有一条契约测试会检查这个对应关系。
 	{Name: "System.CheckUpdate", Module: auth.ModuleSystem, Access: auth.AccessRead},
 	{Name: "System.DownloadUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
 	{Name: "System.ApplyUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
@@ -77,13 +82,20 @@ var permissions = []UseCasePermission{
 	{Name: "Backup.ExportAllDataCSV", Module: auth.ModuleBackup, Access: auth.AccessRead},
 
 	// Identity
+	//
+	// UserCount 同样是登记性质的：`GET /api/users/count` 不挂鉴权，
+	// 因为首启要据此决定是进"初始化管理员"还是"登录页"——有会话才能问的话
+	// 就没有首启流程了。它只回一个数量，不泄露任何账号信息。
 	{Name: "Identity.UserCount", Module: auth.ModuleUsers, Access: auth.AccessRead},
 	{Name: "Identity.ListUsers", Module: auth.ModuleUsers, Access: auth.AccessRead},
 	{Name: "Identity.CreateUser", Module: auth.ModuleUsers, Access: auth.AccessWrite},
 	{Name: "Identity.UpdateUser", Module: auth.ModuleUsers, Access: auth.AccessWrite},
 	{Name: "Identity.DeleteUser", Module: auth.ModuleUsers, Access: auth.AccessWrite},
 	{Name: "Identity.ResetPassword", Module: auth.ModuleUsers, Access: auth.AccessWrite},
-	// 改自己的密码：登录用户即可，模块记为 users/write（与现 UI 管理入口一致）。
+	// 改自己的密码：**任何登录用户都可以**，路由因此用空权限点而不是这一行。
+	// handler 内强制 in.ID == 会话用户 ID（api/admin.go），越权改他人会 403。
+	// 记在这里是为了让"密码相关能力"在权限表里可检索，**不代表**它是管理员专属：
+	// 若照这一行去收紧路由，普通用户就再也改不了自己的密码。
 	{Name: "Identity.ChangePassword", Module: auth.ModuleUsers, Access: auth.AccessWrite},
 }
 

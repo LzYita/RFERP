@@ -78,21 +78,47 @@ const (
 	ModuleSystem = "system"
 )
 
-var moduleAccess = map[string]map[Role]Access{
-	ModuleDashboard: {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleStats:     {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleProducts:  {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleParts:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessWrite, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleBOM:       {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead},
-	ModuleBatch:     {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessWrite, RoleViewer: AccessRead},
+// moduleGrant 是一个模块及其四个角色的档位。
+type moduleGrant struct {
+	module string
+	access map[Role]Access
+}
+
+// modules 是权限矩阵的**唯一来源**：模块清单、逐角色档位、权限端点下发给前端的
+// 键，全部从这一张表派生。
+//
+// 为什么不是「一个 map + 一份 AllModules() 列表」：那正是出过的事故。
+// 新增 ModuleSystem 时只往 map 里加了条目，忘了同步列表，于是
+// /api/me/permissions 少返回一个模块，前端永远看不到它——而代码注释当时还写着
+// 「模块增减必须同时反映到权限表、导航与界面上，从一处派生才不会漂移」。
+// 把清单做成这张表的键之后，加模块不可能只加到一半。
+var modules = []moduleGrant{
+	{ModuleDashboard, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
+	{ModuleStats, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
+	{ModuleProducts, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
+	{ModuleParts, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessWrite, RoleProduction: AccessRead, RoleViewer: AccessRead}},
+	{ModuleBOM, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
+	{ModuleBatch, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessWrite, RoleViewer: AccessRead}},
 	// 操作记录含操作人账号、时间与具体动作，2026-10-10 定：只读角色不得查看。
 	// 改成 AccessNone 后，usecase.Allow 与 HTTP 层自动收紧，前端导航也据此隐藏入口。
-	ModuleAudit:  {RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone},
-	ModuleBackup: {RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone},
-	ModuleUsers:  {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
-	// 应用维护：只有管理员能写（替换可执行文件），其他角色只读或无权限
-	ModuleSystem: {RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone},
+	{ModuleAudit, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone}},
+	{ModuleBackup, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone}},
+	{ModuleUsers, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone}},
+	// 应用维护：只有管理员能写（替换可执行文件），其他角色无权限。
+	//
+	// 注意 AccessNone 是**每个角色都要显式写出来**的：缺键会经 AccessFor 落回
+	// AccessNone，看起来一样，但「显式写 None」和「忘了写」在评审时无法区分。
+	// TestEveryModuleCoversEveryRole 会挡住漏写。
+	{ModuleSystem, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone}},
 }
+
+var moduleAccess = func() map[string]map[Role]Access {
+	m := make(map[string]map[Role]Access, len(modules))
+	for _, g := range modules {
+		m[g.module] = g.access
+	}
+	return m
+}()
 
 func AccessFor(role Role, module string) Access {
 	if m, ok := moduleAccess[module]; ok {
@@ -103,22 +129,16 @@ func AccessFor(role Role, module string) Access {
 	return AccessNone
 }
 
-// AllModules 返回全部权限模块的键，顺序与 moduleAccess 的字面量一致。
+// AllModules 返回全部权限模块的键，顺序与 modules 的声明顺序一致。
 //
-// 前端导航要靠它枚举模块，但不该自己维护一份模块列表——
-// 模块增减必须同时反映到权限表、导航与界面上，从一处派生才不会漂移。
+// 前端导航要靠它枚举模块，但不该自己维护一份模块列表——模块增减必须同时
+// 反映到权限表、导航与界面上。它就是上面那张表的键，不可能再漏。
 func AllModules() []string {
-	return []string{
-		ModuleDashboard,
-		ModuleStats,
-		ModuleProducts,
-		ModuleParts,
-		ModuleBOM,
-		ModuleBatch,
-		ModuleAudit,
-		ModuleBackup,
-		ModuleUsers,
+	out := make([]string, 0, len(modules))
+	for _, g := range modules {
+		out = append(out, g.module)
 	}
+	return out
 }
 
 const (

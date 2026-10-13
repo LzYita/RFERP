@@ -219,7 +219,7 @@ export function BatchStockInModal({
       </div>
 
       <label className="mt-2.5 flex items-center gap-1.5 text-[11px] text-[var(--color-fg-muted)]">
-        <Checkbox checked disabled label={`合计增加 ${items.length} × 数量`} />
+        <Checkbox checked disabled label={`合计增加 ${items.length} 个零件 × 数量`} />
       </label>
     </Modal>
   )

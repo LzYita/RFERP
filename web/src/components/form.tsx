@@ -1,4 +1,14 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 
 /**
  * 列表屏的输入与弹层基元。
@@ -16,6 +26,18 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 const inputCls =
   'h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)] disabled:text-[var(--color-fg-subtle)]'
+
+/**
+ * 自绘下拉的面板与选项样式。
+ *
+ * SearchSelect 与 ComboInput 共用这两条，不各写一份：这两个组件的分歧只该是
+ * 「怎么选值」（对象 vs 自由文本），面板长相不该有两套，否则改样式时必然漏掉
+ * 其中一个——分类下拉就是这么变成孤例的。
+ */
+const menuCls =
+  'absolute z-50 mt-1 max-h-[180px] w-full overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] py-0.5 shadow-md'
+const menuItemCls =
+  'block w-full px-2.5 py-1 text-left text-[11.5px] hover:bg-[var(--color-primary-subtle)]'
 
 export function TextInput({
   value,
@@ -91,7 +113,16 @@ export function Select<T extends string>({
  * 做不到：库里已有的值不在常用列表里时，用户会发现自己无法保持原值——
  * 打开表单看到的是别的选项，一保存就把数据改了。
  *
- * options 只影响补全候选，**不限制**输入。
+ * options 只是候选项，**不限制**输入。
+ *
+ * 这里原来用的是 `<datalist>`，实测在 WebView2 里弹不出来（`input.list`
+ * 绑定成功、选项也在，但原生弹层不出现），于是分类字段只显示当前那一个
+ * 值、点不开也选不了。datalist 的弹层是浏览器原生 UI，不受页面样式控制，
+ * 在 WebView2 里表现不稳定——它不该被用来承载一个必须能用的控件。
+ *
+ * 改为自绘下拉：样式与其它控件一致，行为可预测，也不依赖宿主浏览器的
+ * datalist 实现。代价是多了约 40 行，以及 Esc / 点击外部 / ↑↓ 这几件
+ * 本来就该做的事。
  */
 export function ComboInput({
   value,
@@ -99,32 +130,128 @@ export function ComboInput({
   options,
   placeholder,
   mono,
+  autoFocus,
+  'aria-label': ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
   options: readonly string[]
   placeholder?: string
   mono?: boolean
+  autoFocus?: boolean
+  // FormRow 会把这个注进来（包裹式 label 不足以给出稳定的可访问名称）
+  'aria-label'?: string
 }) {
-  // useId 而不是 Math.random()：后者在渲染期求值是纯度违规，且每次重渲染都会
-  // 换一个 id。datalist 与 input 的 list 属性虽能对上，但没有理由让身份漂移。
-  const id = useId()
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  // 给 aria-controls 一个稳定 id。（datalist 那版也用过 useId，
+  // 但问题出在 WebView2 的原生弹层，与这个 id 无关。）
+  const listId = useId()
+
+  // 已填的值不在候选里时，要先把它列出来，否则用户会以为自己填错了
+  const items = useMemo(
+    () => (value && !options.includes(value) ? [value, ...options] : [...options]),
+    [options, value],
+  )
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
   return (
-    <>
+    <div className="relative" ref={boxRef}>
       <input
-        className={inputCls}
-        list={id}
+        className={inputCls + ' pr-7'}
         style={mono ? { fontFamily: 'Consolas, monospace' } : undefined}
         value={value}
         placeholder={placeholder}
+        autoFocus={autoFocus}
+        aria-label={ariaLabel}
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-autocomplete="list"
+        onFocus={() => setOpen(true)}
+        // 展开必须也绑 onClick：选中后面板关了、输入框却仍有焦点，
+        // 只靠 onFocus 的话用户「改主意再点一次」不会有任何反应。
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setOpen(true)
+          }
+          // Esc 优先关下拉，且不许再往上冒。
+          //
+          // Modal 也监听 document 上的 Escape，两个监听器挂在同一个节点上，
+          // stopPropagation 拦不住同节点的另一个监听器（要 stopImmediate-
+          // Propagation，而那依赖注册顺序）。React 的合成事件挂在根容器上，
+          // 早于 document 冒泡，在这里停住传播才稳定：下拉关掉，弹窗和已填
+          // 内容都留着。
+          if (e.key === 'Escape' && open) {
+            e.stopPropagation()
+            setOpen(false)
+          }
+        }}
         onChange={(e) => onChange(e.target.value)}
       />
-      <datalist id={id}>
-        {options.map((o) => (
-          <option key={o} value={o} />
-        ))}
-      </datalist>
-    </>
+      <button
+        type="button"
+        // 纯装饰：焦点与展开都由输入框承担，别让读屏多念一个按钮
+        aria-hidden="true"
+        tabIndex={-1}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => {
+          // preventDefault 不能省：FormRow 是包裹式 <label>，label 会把内部
+          // 点击「激活」到它的控件上。不拦的话，小三角 toggle 关闭之后立刻
+          // 又被转发来的一次 click 打开，看起来就是永远关不上。
+          e.preventDefault()
+          e.stopPropagation()
+          setOpen((v) => !v)
+        }}
+        className="absolute top-1/2 right-1 flex h-[20px] w-6 -translate-y-1/2 items-center justify-center rounded-[3px] text-[9px] text-[var(--color-fg-subtle)] hover:bg-[var(--color-canvas)] hover:text-[var(--color-fg)]"
+      >
+        {open ? '▲' : '▼'}
+      </button>
+
+      {open ? (
+        <ul id={listId} role="listbox" className={menuCls}>
+          {items.map((o) => (
+            <li
+              key={o}
+              role="option"
+              aria-selected={o === value}
+              // preventDefault：不抢输入框焦点，否则失焦后 onFocus 把面板开回来，用户点不干净。
+              // 它同时拦掉 label 的点击转发——否则选中后面板会被转发来的
+              // click 立刻重新打开，用户看到的是「选了就弹回来」。
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => {
+                e.preventDefault()
+                onChange(o)
+                setOpen(false)
+              }}
+              className={[
+                menuItemCls,
+                'cursor-pointer',
+                // 选中项不该只靠 hover 撑着：面板可能一直开着，
+                // 始终要能一眼看出当前值是哪条。
+                o === value ? 'bg-[var(--color-primary-subtle)] font-medium text-[var(--color-primary)]' : '',
+              ].join(' ')}
+            >
+              {o}
+              {/* 当前库里存的值不在候选里时标出来，免得被当成脏数据删掉 */}
+              {o === value && !options.includes(value) ? (
+                <span className="ml-1.5 text-[10px] text-[var(--color-fg-subtle)]">（库中原值）</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 
@@ -154,6 +281,107 @@ export function Checkbox({
       />
       {label}
     </label>
+  )
+}
+
+/**
+ * 口令可见性图标。
+ *
+ * 原本定义在 LoginScreen 里，SetupScreen 各自复制过一份。Round 6 收进
+ * components/form.tsx —— 三处不同步就会是「登录页是眼睛、用户管理页是
+ * 闭眼」这种只有对比才发现得了的问题。
+ *
+ * **hidden 的语义是反的**：传 true 画闭眼、false 画睁眼。
+ * 曾经把 showPwd 直接传进去，于是点「显示密码」后图标变成闭眼，看着像
+ * "现在被遮住了"，与实际情况相反。所以调用方一律传 `!shown`。
+ *
+ * 无障碍标签描述**动作**（点了会发生什么），图标描述**状态**，两者分工不同。
+ */
+export function EyeIcon({ hidden }: { hidden: boolean }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {hidden ? (
+        <>
+          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+          <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+          <line x1="2" y1="2" x2="22" y2="22" />
+        </>
+      ) : (
+        <>
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+/**
+ * 口令输入。
+ *
+ * Round 6 之前没有这个基元，于是 LoginScreen、SetupScreen 各手写了一份
+ * <input type="password">，用的是自己复制的 className——与 TextInput 的
+ * 样式已经开始漂移。
+ *
+ * 要点：
+ *  - 眼睛按钮是 `type="button"`，且**不包在 <label> 里**：包进去点一下会
+ *    连带切换焦点，而用户点它多半是想直接操作输入框。
+ *  - Edge/WebView2 在字段有内容时会自己画一个 `::-ms-reveal`，与我们的眼睛
+ *    并排且随焦点闪烁。`index.css` 用 `::-ms-reveal { display:none }` 屏蔽，
+ *    这里不要再重复处理。
+ */
+export function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+  autoFocus,
+  onEnter,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  autoFocus?: boolean
+  onEnter?: () => void
+}) {
+  const [shown, setShown] = useState(false)
+  return (
+    <div className="relative">
+      <input
+        type={shown ? 'text' : 'password'}
+        className={inputCls + ' pr-8'}
+        value={value}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && onEnter) {
+            e.preventDefault()
+            onEnter()
+          }
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => setShown((v) => !v)}
+        aria-label={shown ? '隐藏密码' : '显示密码'}
+        aria-pressed={shown}
+        title={shown ? '隐藏密码' : '显示密码'}
+        className="absolute top-1/2 right-1 flex h-[22px] w-[26px] -translate-y-1/2 items-center justify-center rounded-[4px] text-[var(--color-fg-subtle)] hover:bg-[var(--color-canvas)] hover:text-[var(--color-primary)]"
+      >
+        <EyeIcon hidden={!shown} />
+      </button>
+    </div>
   )
 }
 
@@ -281,10 +509,20 @@ export function FormRow({
   children: ReactNode
   hint?: string
 }) {
+  // 包裹式 <label> 下，控件的可访问名称等于整段 label 文本。ComboInput 的候选
+  // 面板也渲染在这段 label 里面，一展开名称就会变成「分类 电子 五金 塑料 …」，
+  // 读屏用户听到的是一串候选值。这里显式钉一个 aria-label，名称不再漂移。
+  const child = isValidElement(children) ? (
+    cloneElement(children as ReactElement<{ 'aria-label'?: string }>, {
+      'aria-label': (children.props as { 'aria-label'?: string })['aria-label'] ?? label,
+    })
+  ) : (
+    children
+  )
   return (
     <label className="mb-2.5 flex flex-col gap-[3px]">
       <span className="text-[11px] text-[var(--color-fg-muted)]">{label}</span>
-      {children}
+      {child}
       {hint ? <span className="text-[10.5px] text-[var(--color-fg-subtle)]">{hint}</span> : null}
     </label>
   )
@@ -446,12 +684,12 @@ export function SearchSelect<T extends { id: number; label: string }>({
         }}
       />
       {open && shown.length > 0 ? (
-        <ul className="absolute z-50 mt-1 max-h-[180px] w-full overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] py-0.5 shadow-md">
+        <ul className={menuCls}>
           {shown.map((o) => (
             <li key={o.id}>
               <button
                 type="button"
-                className="block w-full px-2.5 py-1 text-left text-[11.5px] hover:bg-[var(--color-primary-subtle)]"
+                className={menuItemCls}
                 onClick={() => {
                   onChange(o)
                   setText(o.label)

@@ -1,0 +1,120 @@
+package auth
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"testing"
+)
+
+// 前端导航与权限模块清单的**跨语言契约**。
+//
+// 两边是同一个信息的两份表现：Go 侧是权限表，TS 侧是侧栏 nav.ts。它们必须一致，
+// 而 TypeScript 拦不住这种漂移——nav.ts 的 ModuleKey 是手写的联合类型，后端新增
+// 一个模块时 TS 编译依然通过，只是那个模块**永远不显示在侧栏上**，也不会有任何
+// 报错。这类"加了功能但没有入口"的问题只能靠对着两份清单断言来发现。
+//
+// 这里直接读 nav.ts 的源码文本。不做完整的 TS 解析——只需要 `{ key: 'x'` 这个
+// 稳定形状。为了防止正则失配后"提取到空集"导致测试假通过，下面同时断言
+// 提取结果非空且与期望集合完全相等。
+const navPath = "../../web/src/lib/nav.ts"
+
+var navKeyRe = regexp.MustCompile(`key:\s*'([a-z_]+)'`)
+
+func readNavKeys(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(navPath))
+	if err != nil {
+		t.Fatalf("读取 %s 失败：%v（此测试依赖仓库布局，路径要跟着文件走）", navPath, err)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range navKeyRe.FindAllStringSubmatch(string(b), -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("从 %s 里一个模块键都没提取到——正则失配，测试会假通过", navPath)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// 导航必须是权限模块清单去掉「非导航模块」后的样子。
+//
+// 反过来也成立：后端新增模块而前端没加导航 → 这里失败。
+func TestNavMatchesPermissionModules(t *testing.T) {
+	// system 不是导航屏：它是应用自身维护（更新），入口在「设置」里，
+	// 不占侧栏一项。除此之外的每个权限模块都必须有导航入口。
+	nonNav := map[string]bool{ModuleSystem: true}
+
+	var want []string
+	for _, m := range AllModules() {
+		if !nonNav[m] {
+			want = append(want, m)
+		}
+	}
+	sort.Strings(want)
+
+	got := readNavKeys(t)
+
+	if len(got) != len(want) {
+		t.Errorf("导航项数 = %d，权限模块（去掉 %v）= %d\ngot:  %v\nwant: %v",
+			len(got), keysOf(nonNav), len(want), got, want)
+	}
+	i, j := 0, 0
+	for i < len(got) && j < len(want) {
+		switch {
+		case got[i] == want[j]:
+			i++
+			j++
+		case got[i] < want[j]:
+			t.Errorf("导航里有 %q，权限模块清单里没有——它对应的接口不会被授权", got[i])
+			i++
+		default:
+			t.Errorf("权限模块 %q 没有导航入口——用户看不到它", want[j])
+			j++
+		}
+	}
+	for ; i < len(got); i++ {
+		t.Errorf("导航里有 %q，权限模块清单里没有", got[i])
+	}
+	for ; j < len(want); j++ {
+		t.Errorf("权限模块 %q 没有导航入口", want[j])
+	}
+}
+
+// 「非导航模块」集合不能悄悄长胖：每加一个都要问一次"用户真的不需要入口吗"。
+// 目前只有 system，理由见上。
+func TestNonNavModulesAreDeliberate(t *testing.T) {
+	all := map[string]bool{}
+	for _, m := range AllModules() {
+		all[m] = true
+	}
+	nav := map[string]bool{}
+	for _, k := range readNavKeys(t) {
+		nav[k] = true
+	}
+	var missing []string
+	for m := range all {
+		if !nav[m] {
+			missing = append(missing, m)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) != 1 || missing[0] != ModuleSystem {
+		t.Errorf("非导航模块 = %v，目前只应有一个：%s。新增需要在此显式承认。", missing, ModuleSystem)
+	}
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

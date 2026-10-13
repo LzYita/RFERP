@@ -142,27 +142,41 @@ func TestUpdateBatchStatusRejectsIllegalTransitions(t *testing.T) {
 	}
 }
 
+// 决策 B（2026-10-13 用户定）：库存不足时**拒绝完成生产**，而不是扣到 0。
+//
+// 旧行为是 actualDeduct = min(请求, 现有)：库存不够也把批次标记成已完成、接口返回
+// 成功，账面库存归零但批次齐套，账实不符且调用方毫无察觉。现在缺料即报错中止
+// （与创建批次时的缺料拦截同一语义），并且要**一次列全**缺料项。
+//
+// 断言的是「没有任何写入发生」+ 错误里点名缺料零件：只断言返回错误不够，
+// 因为若实现先扣了料再报错，回滚路径也可能掩盖问题——必须确认一个
+// UpdatePartStock / CreateBatchConsumption 都没有被调用（mock 未设期望即会失败）。
+// 库存充足时的完成路径：BOM 要求扣多少就扣多少，消耗记录与审计都按实扣数写。
+// （决策 B 之前，这里没有独立的成功用例——原本的"成功"用例其实是缺料夹取。）
 func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	svc, mock := newMockService(t)
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
-	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 3, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 20, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
+	// plan 4 × qty 2 = 需要 8；库存 20，充足
 	mock.ExpectQuery(`(?s)SELECT b\.\*, p\.code AS part_code, p\.name AS part_name.*FROM bom_items`).
 		WithArgs(int64(10)).WillReturnRows(bomRows(now, 2))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
-	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 20))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
-		WithArgs(float64(0), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(float64(12), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
-		WithArgs(int64(1), int64(20), float64(3)).WillReturnResult(sqlmock.NewResult(1, 1))
+		WithArgs(int64(1), int64(20), float64(8)).WillReturnResult(sqlmock.NewResult(1, 1))
+	// 实扣数与请求数现在必然相等（缺料即中止），仍记两列是为了让审计读者
+	// 能一眼确认"没有发生静默少扣"。
 	expectPartAudit(t, mock, oldPart, "STOCK_DEDUCT", map[string]any{
-		"old_stock":        float64(3),
+		"old_stock":        float64(20),
 		"requested_deduct": float64(8),
-		"deduct":           float64(3),
-		"new_stock":        float64(0),
+		"deduct":           float64(8),
+		"new_stock":        float64(12),
 		"batch_id":         int64(1),
 	}, "operator")
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?")).
@@ -188,6 +202,36 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
+	}
+}
+
+func TestCompleteBatchRejectsWhenStockIsInsufficient(t *testing.T) {
+	svc, mock := newMockService(t)
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	// plan 4 × qty 2 = 需要 8；库存只有 3
+	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
+	mock.ExpectQuery(`(?s)SELECT b\.\*, p\.code AS part_code, p\.name AS part_name.*FROM bom_items`).
+		WithArgs(int64(10)).WillReturnRows(bomRows(now, 2))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
+	// 缺料即中止：不设任何 UpdatePartStock / CreateBatchConsumption / 批次更新期望
+	mock.ExpectRollback()
+
+	err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: 1, Status: 2, Operator: "operator"})
+	if err == nil {
+		t.Fatal("库存不足却返回成功——批次会被标记完成、账实不符")
+	}
+	msg := err.Error()
+	for _, want := range []string{"库存不足", "Part 20", "P-20", "需要 8", "当前 3"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("错误信息缺少 %q，实际：%q", want, msg)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("缺料时不应有任何扣减写入：%v", err)
 	}
 }
 
@@ -254,11 +298,13 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 		WithArgs(int64(10)).WillReturnRows(bomRows(now, 2))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
-	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
+	// 本用例要测的是「审计写失败时扣减必须回滚」，不是缺料拦截（那是另一个用例）。
+	// 给足库存（plan 4 × qty 2 = 需要 8，库存 100）让流程走完扣减再在审计处失败。
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 100))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
-		WithArgs(float64(0), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+		WithArgs(float64(92), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
-		WithArgs(int64(1), int64(20), float64(3)).WillReturnResult(sqlmock.NewResult(1, 1))
+		WithArgs(int64(1), int64(20), float64(8)).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(auditInsert).WillReturnError(errors.New("stock audit failed"))
 	mock.ExpectRollback()
 

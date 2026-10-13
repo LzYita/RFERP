@@ -565,6 +565,23 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 			for _, pid := range skipParts {
 				skipMap[pid] = true
 			}
+			// 先按 BOM 算出每个零件应扣多少，并**一次性列出全部缺料**再决定是否扣减。
+			//
+			// 原来这里是"扣到库存为 0"（actualDeduct = min(请求, 现有)），库存不够
+			// 也把批次标记成已完成、接口返回成功——账面库存归零、批次齐套，账实不符
+			// 且调用方毫无察觉。唯一的痕迹是审计里 requested_deduct 与 deduct 不等，
+			// 而没人会去翻审计。
+			//
+			// 现在缺料即拒绝完成（与创建批次时的缺料拦截同一语义，Fyne
+			// internal/ui/batch.go:364 也是中止而非少扣）。一次列全是因为只报第一个
+			// 会让人反复提交、反复失败；列出全部才能一次补齐。
+			type deduction struct {
+				item            model.BOMItem
+				part            *model.Part
+				requestedDeduct float64
+			}
+			var deductions []deduction
+			shortages := make([]string, 0, len(bom))
 			for _, item := range bom {
 				if skipMap[item.PartID] {
 					continue
@@ -577,29 +594,38 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 					continue
 				}
 				requestedDeduct := quantizeQuantity(bomConsume(batch.PlanQty, item))
-				actualDeduct := requestedDeduct
-				if actualDeduct > part.StockQty {
-					actualDeduct = part.StockQty
+				if requestedDeduct > part.StockQty {
+					shortages = append(shortages, fmt.Sprintf(
+						"%s [%s]: 需要 %.2f，当前 %.2f",
+						part.Name, part.Code, requestedDeduct, quantizeQuantity(part.StockQty)))
+					continue
 				}
-				actualDeduct = quantizeQuantity(actualDeduct)
-				newStock := quantizeQuantity(part.StockQty - actualDeduct)
+				deductions = append(deductions, deduction{item, part, requestedDeduct})
+			}
+			if len(shortages) > 0 {
+				return fmt.Errorf("以下零件库存不足，无法完成生产：\n%s\n请先入库补足，或调整 BOM 用量",
+					strings.Join(shortages, "\n"))
+			}
+
+			for _, d := range deductions {
+				newStock := quantizeQuantity(d.part.StockQty - d.requestedDeduct)
 				if newStock < 0 {
 					newStock = 0
 				}
-				if err := tx.UpdatePartStock(item.PartID, newStock); err != nil {
-					return fmt.Errorf("update stock for part %d: %w", item.PartID, err)
+				if err := tx.UpdatePartStock(d.item.PartID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", d.item.PartID, err)
 				}
 				if err := tx.CreateBatchConsumption(&model.BatchConsumption{
 					BatchID:     id,
-					PartID:      item.PartID,
-					ConsumedQty: actualDeduct,
+					PartID:      d.item.PartID,
+					ConsumedQty: d.requestedDeduct,
 				}); err != nil {
-					return fmt.Errorf("record consumption for part %d: %w", item.PartID, err)
+					return fmt.Errorf("record consumption for part %d: %w", d.item.PartID, err)
 				}
-				if err := s.writeAuditTx(tx, auditEntry{"parts", item.PartID, "STOCK_DEDUCT", part, map[string]any{
-					"old_stock":        quantizeQuantity(part.StockQty),
-					"requested_deduct": requestedDeduct,
-					"deduct":           actualDeduct,
+				if err := s.writeAuditTx(tx, auditEntry{"parts", d.item.PartID, "STOCK_DEDUCT", d.part, map[string]any{
+					"old_stock":        quantizeQuantity(d.part.StockQty),
+					"requested_deduct": d.requestedDeduct,
+					"deduct":           d.requestedDeduct,
 					"new_stock":        newStock,
 					"batch_id":         id,
 				}, operator}); err != nil {

@@ -165,7 +165,7 @@ export function Pagination({
   pageSize,
   onPage,
   onPageSize,
-  unit = '条',
+  unit = '项',
 }: {
   total: number
   shown: number
@@ -174,6 +174,7 @@ export function Pagination({
   pageSize: number
   onPage: (n: number) => void
   onPageSize: (n: number) => void
+  /** 业务行用「项」，日志行传「条」。默认与列表头的「共 N 项」对齐。 */
   unit?: string
 }) {
   return (
@@ -228,7 +229,10 @@ export function Pagination({
             aria-label="跳转到页码"
             className="h-[22px] w-[46px] rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-1 text-center text-[11.5px] outline-none focus:border-[var(--color-primary)]"
           />
-          {unit === '条' ? '页' : ''}
+          {/* 「页」不跟着 unit 走。原先写的是 `unit === '条' ? '页' : ''`，
+              意思是单位不是「条」时连「页」字都不显示——换个单位就会静默少一个
+              字。页码的单位永远是「页」，与行的单位无关。 */}
+          页
         </label>
       )}
 
@@ -301,9 +305,9 @@ export function Panel({ children, className = '' }: { children: ReactNode; class
 }
 
 /** 数量最多两位小数，避免 1.0000000000000002 这类浮点噪声占宽。 */
-export function fmtQty(n: number): string {
-  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)))
-}
+/** 数量显示。实现已移到 lib/num.ts（与 parseQuantity 同源），这里只做转发：
+ *  调用点一直是从 ui 导入的，改导入路径会波及 4 个屏，没有收益。 */
+export { fmtQty } from '../lib/num'
 
 /** 去掉年份：省约 60px，代价是跨年数据需要靠筛选区分。 */
 export function shortTime(iso: string | undefined): string {
@@ -312,4 +316,19 @@ export function shortTime(iso: string | undefined): string {
   if (Number.isNaN(d.getTime())) return '—'
   const p = (x: number) => String(x).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/**
+ * 完整时间。详情视图里用，不能用 shortTime——审计要能定位到秒，
+ * 且跨年时「去年份」会让两条不同年份的记录看起来同时发生。
+ */
+export function fullTime(iso: string | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const p = (x: number) => String(x).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  )
 }

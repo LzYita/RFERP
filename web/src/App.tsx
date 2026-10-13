@@ -151,7 +151,7 @@ export default function App() {
   // 用 Fragment 而不是 cloneElement：renderScreen 的返回类型是 ReactNode，
   // 里面可能有非元素节点，cloneElement 对那种输入没有重载。
   const screenNode = (
-    <Fragment key={refreshToken}>{renderScreen(activeKey)}</Fragment>
+    <Fragment key={refreshToken}>{renderScreen(activeKey, { meId: me.id })}</Fragment>
   )
 
   return (

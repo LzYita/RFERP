@@ -36,6 +36,78 @@ function isLowStock(p: { stock_qty: number; warn_qty: number }): boolean {
 }
 
 /**
+ * 「分类」筛选的候选项。
+ *
+ * 必须从当前数据里现推，而不是用 form 里那份 PART_TYPES 常量：
+ * 库里可能存着常量之外的分类（历史数据、导入数据），常量筛不出它们，
+ * 用户会以为自己那些零件丢了。Fyne 版 `syncTypeFilter`（ui/part.go:210）
+ * 就是按数据重建的，这里照同一套语义。
+ *
+ * 排序**有意偏离** Fyne：那边用 sort.Strings，中文按码点排，下拉里看起来
+ * 是随机的（五金/塑料/电子）。这是 Go 默认排序的副产物，不是设计，
+ * 没有可保真的语义；中文界面按拼音排才是用户预期的顺序。
+ */
+export function typeFilterOptions(rows: readonly Part[]): string[] {
+  const seen = new Set<string>()
+  for (const p of rows) {
+    const t = (p.part_type ?? '').trim()
+    if (t !== '') seen.add(t)
+  }
+  return ['全部', ...[...seen].sort((a, b) => a.localeCompare(b, 'zh'))]
+}
+
+/**
+ * 失效分类回退。
+ *
+ * 选中的分类可能在数据变化后消失（删掉最后一个该分类的零件）。Fyne 版在
+ * syncTypeFilter 里回退到「全部」（ui/part.go:226）；不回退的话，筛选会停在
+ * 一个选项都不存在的值上，列表空白而用户看不出原因。
+ *
+ * 单独抽出来是为了能在渲染期直接派生，而不是用 effect 去同步这个状态：
+ * effect 里 setState 会多一轮渲染，React Compiler 也会因此放弃优化整个组件。
+ */
+export function effectiveTypeFilter(options: readonly string[], selected: string): string {
+  return options.includes(selected) ? selected : '全部'
+}
+
+/**
+ * 按分类 + 关键字筛选。
+ *
+ * 关键字范围＝编码/名称/规格/分类/**供应商**五处。Fyne 版这里自相矛盾：输入框占位
+ * 写的是「编码/名称/规格」，实际匹配的却是「编码 名称 分类」（ui/part.go:252），
+ * 规格根本没进全文。既然两边各覆盖一半，就取并集，并把占位文案写实——
+ * 照抄任何一边都会留下「说了能搜却搜不到」的坑。
+ *
+ * 供应商是 2026-10-13 用户明确要求纳入的：它是常用筛选维度（"这个厂供的件有哪些"），
+ * 而 Fyne 版没把它放进全文，等于用户搜供应商名会一无所获却毫无提示。
+ * 纳入后不再是对齐 Fyne，而是**有意超出**——记在这里，免得后来人当成疏漏"改回去"。
+ *
+ * 分类是精确匹配（与 Fyne 一致）：分类是有限枚举，模糊匹配会让「五金」
+ * 顺带捞出「五金配件」，筛选结果无法解释。
+ */
+export function filterParts(
+  rows: readonly Part[],
+  q: string,
+  typeFilter: string,
+  lowOnly: boolean,
+): Part[] {
+  let out = [...rows]
+  if (typeFilter !== '全部') {
+    out = out.filter((p) => (p.part_type ?? '') === typeFilter)
+  }
+  const k = q.trim().toLowerCase()
+  if (k !== '') {
+    out = out.filter((p) =>
+      [p.code, p.name, p.spec ?? '', p.part_type ?? '', p.supplier ?? ''].some((f) =>
+        f.toLowerCase().includes(k),
+      ),
+    )
+  }
+  if (lowOnly) out = out.filter(isLowStock)
+  return out
+}
+
+/**
  * 零件列表：Round 1 的「一个真实列表屏」关口。
  *
  * 页结构按中后台通行骨架：页头 → 筛选区 → 批量栏（选中时）→ 表格 → 分页。
@@ -54,6 +126,9 @@ export function PartsScreen() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [q, setQ] = useState('')
   const [lowOnly, setLowOnly] = useState(false)
+  // 「分类」筛选：Fyne 原版有的维度，迁移时整条丢了（连带列表里的分类列）。
+  // 后端为它建了 idx_parts_type，说明这个维度本来就是要用的。
+  const [typeFilter, setTypeFilter] = useState('全部')
   // Round 3：编辑弹窗 / 删除确认。零件的写权限里 **admin 和仓库员都有**，
   // 只读角色（viewer、生产员）连行内按钮都不该看到——但前端隐藏不是安全边界，
   // 后端 Catalog.UpdatePart 才是。
@@ -93,15 +168,12 @@ export function PartsScreen() {
     }
   }, [])
 
-  const filtered = useMemo(() => {
-    let rows = parts ?? []
-    if (q.trim()) {
-      const k = q.trim().toLowerCase()
-      rows = rows.filter((p) => p.code.toLowerCase().includes(k) || p.name.toLowerCase().includes(k))
-    }
-    if (lowOnly) rows = rows.filter(isLowStock)
-    return rows
-  }, [parts, q, lowOnly])
+  const typeOptions = useMemo(() => typeFilterOptions(parts ?? []), [parts])
+  const activeType = effectiveTypeFilter(typeOptions, typeFilter)
+  const filtered = useMemo(
+    () => filterParts(parts ?? [], q, activeType, lowOnly),
+    [parts, q, activeType, lowOnly],
+  )
 
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const current = Math.min(page, pages)
@@ -270,7 +342,7 @@ export function PartsScreen() {
       {/* 筛选区 */}
       <section className="rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5">
         <div className="flex flex-wrap items-end gap-2.5">
-          <Field label="编码 / 名称">
+          <Field label="编码 / 名称 / 规格 / 分类 / 供应商">
             <input
               value={q}
               onChange={(e) => {
@@ -280,6 +352,22 @@ export function PartsScreen() {
               placeholder="全部"
               className="h-[26px] w-[150px] rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
             />
+          </Field>
+          <Field label="分类">
+            <select
+              value={activeType}
+              onChange={(e) => {
+                setTypeFilter(e.target.value)
+                setPage(1)
+              }}
+              className="h-[26px] w-[110px] rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
+            >
+              {typeOptions.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
           </Field>
           <Field label="库存">
             <label className="flex h-[26px] items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px]">
@@ -294,6 +382,7 @@ export function PartsScreen() {
             onClick={() => {
               setQ('')
               setLowOnly(false)
+              setTypeFilter('全部')
               setPage(1)
             }}
           >
@@ -306,7 +395,8 @@ export function PartsScreen() {
       {selected.size > 0 && (
         <div className="flex items-center gap-2.5 rounded-[8px] border border-[var(--color-primary-subtle-border)] bg-[var(--color-primary-subtle)] px-3 py-2 text-[12px]">
           <span>
-            已选 <b className="text-[var(--color-primary)]">{selected.size}</b> 项（共 {filtered.length}）
+            已选 <b className="text-[var(--color-primary)]">{selected.size}</b> 项（共{' '}
+            {filtered.length} 项）
           </span>
           <button type="button" className="text-[var(--color-primary)]" onClick={() => setSelected(new Set())}>
             取消选择
@@ -340,9 +430,16 @@ export function PartsScreen() {
                 <th>编码</th>
                 <th>名称</th>
                 <th>规格</th>
+                {/* 分类是 Fyne 版的列，迁移时漏了；它同时是筛选维度，
+                    不显示的话用户设了分类也无从核对 */}
+                <th>分类</th>
                 <th className="num">库存</th>
                 <th className="num">预警值</th>
                 <th className="mid">状态</th>
+                {/* 供应商：Fyne 版有（part.go:80 第 8 列），迁移时漏了。
+                    它与「分类」一样是表单里能填、CSV 导出里有、审计 JSON 里有、
+                    唯独列表看不见的字段——用户填了无从核对。 */}
+                <th>供应商</th>
                 <th>更新时间</th>
                 <th className="mid col-fix" style={{ width: 120 }}>
                   操作
@@ -365,6 +462,7 @@ export function PartsScreen() {
                     <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
                     <td>{p.name}</td>
                     <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.spec ?? '—'}</td>
+                    <td>{p.part_type || '—'}</td>
                     {/* 单位并入库存，省一列 */}
                     <td className="num">
                       {fmtQty(p.stock_qty)} {p.unit}
@@ -379,6 +477,7 @@ export function PartsScreen() {
                         {p.status !== 1 ? '停用' : low ? '低库存' : '正常'}
                       </Badge>
                     </td>
+                    <td style={{ color: 'var(--color-fg-muted)' }}>{p.supplier || '—'}</td>
                     {/* 去年份：年份由筛选/排序语境承担 */}
                     <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(p.updated_at)}</td>
                     <td className="mid col-fix">
@@ -420,7 +519,7 @@ export function PartsScreen() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                  <td colSpan={11} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                     没有符合条件的零件
                   </td>
                 </tr>

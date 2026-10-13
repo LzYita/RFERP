@@ -21,6 +21,17 @@
 // 「只能填数字」拦掉，用户看到的不是真正的原因。
 const NUM = /^(-?)(\d*)(?:\.(\d*))?$/
 
+/**
+ * 数量显示：整数不带小数点，小数最多两位且去掉尾随零（3.50 → 3.5）。
+ *
+ * 放在这里而不是某个组件文件，是因为它和 parseQuantity 是同一条规则的
+ * 两端——显示与解析对不齐时，用户会看到「填 3.50，存成 3.5，再打开变了」。
+ * 审计摘要也要用同一套，否则同一条入库记录在列表和操作记录里数字不一样。
+ */
+export function fmtQty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(2)))
+}
+
 export type NumResult = { ok: true; value: number } | { ok: false; msg: string }
 
 export function parseQuantity(text: string, label: string): NumResult {

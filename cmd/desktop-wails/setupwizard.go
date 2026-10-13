@@ -384,6 +384,9 @@ func createDedicatedUser(in mysqlInput) (string, string, error) {
 
 // pingMySQL 尝试建库并连一次。
 func pingMySQL(mi mysqlInput) error {
+	if !dbsetup.ValidIdentifier(mi.DBName) {
+		return fmt.Errorf("数据库名不合法")
+	}
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=5s&charset=utf8mb4",
 		mi.User, mi.Password, mi.Host, mi.Port)
 	db, err := sql.Open("mysql", dsn)
@@ -396,7 +399,7 @@ func pingMySQL(mi mysqlInput) error {
 	}
 	// 库名可能不存在：建出来，否则后面的装配会以更隐晦的方式失败。
 	if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS `" +
-		strings.ReplaceAll(mi.DBName, "`", "") + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		mi.DBName + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
 		// 权限不足时不该判连接失败——服务器是通的，只是这个账号不能建库。
 		log.Printf("setup wizard: create database %q skipped: %v", mi.DBName, err)
 	}
@@ -625,15 +628,17 @@ func defaultDataDir(base *config.Config) string {
 }
 
 // ensureWritableDir 建目录并落一个探针文件，确认真的可写。
-func ensureWritableDir(dir string) error {
+func ensureWritableDir(dir string) (err error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("无法创建目录：%w", err)
 	}
-	probe := filepath.Join(dir, ".rferp-write-test")
-	if err := os.WriteFile(probe, []byte("ok"), 0600); err != nil {
+	probe, err := os.CreateTemp(dir, ".rferp-write-test-*")
+	if err != nil {
 		return fmt.Errorf("目录不可写：%w", err)
 	}
-	return os.Remove(probe)
+	defer func() { err = errors.Join(err, os.Remove(probe.Name())) }()
+	_, writeErr := probe.WriteString("ok")
+	return errors.Join(writeErr, probe.Close())
 }
 
 func randomToken() string {

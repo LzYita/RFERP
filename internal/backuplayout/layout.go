@@ -183,9 +183,8 @@ func Resolve(name string) (string, error) {
 	}
 
 	for _, dir := range candidateDirs() {
-		target := filepath.Join(dir, name)
-		rel, err := filepath.Rel(dir, target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		target, err := paths.ResolveUnder(paths.BackupDir(), filepath.Join(dir, name))
+		if err != nil {
 			continue
 		}
 		st, err := os.Stat(target)

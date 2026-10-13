@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -323,6 +325,44 @@ func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
 }
 
 // 启动器失败要如实回 500，不能假装成功。
+func TestOpenExportFolderRejectsDirectoryLinkOutsideRoot(t *testing.T) {
+	opened := 0
+	s := newBackupServer(t, &exportApps{}, WithHostOperations(),
+		WithFolderOpener(func(string) error { opened++; return nil }))
+	tok := issueAdmin(t, s)
+	if err := os.MkdirAll(paths.ExportDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(paths.ExportDir(), "escape")
+	outside := t.TempDir()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+	} else if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": link})
+	if w.Code != http.StatusBadRequest || opened != 0 {
+		t.Fatalf("outside link = %d; opener called %d times", w.Code, opened)
+	}
+}
+
+func TestOpenExportFolderMissingDirectory(t *testing.T) {
+	opened := 0
+	s := newBackupServer(t, &exportApps{}, WithHostOperations(),
+		WithFolderOpener(func(string) error { opened++; return nil }))
+	tok := issueAdmin(t, s)
+	if err := os.MkdirAll(paths.ExportDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	w := doJSON(t, s, "POST", "/api/export/all/open", tok,
+		map[string]string{"dir": filepath.Join(paths.ExportDir(), "missing")})
+	if w.Code != http.StatusNotFound || opened != 0 {
+		t.Fatalf("missing directory = %d; opener called %d times", w.Code, opened)
+	}
+}
+
 func TestOpenExportFolderReportsLauncherFailure(t *testing.T) {
 	s := newBackupServer(t, &exportApps{}, WithHostOperations(),
 		WithFolderOpener(func(string) error { return errors.New("no explorer here") }))

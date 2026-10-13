@@ -4,13 +4,14 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/go-sql-driver/mysql"
 )
 
 func EnsureDatabase(dsn, dbname string) error {
-	if !validIdent(dbname) {
+	if !ValidIdentifier(dbname) {
 		return fmt.Errorf("数据库名不合法")
 	}
 	db, err := openWithoutDB(dsn)
@@ -23,7 +24,7 @@ func EnsureDatabase(dsn, dbname string) error {
 }
 
 func EnsureUser(adminDSN, user, password, dbname string) error {
-	if !validIdent(user) || !validIdent(dbname) {
+	if !ValidIdentifier(user) || !ValidIdentifier(dbname) {
 		return fmt.Errorf("用户名或数据库名不合法")
 	}
 	db, err := openWithoutDB(adminDSN)
@@ -75,14 +76,7 @@ func openWithoutDB(dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-func validIdent(s string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_') {
-			return false
-		}
-	}
-	return true
-}
+var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// ValidIdentifier restricts interpolated MySQL identifiers to the supported names.
+func ValidIdentifier(s string) bool { return identifierPattern.MatchString(s) }

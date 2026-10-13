@@ -1,12 +1,42 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 var dataDir string
+
+// ResolveUnder checks existing filesystem targets, including symlinks and junctions.
+// shortcut: paths can change after validation; use rooted handles for hostile filesystems.
+func ResolveUnder(root, target string) (string, error) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(target) == "" {
+		return "", fmt.Errorf("路径不能为空")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	root, err = filesystemPath(root)
+	if err != nil {
+		return "", err
+	}
+	target, err = filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	target, err = filesystemPath(target)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("路径不在指定目录内")
+	}
+	return target, nil
+}
 
 func SetDataDir(d string) {
 	dataDir = d

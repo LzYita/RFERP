@@ -192,6 +192,31 @@ func (s *Server) handleExportAll(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"files": names, "dir": dir})
 }
 
+// dirUnder 判断 child 是否等于 root 或位于 root 之下。
+//
+// **必须先 Clean 再用 filepath.Rel 比较**，不能用字符串前缀。
+// 前缀比较挡不住 `导出\..\outside`：它确实以 `导出\` 开头，但 Clean 之后
+// 落在导出目录之外 —— 而客户端发来的就是这种**未清理**的原始字符串
+// （filepath.Join 会先 Clean，所以拿它构造的测试根本测不到这个绕过）。
+//
+// 这与 backuplayout.Resolve 用的是同一套判据：两处都在防"客户端指定路径"，
+// 判据必须一致，否则总有一处是弱的。
+func dirUnder(root, child string) bool {
+	if strings.TrimSpace(child) == "" || strings.TrimSpace(root) == "" {
+		return false
+	}
+	cleanRoot := filepath.Clean(root)
+	cleanChild := filepath.Clean(child)
+	if cleanChild == cleanRoot {
+		return true
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanChild)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // handleOpenExportFolder 在资源管理器里打开导出目录。
 //
 // 本机操作：它启动的是**这台机器上**的程序。阶段 B/C 的远程客户端点了只会
@@ -208,10 +233,8 @@ func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	dir := strings.TrimSpace(body.Dir)
-	// 只允许打开导出目录本身或其子目录：客户端给一个任意路径就等于让它
-	// 在这台机器上打开任意文件夹。目录名可预期，但仍然要逐字比。
 	exportRoot := paths.ExportDir()
-	if dir == "" || (dir != exportRoot && !strings.HasPrefix(dir, exportRoot+string(filepath.Separator))) {
+	if !dirUnder(exportRoot, dir) {
 		writeErr(w, http.StatusBadRequest, "只能打开本应用的导出目录")
 		return
 	}

@@ -251,26 +251,49 @@ func TestOpenExportFolderRequiresHostOperations(t *testing.T) {
 }
 
 // 客户端给任意路径就等于让它在这台机器上打开任意文件夹。
+//
+// ⚠️ 这里必须用**原始字符串**拼 `..`，不能用 filepath.Join —— Join 会先 Clean，
+// 于是测到的是 `D:\Windows`（前缀检查当然能拒），而不是客户端真会发来的
+// `D:\...\导出\..\outside`（前缀检查会被绕过，落点在导出目录之外）。
+// 我第一版正是这么写的，测试绿着、功能却能被绕过。
 func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
-	dir := t.TempDir()
-	paths.SetDataDir(dir)
-	t.Cleanup(func() { paths.SetDataDir("") })
-	if err := os.MkdirAll(paths.ExportDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
 	s := newBackupServer(t, &exportApps{}, WithHostOperations())
 	tok := issueAdmin(t, s)
+	exportRoot := paths.ExportDir()
+	if err := os.MkdirAll(exportRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 导出根目录的**同级**目录，且确实存在 —— 排除"被目录不存在顺带挡掉"
+	outside := filepath.Join(filepath.Dir(exportRoot), "outside_ok")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sep := string(filepath.Separator)
 
-	for _, bad := range []string{
+	bad := []string{
 		"",
 		"C:\\Windows",
-		dir,
-		filepath.Join(dir, "导出", "..", "..", "Windows"),
-	} {
-		w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": bad})
+		filepath.Dir(exportRoot), // 数据目录本身
+		exportRoot + sep + ".." + sep + "outside_ok",           // 未清理的 ..
+		exportRoot + sep + ".." + sep + ".." + sep + "Windows", // 两级 ..
+		exportRoot + sep + "." + sep + "..",                    // . 与 .. 混用
+		exportRoot + "x",                                       // 前缀相同但不是子目录
+	}
+	for _, p := range bad {
+		w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": p})
 		if w.Code == http.StatusOK {
-			t.Errorf("目录 %q 被接受了——客户端可以打开这台机器上的任意文件夹", bad)
+			t.Errorf("目录 %q 被接受了——客户端可以打开这台机器上的任意文件夹", p)
+		}
+	}
+
+	// 导出目录本身与真实子目录必须仍然放行，否则这个校验就过度了
+	for _, ok := range []string{exportRoot, filepath.Join(exportRoot, "all_data")} {
+		if err := os.MkdirAll(ok, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": ok})
+		if w.Code != http.StatusOK {
+			t.Errorf("合法目录 %q 被拒：%d %s", ok, w.Code, w.Body.String())
 		}
 	}
 }

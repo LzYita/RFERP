@@ -167,6 +167,19 @@ export const backupApi = {
   /** confirm 必须是 'drop' 逐字匹配；服务端独立复核，绕不过去。 */
   clear: () => api.post<ClearResult>('/api/clear', { confirm: CLEAR_CONFIRM_TOKEN }),
 
+  /**
+   * 导出全部数据。
+   *
+   * 返回**文件夹路径 + 文件名列表**，不返回文件内容：全量导出是**多份** CSV
+   * 落在数据目录里，打包成一个下载反而让人多一道"解压再找"。
+   * （此前这里调 api.download，把服务端回的 JSON 当成 all_data.csv 下载了，
+   * 打开是一段含服务器路径的 JSON —— 既没用又把目录布局泄了出去。）
+   */
+  exportAll: () => api.post<{ dir: string; files: string[] }>('/api/export/all'),
+
+  /** 在资源管理器里打开导出目录（本机操作，远程形态会被闸门挡下）。 */
+  openExportFolder: (dir: string) => api.post<{ dir: string }>('/api/export/all/open', { dir }),
+
   autoSchedule: () => api.get<AutoBackupSchedule>('/api/backup/autoschedule'),
 
   /**

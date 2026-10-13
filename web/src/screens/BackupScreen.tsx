@@ -94,6 +94,8 @@ export function BackupScreen() {
 
   // 自动定期备份的设置与状态
   const [auto, setAuto] = useState<AutoBackupSchedule | null>(null)
+  // 全量导出的结果：文件夹路径 + 本次生成的文件名
+  const [exportAll, setExportAll] = useState<{ dir: string; files: string[] } | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -321,12 +323,29 @@ export function BackupScreen() {
   async function doExportAll() {
     setBusy('all')
     setNotice('')
+    setError(null)
     try {
-      const { blob, filename } = await api.download('/api/export/all', undefined, 'all_data.csv')
-      saveBlob(blob, filename)
-      setNotice(`全部数据已导出：${filename}`)
+      // 全量导出是**多份** CSV 落在数据目录里，不是单个文件。
+      // 此前这里按"下载一个文件"处理，把服务端回的 JSON 存成了 all_data.csv ——
+      // 打开是乱码（其实是含服务器路径的 JSON），用户既拿不到数据也没人说得清去哪找。
+      setExportAll(await backupApi.exportAll())
     } catch (e) {
-      setError({ kind: 'server', text: `导出失败：${e instanceof Error ? e.message : ''}` })
+      setError({ kind: 'server', text: `导出失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : ''}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function openExportDir() {
+    if (!exportAll) return
+    setBusy('openexport')
+    try {
+      await backupApi.openExportFolder(exportAll.dir)
+    } catch (e) {
+      setError({
+        kind: e instanceof ApiError && e.isForbidden ? 'forbidden' : 'server',
+        text: `打开文件夹失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : ''}`,
+      })
     } finally {
       setBusy(null)
     }
@@ -645,14 +664,51 @@ export function BackupScreen() {
       <Panel className="p-3">
         <SectionTitle>全部数据导出</SectionTitle>
         <p className="mt-1 text-[11.5px] text-[var(--color-fg-muted)]">
-          导出为 CSV 并下载到本机。
+          把产品、零件、BOM、批次、追溯与操作记录各导出一份 CSV，保存到{' '}
+          <span style={{ fontFamily: 'Consolas, monospace' }}>
+            {dir?.dataDir ? `${dir.dataDir}\\导出\\all_data` : '数据目录'}
+          </span>
+          下的时间戳文件夹里（每张表一个文件，可直接用 Excel 打开）。
         </p>
         <div className="mt-2">
-          <Btn disabled={busy !== null} onClick={doExportAll}>
+          <Btn disabled={busy !== null || !canEdit} onClick={doExportAll}>
             {busy === 'all' ? '导出中…' : '导出全部数据 CSV'}
           </Btn>
         </div>
       </Panel>
+
+      {/* 全量导出完成：告诉用户文件**在哪**，而不是丢一个没用的下载 */}
+      {exportAll ? (
+        <Modal title="全部数据已导出" onClose={() => setExportAll(null)} width={560}>
+          <p className="text-[11.5px]">
+            共 {exportAll.files.length} 个 CSV 文件，保存到：
+          </p>
+          <p
+            className="mt-1 break-all rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2 py-1.5 text-[11.5px]"
+            style={{ fontFamily: 'Consolas, monospace' }}
+          >
+            {exportAll.dir}
+          </p>
+          <div className="mt-2 max-h-[160px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2 py-1.5">
+            {exportAll.files.map((f) => (
+              <div key={f} className="truncate text-[11px]" style={{ fontFamily: 'Consolas, monospace' }}>
+                {f}
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-[var(--color-fg-muted)]">
+            文件不会自动下载到浏览器——它们已经在上面这个文件夹里了。
+          </p>
+          <div className="mt-3 flex justify-end gap-2">
+            <Btn onClick={() => setExportAll(null)}>关闭</Btn>
+            {destructiveReady ? (
+              <Btn primary disabled={busy !== null} onClick={() => void openExportDir()}>
+                {busy === 'openexport' ? '打开中…' : '打开文件夹'}
+              </Btn>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
 
       {/* G3：列明后果的确认框 */}
       {confirmRestore ? (

@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 
 	"app/internal/paths"
 	"app/internal/usecase"
@@ -158,11 +163,66 @@ func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// 导出目录下的分类子目录名。与旧版一致（ui/backup.go:313/317）。
+//
+// 这不是洁癖：旧版的用户已经知道东西在 导出\all_data\ 与 导出\audit_log\，
+// Web 版一开始直接扔在 导出\ 根下，于是每次导出多出一个
+// `20261013_160107-1666890059` 这种临时目录名 —— 用户找不到，也不敢删。
+const (
+	exportSubdirAllData  = "all_data"
+	exportSubdirAuditLog = "audit_log"
+)
+
 func (s *Server) handleExportAll(w http.ResponseWriter, _ *http.Request) {
-	files, dir, err := s.apps.ExportAllDataCSV(paths.ExportDir())
+	// 恢复到旧版的分组目录，而不是 os.MkdirTemp 在 导出\ 根下造随机名目录。
+	files, dir, err := s.apps.ExportAllDataCSV(filepath.Join(paths.ExportDir(), exportSubdirAllData))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"files": files, "dir": dir})
+	// 回**文件名**而不是完整路径：界面要列出文件，用不着每条都带一遍目录，
+	// 而把绝对路径逐条回给客户端是这个端点从 Round 5 起就在避免的事。
+	names := make([]string, 0, len(files))
+	for _, p := range files {
+		names = append(names, filepath.Base(p))
+	}
+	sort.Strings(names)
+	// dir 是服务器端路径，但界面上必须显示它——否则用户不知道东西去哪了。
+	// 与 handleDataDir 同理：本端点已鉴权且要求备份模块权限，是"展示给操作者本人"。
+	writeJSON(w, http.StatusOK, map[string]any{"files": names, "dir": dir})
+}
+
+// handleOpenExportFolder 在资源管理器里打开导出目录。
+//
+// 本机操作：它启动的是**这台机器上**的程序。阶段 B/C 的远程客户端点了只会
+// 在用户自己电脑上打开一个不存在的路径，所以走 hostOperations 闸门。
+func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) {
+	if !s.requireHostOperations(w, "打开导出文件夹") {
+		return
+	}
+	var body struct {
+		Dir string `json:"dir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	dir := strings.TrimSpace(body.Dir)
+	// 只允许打开导出目录本身或其子目录：客户端给一个任意路径就等于让它
+	// 在这台机器上打开任意文件夹。目录名可预期，但仍然要逐字比。
+	exportRoot := paths.ExportDir()
+	if dir == "" || (dir != exportRoot && !strings.HasPrefix(dir, exportRoot+string(filepath.Separator))) {
+		writeErr(w, http.StatusBadRequest, "只能打开本应用的导出目录")
+		return
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		writeErr(w, http.StatusNotFound, "导出目录不存在")
+		return
+	}
+	// explorer.exe 选中该目录而不是打开它的父目录
+	if err := exec.Command("explorer.exe", dir).Start(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "无法打开文件夹："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir})
 }

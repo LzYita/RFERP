@@ -260,6 +260,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
+	mux.HandleFunc("POST /api/export/all/open", s.auth(s.handleOpenExportFolder, "Backup.ExportAllDataCSV"))
 	// Round 5 补齐此前定义了权限点却没有路由消费的四个用例。
 	//
 	// restore / clear / set-datadir 在 handler 内还有一道本机闸门

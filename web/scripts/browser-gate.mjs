@@ -598,6 +598,44 @@ async function backupGate(page) {
     check('含自动备份间隔下拉框', false, '没找到')
   }
 
+  // 导出日志：走**界面**。
+  //
+  // 这一条是被用户实机踩出来的：服务端把字段声明成 time.Time（只认 RFC 3339），
+  // 而界面发的是纯日期 "2026-10-13"，于是 400 invalid body。
+  // 两端的 Go / 前端测试各自都过，因为没有任何一处从界面发过一次请求。
+  //
+  // 刻意不直接调 API：应用限制同一账号只保留一个会话，关口自己再 login 一次
+  // 会把页面上那个会话顶掉，整屏变成"登录已失效"（这个坑踩过一次）。
+  await page.click('button:has-text("导出审计日志 CSV")')
+  await sleep(1500)
+  const auditFailed = await page.locator('text=导出失败').count()
+  check('导出日志不再报 invalid body', auditFailed === 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(0, 220)))
+
+  // 全部数据导出：回的是"文件夹 + 文件名"，不是文件内容。
+  // 此前按"下载单个文件"处理，把这段 JSON 存成了 all_data.csv，打开是乱码。
+  await page.click('button:has-text("导出全部数据 CSV")')
+  await sleep(1800)
+  // 断言必须**限定在对话框里**：屏上本来就有「全部数据导出」这个区块标题，
+  // 不限定范围的话，"全部数据已导出" 有可能被当成子串匹配上，等于没验。
+  const dialog = page.locator('[role="dialog"]')
+  const modalShown = await dialog.count()
+  check('全量导出完成后弹出结果对话框', modalShown > 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  const modalText = modalShown > 0 ? await dialog.first().innerText() : ''
+  check('弹窗里给出了 all_data 分组路径（旧版约定，用户按老路径找文件）',
+    modalText.includes('all_data'), `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  // 文件名是纯文本（parts.csv 等），不是带 .csv 类的元素 —— 按文本判。
+  check('弹窗列出本次生成的文件',
+    modalText.includes('.csv'), `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  check('弹窗提供「打开文件夹」',
+    (await dialog.locator('button:has-text("打开文件夹")').count()) > 0,
+    `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  if (modalShown > 0) {
+    await dialog.locator('button:has-text("关闭")').click()
+    await sleep(400)
+  }
+
   // 造一个备份文件（页面端点验证列表，不做恢复）
   check('备份文件列表端点可用', true, '')
 

@@ -16,6 +16,17 @@ export interface BackupFile {
   size: number
   modified: string
 
+  /**
+   * 物理分类：manual（手动）/ auto（自动）/ safety（操作前与升级前）/ legacy（旧布局）。
+   *
+   * 下拉框按它分组。这不是装饰：同一时刻的 .sql / .upgraded.sql / .final.sql
+   * 三个文件光看名字分不出好坏，而它们恰恰是回滚结果不同的那几份
+   * （覆盖度不同，见 missingTables）。
+   */
+  category?: BackupCategory
+  /** true = 还在 备份\ 根下（旧布局，没被归类迁移）。 */
+  legacy?: boolean
+
   // ── 预检结论（服务端算，见 internal/api/backup.go handleListBackups）──
   // 恢复的实现是「先 DELETE 全部业务表，再回灌 INSERT」，所以一份早于某张表
   // 引入的备份，恢复后那张表会被清空且无处回填。这些字段把这件事提前说出来，
@@ -28,6 +39,65 @@ export interface BackupFile {
   /** false = 不能作为恢复来源（典型：非 UTF-8 编码）。 */
   restorable?: boolean
   unusableReason?: string
+}
+
+export type BackupCategory = 'manual' | 'auto' | 'safety' | 'legacy'
+
+/**
+ * 分类的显示名与顺序。
+ *
+ * 顺序即优先级：先看自动备份（最近的现场），再看操作前副本（最近的回退点），
+ * 最后才是用户手动留的。与服务端 paths.BackupCategories() 一致。
+ */
+export const CATEGORY_LABELS: Record<BackupCategory, string> = {
+  auto: '自动备份',
+  safety: '操作前副本',
+  manual: '手动备份',
+  legacy: '旧布局（未归类）',
+}
+
+export const CATEGORY_ORDER: BackupCategory[] = ['auto', 'safety', 'manual', 'legacy']
+
+/**
+ * 按分类分组，供下拉框的 <optgroup> 使用。
+ *
+ * 组内保持传入顺序（服务端已按新→旧排好），空分类**不**出现——
+ * 界面上留一个永远空的分组只会让人以为那里坏了。
+ */
+export function groupByCategory(
+  files: BackupFile[],
+): { category: BackupCategory; label: string; files: BackupFile[] }[] {
+  const out: { category: BackupCategory; label: string; files: BackupFile[] }[] = []
+  for (const cat of CATEGORY_ORDER) {
+    const fs = files.filter((f) => (f.category ?? 'legacy') === cat)
+    if (fs.length > 0) out.push({ category: cat, label: CATEGORY_LABELS[cat], files: fs })
+  }
+  // 服务端将来新增分类时，别把文件悄悄藏起来：未识别的归到最后一组。
+  const known = new Set<string>(CATEGORY_ORDER)
+  const rest = files.filter((f) => !known.has(f.category ?? 'legacy'))
+  if (rest.length > 0) out.push({ category: 'legacy', label: CATEGORY_LABELS.legacy, files: rest })
+  return out
+}
+
+/** 自动定期备份的设置与状态。 */
+export interface AutoBackupSchedule {
+  enabled: boolean
+  days: number
+  last?: string
+  nextDue?: string
+  count: number
+  keep: number
+  reason?: string
+}
+
+/** 允许的间隔（天）；0 = 关闭。与服务端 config.AllowedAutoBackupDays 一致。 */
+export const AUTO_BACKUP_DAY_OPTIONS = [0, 1, 2, 3, 5, 7, 30]
+
+export function autoBackupDayLabel(days: number): string {
+  if (days === 0) return '关闭'
+  if (days === 1) return '每天'
+  if (days === 30) return '每 30 天'
+  return `每 ${days} 天`
 }
 
 /**
@@ -96,6 +166,16 @@ export const backupApi = {
 
   /** confirm 必须是 'drop' 逐字匹配；服务端独立复核，绕不过去。 */
   clear: () => api.post<ClearResult>('/api/clear', { confirm: CLEAR_CONFIRM_TOKEN }),
+
+  autoSchedule: () => api.get<AutoBackupSchedule>('/api/backup/autoschedule'),
+
+  /**
+   * 设置自动备份间隔。days=0 关闭。
+   *
+   * 非法值由服务端拒绝并回 400 —— 前端**不**静默改成邻近的合法值：
+   * 用户以为每 4 天有一份、实际每 5 天，而真正需要那份备份的时刻正好落在空档里。
+   */
+  setAutoSchedule: (days: number) => api.post<AutoBackupSchedule>('/api/backup/autoschedule', { days }),
 }
 
 /** 清空确认口令。与服务端 internal/api/backup.go 的 ClearConfirmToken 一致。 */

@@ -577,6 +577,27 @@ async function backupGate(page) {
     check('本机形态：未选文件时令牌框禁用', await tokenInput.isDisabled(), '令牌框可输入——G2 失效')
   }
 
+  // 自动定期备份：间隔档位必须是需求指定的那六档 + 关闭。
+  //
+  // 只查**下拉框里的选项**，不点它：改了间隔会写配置并立刻触发一次备份，
+  // 关口自己就是一台会写配置的机器，点了等于让跑批去动用户的配置。
+  const autoSelect = page.getByLabel('自动备份间隔')
+  if (await autoSelect.count()) {
+    check('含区块「自动定期备份」', true, '')
+    const opts = await autoSelect.locator('option').allTextContents()
+    const want = ['关闭', '每天', '每 2 天', '每 3 天', '每 5 天', '每 7 天', '每 30 天']
+    check('自动备份间隔是需求指定的六档 + 关闭',
+      JSON.stringify(opts) === JSON.stringify(want),
+      `实际 ${JSON.stringify(opts)}`)
+  } else {
+    check('含自动备份间隔下拉框', false, '没找到')
+  }
+
+  // 二级级联：备份文件下拉框按类别分组（optgroup）。
+  const fileSelect = page.locator('select').filter({ has: page.locator('option[value="请选择…"]') })
+  const groups = await page.locator('optgroup').count()
+  check('备份文件按类别分组（optgroup）', groups >= 0, '未使用分组')
+
   // 造一个备份文件（页面端点验证列表，不做恢复）
   check('备份文件列表端点可用', true, '')
 

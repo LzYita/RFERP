@@ -48,6 +48,8 @@ type Config struct {
 	MysqldumpPath string
 	UpdateURL     string
 	AutoUpdate    bool
+	// AutoBackupDays 自动定期备份间隔（天）；0 = 关闭。合法取值见 AllowedAutoBackupDays。
+	AutoBackupDays int
 	// Mode 为 ModeLocal 或 ModeClient；空视为未选择（需首启）。
 	Mode string
 	// ServerURL 仅 ModeClient：API 根地址，如 http://192.168.1.10:8080
@@ -87,10 +89,17 @@ type fileConfig struct {
 	MysqldumpPath string `json:"mysqldumpPath,omitempty"`
 	UpdateURL     string `json:"updateUrl,omitempty"`
 	AutoUpdate    *bool  `json:"autoUpdate,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	ServerURL     string `json:"serverUrl,omitempty"`
-	Storage       string `json:"storage,omitempty"`
-	SQLitePath    string `json:"sqlitePath,omitempty"`
+	// AutoBackupDays 是自动定期备份的间隔天数；0 = 关闭。
+	//
+	// 用指针 + omitempty 是为了两件事：
+	//   - **旧配置安全**：老版本 config.json 里根本没有这个键，缺省即 0 = 关闭，
+	//     不会因为升级就莫名其妙开始自动备份。
+	//   - **不搅动用户的文件**：关闭时字段不落盘，只有用户真的设了间隔才会写。
+	AutoBackupDays *int   `json:"autoBackupDays,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	ServerURL      string `json:"serverUrl,omitempty"`
+	Storage        string `json:"storage,omitempty"`
+	SQLitePath     string `json:"sqlitePath,omitempty"`
 }
 
 func Load() *Config {
@@ -164,6 +173,36 @@ func applyFile(cfg *Config, fc *fileConfig) {
 	if fc.AutoUpdate != nil {
 		cfg.AutoUpdate = *fc.AutoUpdate
 	}
+	if fc.AutoBackupDays != nil {
+		cfg.AutoBackupDays = *fc.AutoBackupDays
+	}
+}
+
+// AllowedAutoBackupDays 是自动定期备份的合法间隔。
+//
+// 固定枚举而不是「任意天数」：间隔太短（<1 天）会把备份目录迅速撑满，
+// 太长（如 90 天）对一个随时可能被误操作覆盖的库没有意义。用户要的真就是
+// 「每天 / 每两天 / 每周 / 每月」这几个档，所以只给这几个。
+var AllowedAutoBackupDays = []int{1, 2, 3, 5, 7, 30}
+
+// ValidAutoBackupDays 报告 n 是否是合法间隔；0 表示关闭，也是合法的。
+func ValidAutoBackupDays(n int) bool {
+	if n == 0 {
+		return true
+	}
+	for _, v := range AllowedAutoBackupDays {
+		if v == n {
+			return true
+		}
+	}
+	return false
+}
+
+func intPtr(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
 }
 
 func applyMySQLConfig(cfg *Config, mc *mysql.Config) {
@@ -246,20 +285,21 @@ func writeEncrypted(path string, cfg *Config) error {
 	}
 
 	out := fileConfig{
-		Host:          cfg.DB.Host,
-		Port:          cfg.DB.Port,
-		User:          cfg.DB.User,
-		PasswordEnc:   base64.StdEncoding.EncodeToString(enc),
-		DBName:        cfg.DB.DBName,
-		DataDir:       cfg.DataDir,
-		MySQLService:  cfg.MySQLService,
-		MysqldumpPath: cfg.MysqldumpPath,
-		UpdateURL:     cfg.UpdateURL,
-		AutoUpdate:    &cfg.AutoUpdate,
-		Mode:          cfg.Mode,
-		ServerURL:     cfg.ServerURL,
-		Storage:       cfg.Storage,
-		SQLitePath:    cfg.SQLitePath,
+		Host:           cfg.DB.Host,
+		Port:           cfg.DB.Port,
+		User:           cfg.DB.User,
+		PasswordEnc:    base64.StdEncoding.EncodeToString(enc),
+		DBName:         cfg.DB.DBName,
+		DataDir:        cfg.DataDir,
+		MySQLService:   cfg.MySQLService,
+		MysqldumpPath:  cfg.MysqldumpPath,
+		UpdateURL:      cfg.UpdateURL,
+		AutoUpdate:     &cfg.AutoUpdate,
+		AutoBackupDays: intPtr(cfg.AutoBackupDays),
+		Mode:           cfg.Mode,
+		ServerURL:      cfg.ServerURL,
+		Storage:        cfg.Storage,
+		SQLitePath:     cfg.SQLitePath,
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

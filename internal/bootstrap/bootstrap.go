@@ -12,6 +12,7 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 
 	// 两个存储通道的驱动都在本包注册：Build 是唯一发起连接的地方，
@@ -19,7 +20,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 
+	"app/internal/backuplayout"
 	"app/internal/config"
+	"app/internal/dbbackup"
 	"app/internal/migrate"
 	"app/internal/paths"
 	"app/internal/repository"
@@ -132,10 +135,43 @@ func StageOf(err error) Stage {
 // Build 不做重试、不弹窗、不退出进程；调用方拿到的 error 已经带有足够上下文，
 // 可以直接呈现给用户。
 func Build(cfg *config.Config, opts Options) (*Result, error) {
+	// 旧布局迁移放在最前面：它只动备份目录里的文件，与数据库连接无关，
+	// 且**失败不得影响启动**——布局只是整理，备份照样能被列出与恢复。
+	migrateBackupLayout(opts)
 	if cfg.IsSQLite() {
 		return buildSQLite(cfg, opts)
 	}
 	return buildMySQL(cfg, opts)
+}
+
+// migrateBackupLayout 把旧版平铺在 备份\ 根下的备份按前缀移进分类目录。
+//
+// 为什么失败只记日志不返回错误：这是**整理**，不是正确性的前提。
+// backuplayout.List/Resolve 都会照扫根目录，所以迁移失败、被中断、目录只读，
+// 用户的备份都照样在界面上出现、能选中、能恢复。把一个整理步骤失败升级成
+// 「软件起不来」，是拿可用性换一个可有可无的整洁。
+func migrateBackupLayout(opts Options) {
+	defer func() {
+		if r := recover(); r != nil {
+			opts.logf("bootstrap: backup layout migration panicked: %v", r)
+		}
+	}()
+	rep, err := backuplayout.MigrateLegacy()
+	if err != nil {
+		opts.logf("bootstrap: backup layout migration failed (备份仍可在备份屏正常使用): %v", err)
+		return
+	}
+	if len(rep.Moved) > 0 {
+		opts.logf("bootstrap: backup layout migrated %d file(s) into manual/auto/safety", len(rep.Moved))
+		for _, m := range rep.Moved {
+			opts.logf("bootstrap:   %s -> %s", m.From, m.To)
+		}
+		opts.logf("bootstrap: 见 %s（若日后降级，可照它把文件搬回根目录）",
+			filepath.Join(paths.BackupDir(), backuplayout.MigrationLogName))
+	}
+	for _, s := range rep.Skipped {
+		opts.logf("bootstrap:   kept in place: %s", s)
+	}
 }
 
 func buildSQLite(cfg *config.Config, opts Options) (*Result, error) {
@@ -209,7 +245,15 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
 		MysqldumpPath: cfg.MysqldumpPath,
-		BackupDir:     paths.BackupDir(),
+		// 升级前备份写进 safety 目录、用 pre_migrate_ 前缀，与「操作前副本」同类。
+		//
+		// 以前它写的是 backup_ 前缀，也就是和用户**手动**备份同一个前缀、混在同一个
+		// 目录里，于是两件策略相反的事撞在一起：手动备份永不删，升级前备份该滚动清理。
+		// 分开前缀与目录之后，各自的保留策略才落得下去。
+		BackupDir: paths.SafetyBackupDir(),
+		Backup: func(dsn, mysqldumpPath, saveDir string) (string, error) {
+			return dbbackup.BackupTo(dsn, mysqldumpPath, saveDir, paths.PrefixPreMigrate)
+		},
 	})
 	if err != nil {
 		_ = closeDB()
@@ -218,6 +262,11 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 			ConnectErr: &StageError{StageMySQLMigrate,
 				fmt.Errorf("数据库升级（升级前的备份如有已保留）: %w", err)},
 		}
+	}
+	// 升级前副本同样滚动保留。放迁移成功之后：迁移失败时那份副本正是排查的线索，
+	// 那时删掉旧的就等于把唯一的参照物清了。
+	if res.BackupPath != "" {
+		dbbackup.PruneSnapshots(paths.SafetyBackupDir(), paths.PrefixPreMigrate, paths.SafetyCopyKeep)
 	}
 
 	store := repository.New(db)

@@ -6,10 +6,14 @@
 // 两端必须一致，否则用户照着旧文档猜口令会一直失败。
 import { describe, it, expect } from 'vitest'
 import {
+  AUTO_BACKUP_DAY_OPTIONS,
+  autoBackupDayLabel,
   classifyDirPick,
+  groupByCategory,
   isDirPickUnavailable,
   restoreTokenFor,
   tablesLostOnRestore,
+  type BackupCategory,
   type BackupFile,
 } from '../src/lib/backup'
 import { ApiError } from '../src/lib/api'
@@ -145,5 +149,79 @@ describe('tablesLostOnRestore', () => {
     expect(
       tablesLostOnRestore(f({ schemaKnown: true, missingTables: ['batch_consumptions'] })),
     ).toEqual(['batch_consumptions'])
+  })
+})
+
+// 二级级联分组。同一时刻的 .sql / .upgraded.sql / .final.sql 光看名字分不出
+// 好坏，而它们回滚结果不同 —— 分组是让用户看出差别的关键一步。
+describe('groupByCategory', () => {
+  const f = (name: string, category?: BackupCategory): BackupFile => ({
+    name,
+    size: 1,
+    modified: '2026-09-24 17:31:22',
+    category,
+  })
+
+  it('按 auto → safety → manual → legacy 的固定顺序分组', () => {
+    const groups = groupByCategory([
+      f('backup_20260924_170830.sql', 'manual'),
+      f('auto_20261001_120000.sql', 'auto'),
+      f('pre_restore_20260924_172919.sql', 'safety'),
+    ])
+    expect(groups.map((g) => g.category)).toEqual(['auto', 'safety', 'manual'])
+  })
+
+  it('空分类不出现（留一个永远空的分组只会让人以为坏了）', () => {
+    const groups = groupByCategory([f('backup_20260924_170830.sql', 'manual')])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].category).toBe('manual')
+  })
+
+  // 旧布局文件（服务端没给 category）必须落在「旧布局」组里，
+  // 绝不能悄悄混进 manual —— 它们其实还没被归类。
+  it('没有 category 的文件（旧布局）归入 legacy', () => {
+    const groups = groupByCategory([f('backup_20260721_154617.sql')])
+    expect(groups.map((g) => g.category)).toEqual(['legacy'])
+  })
+
+  it('legacy 永远排在最后', () => {
+    const groups = groupByCategory([
+      f('unknown.sql'),
+      f('auto_20261001_120000.sql', 'auto'),
+    ])
+    expect(groups.map((g) => g.category)).toEqual(['auto', 'legacy'])
+  })
+
+  // 组内保持服务端给的新→旧顺序；打乱它等于让用户以为最新的是最下面那个。
+  it('组内保持传入顺序（服务端已排好新→旧）', () => {
+    const newer = f('auto_20261003_120000.sql', 'auto')
+    const older = f('auto_20261001_120000.sql', 'auto')
+    const groups = groupByCategory([newer, older])
+    expect(groups[0].files.map((x) => x.name)).toEqual([newer.name, older.name])
+  })
+
+  it('空列表不产生任何分组', () => {
+    expect(groupByCategory([])).toEqual([])
+  })
+})
+
+describe('autoBackupDayLabel', () => {
+  it('0 是关闭，1 与 30 用更自然的说法', () => {
+    expect(autoBackupDayLabel(0)).toBe('关闭')
+    expect(autoBackupDayLabel(1)).toBe('每天')
+    expect(autoBackupDayLabel(30)).toBe('每 30 天')
+  })
+
+  it('其余直接说天数', () => {
+    expect(autoBackupDayLabel(2)).toBe('每 2 天')
+    expect(autoBackupDayLabel(7)).toBe('每 7 天')
+  })
+})
+
+describe('AUTO_BACKUP_DAY_OPTIONS', () => {
+  // 选项集必须与服务端 config.AllowedAutoBackupDays 一致，否则用户能选出一个
+  // 服务端会拒绝的档位（表现为"选了就报错"，而不是"根本不让你选"）。
+  it('恰好是需求指定的六档 + 关闭', () => {
+    expect(AUTO_BACKUP_DAY_OPTIONS).toEqual([0, 1, 2, 3, 5, 7, 30])
   })
 })

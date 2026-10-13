@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"app/internal/auth"
+	"app/internal/backuplayout"
 	"app/internal/dbbackup"
 	"app/internal/dbfile"
 	"app/internal/paths"
@@ -14,15 +15,18 @@ import (
 	"app/internal/usecase"
 )
 
-// safetyCopyKeep 是「破坏性操作前自动副本」保留的份数。
-// 备份目录会随每次恢复/清空增长，必须有上限。
-const safetyCopyKeep = 5
+// safetyCopyKeep 已被 paths.SafetyCopyKeep 取代。
+//
+// 保留份数以前是 service 私有的常量，但它现在要同时管三类副本、并且必须与
+// 写文件的目录逻辑放在一处（分类目录是 paths 包的职责）。两处各写一份
+// "5" 就是等着一场漂移：改了写目录的那个，清理还按旧的来。
 
-// safetyCopyPrefixes 各类破坏性操作副本的文件名前缀。
+// 各类破坏性操作副本的文件名前缀。
 // 与用户手动「一键备份」的 backup_ 区分，便于识别与单独清理。
+// 前缀常量统一放在 paths 包，因为 backuplayout 靠它判定文件归类。
 const (
-	prefixPreRestore = "pre_restore"
-	prefixPreClear   = "pre_clear"
+	prefixPreRestore = paths.PrefixPreRestore
+	prefixPreClear   = paths.PrefixPreClear
 )
 
 // 统计类型与用例层共享（D-013 可移植性：传输/用例类型不锁在业务包）。
@@ -263,7 +267,12 @@ func (s *Service) safetyCopy(prefix string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("当前存储后端不支持生成操作前副本")
 	}
-	path, err := port.PrefixSnapshot(paths.BackupDir(), prefix)
+	// 写入分类目录而不是备份根目录：三类兜底副本的清理策略一致，放在一起才好管。
+	dir, err := backuplayout.DirFor(prefix)
+	if err != nil {
+		return "", fmt.Errorf("确定副本存放目录失败，已中止：%w", err)
+	}
+	path, err := port.PrefixSnapshot(dir, prefix)
 	if err != nil {
 		return "", err
 	}
@@ -272,10 +281,14 @@ func (s *Service) safetyCopy(prefix string) (string, error) {
 }
 
 // pruneSafetyCopies 按份数上限清理某类副本。失败不影响本次操作结果。
+//
+// 只在分类目录内清理：手动备份在另一个目录、永不删除，绝不能被这里顺手清掉。
+// 这正是分类目录存在的理由——早期所有备份平铺在根下，"只删 pre_ 前缀"这种
+// 策略得靠前缀筛选兜住，而手动备份与升级前备份同为 backup_ 前缀、策略又不同。
 func pruneSafetyCopies(prefix string) {
 	switch prefix {
-	case prefixPreRestore, prefixPreClear:
-		dbbackup.PruneSnapshots(paths.BackupDir(), prefix, safetyCopyKeep)
+	case prefixPreRestore, prefixPreClear, paths.PrefixPreMigrate:
+		dbbackup.PruneSnapshots(paths.SafetyBackupDir(), prefix, paths.SafetyCopyKeep)
 	}
 }
 

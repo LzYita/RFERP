@@ -527,8 +527,9 @@ func TestBackupDownloadReturnsStreamNotServerPath(t *testing.T) {
 	s := newBackupServer(t, apps)
 	tok := issueAdmin(t, s)
 
-	// 让 BackupDatabase 落到真实文件上，才能测流
-	dir := paths.BackupDir()
+	// 让 BackupDatabase 落到真实文件上，才能测流。
+	// 一键备份是**手动**备份，落 manual/ 子目录（手动备份永不自动删除）。
+	dir := paths.ManualBackupDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

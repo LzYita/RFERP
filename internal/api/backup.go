@@ -9,10 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	"app/internal/backuplayout"
 	"app/internal/paths"
 	"app/internal/usecase"
 )
@@ -35,7 +36,12 @@ type backupEntry struct {
 	Size     int64  `json:"size"`
 	Modified string `json:"modified"`
 
-	// SchemaKnown=false 表示预检只读到文件开头，没读到结尾，无法断言覆盖度。
+	// Category 是物理分类（manual / auto / safety / legacy），界面据此分组。
+	Category string `json:"category"`
+	// Legacy=true 表示它还在 备份\ 根下（旧布局），分组时排在最后。
+	Legacy bool `json:"legacy,omitempty"`
+
+	// SchemaKnown=false 表示预检只读到文件开头、没读到结尾，无法断言覆盖度。
 	SchemaKnown bool `json:"schemaKnown,omitempty"`
 	// MissingTables 是「当前业务表里、这份备份 schema 中没有」的表：
 	// 恢复时它们会被 DELETE 掉且无处回填。SchemaKnown 为 false 时本字段无意义。
@@ -55,52 +61,32 @@ type backupEntry struct {
 // 顺带做**预检**：每份备份能不能安全回滚（覆盖度）与能不能用（编码），
 // 在这里就告诉界面，而不是等用户输完确认口令、点完恢复才失败。
 func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
-	dir := paths.BackupDir()
-	entries, err := os.ReadDir(dir)
+	entries, err := backuplayout.List()
 	if err != nil {
-		// 还没有任何备份时目录可能不存在：返回空列表而不是 500，
-		// 否则首启后第一次打开备份屏就会看到报错。
 		writeJSON(w, http.StatusOK, map[string]any{"files": []backupEntry{}})
 		return
 	}
 	out := make([]backupEntry, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
+		entry := backupEntry{
+			Name:     e.Name,
+			Size:     e.Size,
+			Modified: e.ModTime.Format("2006-01-02 15:04:05"),
+			Category: string(e.Category),
+			Legacy:   e.Legacy,
 		}
-		// .sql 是 mysqldump 产物，.db 是 SQLite 整库快照；两者都是合法的恢复源
-		// （restore.go:59 按文件头判定，不看扩展名）。
-		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if ext != ".sql" && ext != ".db" {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		out = append(out, backupEntry{
-			Name:     e.Name(),
-			Size:     info.Size(),
-			Modified: info.ModTime().Format("2006-01-02 15:04:05"),
-		})
-	}
-	// 新→旧：用户最可能要恢复的是最近那一份。
-	sort.Slice(out, func(i, j int) bool { return out[i].Modified > out[j].Modified })
-
-	// 预检是增强：宿主没实现这个端口就跳过，界面按「无法确认」处理。
-	if insp, ok := s.apps.(usecase.BackupInspector); ok {
-		for i := range out {
-			got, err := insp.InspectBackupFile(filepath.Join(dir, out[i].Name))
-			if err != nil {
-				out[i].Restorable = false
-				out[i].UnusableReason = "备份文件无法读取"
-				continue
+		// 预检是增强：宿主没实现这个端口就跳过，界面按「无法确认」处理。
+		if insp, ok := s.apps.(usecase.BackupInspector); ok {
+			if target, err := backuplayout.Resolve(e.Name); err == nil {
+				if got, err := insp.InspectBackupFile(target); err == nil {
+					entry.SchemaKnown = got.SchemaKnown
+					entry.MissingTables = got.MissingTables
+					entry.Restorable = got.Usable
+					entry.UnusableReason = got.Reason
+				}
 			}
-			out[i].SchemaKnown = got.SchemaKnown
-			out[i].MissingTables = got.MissingTables
-			out[i].Restorable = got.Usable
-			out[i].UnusableReason = got.Reason
 		}
+		out = append(out, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"files": out})
 }
@@ -111,7 +97,10 @@ func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
 // 在能力矩阵里标的是可用，但代码里没有任何下载能力），同时把服务器目录布局泄了出去。
 // 现在直接回内容 + Content-Disposition，浏览器一次请求就完成下载。
 func (s *Server) handleBackupDatabase(w http.ResponseWriter, _ *http.Request) {
-	path, err := s.apps.BackupDatabase(paths.BackupDir())
+	// 用户点「一键备份」= 手动备份，落 manual/ 目录。
+	// 它**永不自动删除**：用户主动留的东西不该被任何清理策略替用户决定。
+	// 自动备份由后台按周期生成，落 auto/ 并滚动保留，与手动严格分开。
+	path, err := s.apps.BackupDatabase(paths.ManualBackupDir())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "备份失败，请检查数据目录是否可写")
 		return
@@ -209,6 +198,58 @@ func (s *Server) handleClearDatabase(w http.ResponseWriter, r *http.Request) {
 // 自己跑在桌面上（见 DirectoryPicker 的说明）。没注入 picker 的部署形态
 // （cmd/server、浏览器）会得到一个明确的"不支持"而不是 500——界面据此把
 // 文本输入框亮出来，而不是让用户对着一个点不动的按钮发呆。
+// handleGetAutoBackup 返回自动定期备份的设置与状态。
+//
+// 只读、仓管也可见（和 DataDir 同档）：让用户能看到「上次自动备份是什么时候」，
+// 是判断这套东西有没有在工作的唯一依据。
+func (s *Server) handleGetAutoBackup(w http.ResponseWriter, _ *http.Request) {
+	c, ok := s.apps.(usecase.AutoBackupController)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled": false, "days": 0, "count": 0,
+			"keep": paths.AutoBackupKeep, "reason": "当前部署形态不支持自动备份",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, c.AutoBackupStatus())
+}
+
+// handleSetAutoBackup 设置自动备份间隔。
+//
+// 本机操作（写配置 + 触发备份都发生在这台机器上），所以跟 SetDataDir 一样
+// 挂在 hostOperations 闸门后面 —— 远程客户端改本机的备份策略没有意义。
+func (s *Server) handleSetAutoBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireHostOperations(w, "设置自动备份") {
+		return
+	}
+	c, ok := s.apps.(usecase.AutoBackupController)
+	if !ok {
+		writeErr(w, http.StatusNotImplemented, "当前部署形态不支持自动备份")
+		return
+	}
+	var body struct {
+		Days int `json:"days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if err := c.SetAutoBackupDays(body.Days); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 立刻落一份：用户刚开启就该看到结果，而不是等下个周期才发现它没工作。
+	// 失败不回滚设置——设置是用户的意图，后台备份失败只记日志。
+	if body.Days > 0 {
+		if insp, ok := s.apps.(usecase.AutoBackupScheduler); ok {
+			if _, err := insp.MaybeAutoBackup(time.Now()); err != nil {
+				log.Printf("api: auto backup after enabling: %v", err)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, c.AutoBackupStatus())
+}
+
 func (s *Server) handlePickDataDir(w http.ResponseWriter, _ *http.Request) {
 	// 选目录本身不改任何东西，权限与本机闸门挂在真正的写操作 SetDataDir 上。
 	// 但既然它是为"改数据目录"服务的，就跟着 Backup.SetDataDir 的档位要求，
@@ -248,6 +289,12 @@ func (s *Server) handleDataDir(w http.ResponseWriter, _ *http.Request) {
 		// 任意调用方"是两回事：本端点已鉴权且要求 backup 模块权限。
 		"dataDir":   dir,
 		"backupDir": paths.BackupDir(),
+		// 三个分类子目录一并给出：界面要按类别分组展示，光有根目录不够。
+		"backupDirs": map[string]string{
+			"manual": paths.ManualBackupDir(),
+			"auto":   paths.AutoBackupDir(),
+			"safety": paths.SafetyBackupDir(),
+		},
 	})
 }
 
@@ -335,18 +382,18 @@ func (s *Server) resolveBackupFile(name string) (string, error) {
 	if _, ok := BackupTimestamp(name); !ok {
 		return "", errBackupFileNotARestore
 	}
-	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
-		return "", errBackupFileNotInDir
-	}
-	dir := paths.BackupDir()
-	target := filepath.Join(dir, name)
-	rel, err := filepath.Rel(dir, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errBackupFileNotInDir
-	}
-	st, err := os.Stat(target)
-	if err != nil || st.IsDir() {
-		return "", errBackupFileMissing
+	// 跨分类目录查找（末位是旧布局根目录）。路径穿越的两道防御都在
+	// backuplayout.Resolve 里：只接受文件名，且解析结果必须仍在某个备份目录内。
+	target, err := backuplayout.Resolve(name)
+	if err != nil {
+		switch {
+		case strings.Contains(err.Error(), "不能指定路径"):
+			return "", errBackupFileNotInDir
+		case strings.Contains(err.Error(), "不存在"):
+			return "", errBackupFileMissing
+		default:
+			return "", errBackupFileMissing
+		}
 	}
 	// 编码闸门：UTF-16 的 dump 按 UTF-8 读会一行 INSERT 都匹配不到，
 	// 于是「全部业务表被清空、零行回填」却报告成功。service 侧还有

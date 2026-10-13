@@ -160,6 +160,13 @@ func main() {
 	// （内嵌服务必须先于 wails.Run 建好，而 ctx 只有 wails.Run 才有）。
 	dirPicker := newNativeDirPicker()
 
+	// 自动定期备份：启动时判一次（到期就立刻补一份），运行期每小时再判。
+	//
+	// 语义要说清楚：**没有后台服务**，所以「每 n 天」的实际含义是
+	//「每 n 天里第一次打开这个软件时」。关着软件的那天不会备份。
+	stopAutoBackup := startAutoBackup(res.Apps)
+	defer stopAutoBackup()
+
 	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
 	if err != nil {
 		winmsg.Error("RFERP 无法启动", err.Error())
@@ -203,6 +210,9 @@ func main() {
 //
 // 其余——装配、静态资源、会话、鉴权——与窗口模式完全相同，所以用它验证界面有意义。
 func runHeadless(apps usecase.Applications, addr string) {
+	// 无头模式也要判一次自动备份：它是给「无人值守的服务器形态」用的，
+	// 那正是最需要定时备份、也最不可能有人去点「一键备份」的场合。
+	defer startAutoBackup(apps)()
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
@@ -288,6 +298,28 @@ func randomPortSuggestion(addr string) int {
 		}
 	}
 	return 54321
+}
+
+// startAutoBackup 开启自动定期备份，返回停止函数。
+//
+// 失败只记日志不弹窗：自动备份是个保底，用户没在等它的结果，
+// 不该因为它失败而影响启动。
+func startAutoBackup(apps usecase.Applications) func() {
+	c, ok := apps.(usecase.AutoBackupController)
+	if !ok || c.AutoBackupDays() <= 0 {
+		return func() {}
+	}
+	s, ok := apps.(usecase.AutoBackupScheduler)
+	if !ok {
+		return func() {}
+	}
+	// 先判一次：软件可能关了很久，一打开就该补上缺的备份。
+	if _, err := s.MaybeAutoBackup(time.Now()); err != nil {
+		log.Printf("auto backup: startup check failed: %v", err)
+	}
+	stop := make(chan struct{})
+	s.StartAutoBackupTicker(stop)
+	return func() { close(stop) }
 }
 
 // serve 在 127.0.0.1 上启动内嵌服务。

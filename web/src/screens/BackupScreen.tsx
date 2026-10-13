@@ -17,16 +17,20 @@
  *     降级成勾选框——用户不需要读懂任何东西就能划过去。
  *   - 恢复结果三分类分色 + 不渲染重试按钮（那边只有标题分三类）。
  */
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, api, saveBlob, usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import {
+  AUTO_BACKUP_DAY_OPTIONS,
   CLEAR_CONFIRM_TOKEN,
+  autoBackupDayLabel,
   backupApi,
   classifyDirPick,
+  groupByCategory,
   isDirPickUnavailable,
   restoreTokenFor,
   tablesLostOnRestore,
+  type AutoBackupSchedule,
   type BackupFile,
   type ClearResult,
   type DataDirInfo,
@@ -88,13 +92,17 @@ export function BackupScreen() {
   // 所以那条端点会明确回 501，界面据此把输入框亮出来。
   const [manualDir, setManualDir] = useState<string | null>(null)
 
+  // 自动定期备份的设置与状态
+  const [auto, setAuto] = useState<AutoBackupSchedule | null>(null)
+
   useEffect(() => {
     let alive = true
-    Promise.all([backupApi.dataDir(), backupApi.listFiles()])
-      .then(([d, f]) => {
+    Promise.all([backupApi.dataDir(), backupApi.listFiles(), backupApi.autoSchedule()])
+      .then(([d, f, a]) => {
         if (!alive) return
         setDir(d)
         setFiles(f.files)
+        setAuto(a)
         setError(null)
       })
       .catch((e) => {
@@ -115,6 +123,32 @@ export function BackupScreen() {
       /* 列表刷新失败不该盖掉刚才的操作结果，错误会在下次进入屏时出现 */
     }
   }, [])
+
+  const fileGroups = useMemo(() => groupByCategory(files), [files])
+
+  /**
+   * 改自动备份间隔。
+   *
+   * 失败时**不**本地兜底成别的值：服务端拒绝非法值之后，界面就把服务端的话
+   * 显示出来并恢复原状。前端悄悄改成邻近的合法档，用户会以为每 4 天有一份、
+   * 实际每 5 天——而真正需要备份的那一刻正好落在空档里。
+   */
+  async function setAutoDays(days: number) {
+    setBusy('autoschedule')
+    setError(null)
+    try {
+      setAuto(await backupApi.setAutoSchedule(days))
+      await reload()
+    } catch (e) {
+      setAuto((prev) => prev)
+      setError({
+        kind: e instanceof ApiError && e.isForbidden ? 'forbidden' : 'server',
+        text: `设置自动备份失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : '未知错误'}`,
+      })
+    } finally {
+      setBusy(null)
+    }
+  }
 
   // 破坏性操作需要「写备份模块」且「本机形态」两个条件，缺一不可。
   const destructiveReady = canEdit && hostOperations
@@ -386,13 +420,65 @@ export function BackupScreen() {
       <Panel className="p-3">
         <SectionTitle>一键备份</SectionTitle>
         <p className="mt-1 text-[11.5px] text-[var(--color-fg-muted)]">
-          备份当前数据库，文件保存在 {dir?.backupDir ?? '备份目录'}，并同时下载到本机。
+          备份当前数据库，文件保存在 {dir?.backupDir ?? '备份目录'} 的 manual 子目录，
+          并同时下载到本机。手动备份<b>永不自动删除</b>。
         </p>
         <div className="mt-2">
           <Btn primary disabled={!canEdit || busy !== null} onClick={doBackup}>
             {busy === 'backup' ? '备份中…' : '一键备份'}
           </Btn>
         </div>
+      </Panel>
+
+      {/* 自动定期备份 */}
+      <Panel className="p-3">
+        <SectionTitle>自动定期备份</SectionTitle>
+        <p className="mt-1 text-[11.5px] text-[var(--color-fg-muted)]">
+          按设定的间隔自动生成备份，存在 auto 子目录，滚动保留最近 {auto?.keep ?? 20} 份，
+          与手动备份分开、互不影响。
+        </p>
+        <div className="mt-2 flex items-end gap-2">
+          <div className="w-[160px]">
+            <Field label="备份间隔">
+              <select
+                value={auto?.days ?? 0}
+                // 改间隔会写配置并立刻触发一次备份，属于本机操作
+                disabled={!destructiveReady || busy !== null || !!auto?.reason}
+                onChange={(e) => void setAutoDays(Number(e.target.value))}
+                aria-label="自动备份间隔"
+                className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)]"
+              >
+                {AUTO_BACKUP_DAY_OPTIONS.map((d) => (
+                  <option key={d} value={d}>
+                    {autoBackupDayLabel(d)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          {busy === 'autoschedule' ? <span className="pb-1 text-[11px]">保存中…</span> : null}
+        </div>
+        {auto?.reason ? (
+          <p className="mt-1.5 text-[11px] text-[#8A6100]">当前不可用：{auto.reason}</p>
+        ) : null}
+        {auto?.enabled ? (
+          <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+            {auto.last ? (
+              <>
+                最近一次：{auto.last}
+                {auto.nextDue ? `　下次到期：${auto.nextDue}` : null}　现有 {auto.count} 份
+              </>
+            ) : (
+              <>尚未生成过自动备份</>
+            )}
+          </div>
+        ) : null}
+        {auto?.enabled ? (
+          <p className="mt-1 text-[11px] text-[var(--color-fg-muted)]">
+            说明：本软件没有后台服务，间隔到期时会在你<b>下一次打开软件</b>时补上一份；
+            一直不开软件就不会备份。
+          </p>
+        ) : null}
       </Panel>
 
       {/* 整库恢复 */}
@@ -407,10 +493,17 @@ export function BackupScreen() {
               className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
             >
               <option value="">请选择…</option>
-              {files.map((f) => (
-                <option key={f.name} value={f.name}>
-                  {f.name}（{f.modified}）{fileBadge(f)}
-                </option>
+              {/* 二级级联：按分类分组（同 BOM 的父子层级）。
+                  光看文件名分不出好坏——同一时刻的 .sql / .upgraded.sql / .final.sql
+                  三个文件回滚结果不同，而名字几乎一样。 */}
+              {fileGroups.map((g) => (
+                <optgroup key={g.category} label={g.label}>
+                  {g.files.map((f) => (
+                    <option key={f.name} value={f.name}>
+                      {f.name}（{f.modified}）{fileBadge(f)}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </Field>

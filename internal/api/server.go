@@ -270,6 +270,8 @@ func (s *Server) Handler() http.Handler {
 	// 选目录不改数据，权限点挂在 Backup.SetDataDir 上是因为它服务于这个操作，
 	// 且要跟真正写入的那一步保持同一档位——否则只读账号能弹框却提交不了。
 	mux.HandleFunc("POST /api/datadir/pick", s.auth(s.handlePickDataDir, "Backup.SetDataDir"))
+	mux.HandleFunc("POST /api/backup/autoschedule", s.auth(s.handleSetAutoBackup, "Backup.SetDataDir"))
+	mux.HandleFunc("GET /api/backup/autoschedule", s.auth(s.handleGetAutoBackup, "Backup.DataDir"))
 	mux.HandleFunc("POST /api/datadir", s.auth(s.handleSetDataDir, "Backup.SetDataDir"))
 	mux.HandleFunc("POST /api/restore", s.auth(s.handleRestoreDatabase, "Backup.RestoreDatabase"))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClearDatabase, "Backup.ClearDatabase"))

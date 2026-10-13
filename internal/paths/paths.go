@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,9 +10,9 @@ import (
 
 var dataDir string
 
-// ResolveUnder checks existing filesystem targets, including symlinks and junctions.
+// ResolveExistingUnder checks existing filesystem targets, including symlinks and junctions.
 // shortcut: paths can change after validation; use rooted handles for hostile filesystems.
-func ResolveUnder(root, target string) (string, error) {
+func ResolveExistingUnder(root, target string) (string, error) {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(target) == "" {
 		return "", fmt.Errorf("路径不能为空")
 	}
@@ -57,6 +58,71 @@ func DataDir() string {
 
 func BackupDir() string {
 	return filepath.Join(DataDir(), "备份")
+}
+
+// ErrNameNotLocal 表示一个「文件名」其实不是文件名：绝对路径、含 .. 逃逸、或为空。
+var ErrNameNotLocal = errors.New("文件名不合法：不能是绝对路径或包含 ..")
+
+// ResolveUnder 把**文件名** name 解析为 root 下的子路径，并保证结果确实落在 root 内。
+//
+// 这是「在配置根目录下拼子路径」的**唯一出口**。之所以要有唯一出口：
+// DataDir() 的值来自用户配置（首启向导选的目录 / config.json / MES_DATA_DIR），
+// 于是每一个 filepath.Join(dir, name) 都是一次"用户可控的值进了路径表达式"。
+// 分散在 logging / dbbackup / service / api 各处时，判据会各不相同、也无人可核；
+// 收在这里，判据只有一份，能测、能审、也能被静态分析识别。
+//
+// 它**不**校验 root 本身（root 就是用户配置的那个目录，那是设计本身），
+// 也**不**替调用方做存在性检查（文件在不在、是不是目录，由调用方自己 stat）。
+//
+// 判据是两道，缺一不可：
+//
+//  1. **必须是单一元素**（不含任何分隔符）。这条守的是"客户端只能给文件名、
+//     不能给路径"这个约定 —— 少了它，`manual\backup_x.sql` 这种嵌套相对路径
+//     会被放行：它不逃逸根目录，但客户端能指到列表里根本没显示过的子目录文件。
+//  2. **filepath.IsLocal**。这条守的是逃逸 —— 只用词法分析就拒掉
+//     绝对路径（/etc/passwd、C:\Windows）、`..` 逃逸、Windows 保留名（NUL）。
+//     注意 `filepath.Base("..") == ".."` 成立，所以第 1 道拦不住 `..`，必须靠它。
+//
+// 两道合起来才等价于原来分散在各处的 `Base` + `ContainsAny` + `Rel` 三重检查，
+// 而现在是**一份**、可测、可审。
+func ResolveUnder(root, name string) (string, error) {
+	if name == "" {
+		return "", ErrNameNotLocal
+	}
+	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
+		return "", ErrNameNotLocal
+	}
+	if !filepath.IsLocal(name) {
+		return "", ErrNameNotLocal
+	}
+	return filepath.Join(root, name), nil
+}
+
+// Under 报告 candidate 是否就是 root 本身、或位于 root 之下。
+//
+// 与 ResolveUnder 的分工：ResolveUnder 管"用文件名拼出子路径"，
+// Under 管"拿到一个**已经拼好的路径**（可能来自客户端），判断它在不在根目录内"。
+// 两者都在防同一件事，所以都在这里 —— 判据必须只有一份。
+//
+// 先 Clean 再用 filepath.Rel 比较，**不能**用字符串前缀：
+// `导出\..\outside` 确实以 `导出\` 开头，但 Clean 之后落在导出目录之外，
+// 而客户端发来的正是这种未清理的原始字符串。
+func Under(root, candidate string) bool {
+	root = strings.TrimSpace(root)
+	candidate = strings.TrimSpace(candidate)
+	if root == "" || candidate == "" {
+		return false
+	}
+	cleanRoot := filepath.Clean(root)
+	cleanCand := filepath.Clean(candidate)
+	if cleanCand == cleanRoot {
+		return true
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanCand)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func ExportDir() string {

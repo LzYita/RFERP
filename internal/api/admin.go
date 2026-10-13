@@ -218,7 +218,7 @@ func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	dir, err := paths.ResolveUnder(paths.ExportDir(), strings.TrimSpace(body.Dir))
+	dir, err := paths.ResolveExistingUnder(paths.ExportDir(), strings.TrimSpace(body.Dir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			writeErr(w, http.StatusNotFound, "导出目录不存在")

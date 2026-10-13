@@ -556,6 +556,34 @@ async function backupGate(page) {
   // 占位屏已被替换
   check('备份屏不再是占位屏', !(await page.locator('text=该屏尚未迁移').count()), '仍是占位页')
 
+  // 侧栏与主页面不能有断层：外壳固定为视口高，只有右边主区滚动。
+  //
+  // 这条是被截图发现的：备份屏一度没有滚动容器，内容把外壳顶穿，
+  // 侧栏的深色背景到视口底就断了，下面露出一条白缝。
+  // 判据用**实测**而不是类名：外壳高等于视口高、且文档本身不滚。
+  const layout = await page.evaluate(() => {
+    const aside = document.querySelector('aside')
+    const r = aside?.getBoundingClientRect()
+    return {
+      vh: window.innerHeight,
+      asideTop: r ? Math.round(r.top) : -1,
+      asideBottom: r ? Math.round(r.bottom) : -1,
+      docScroll: document.documentElement.scrollHeight - window.innerHeight,
+      mainScrolls:
+        (() => {
+          const m = document.querySelector('main')
+          return m ? m.scrollHeight > m.clientHeight : false
+        })(),
+    }
+  })
+  check('侧栏贯穿整个视口高度（与主页面之间没有断层）',
+    layout.asideTop === 0 && layout.asideBottom === layout.vh,
+    `视口高 ${layout.vh}，侧栏 ${layout.asideTop}~${layout.asideBottom}`)
+  check('文档本身不滚动（滚动只发生在右边主区）',
+    layout.docScroll <= 1, `文档多出 ${layout.docScroll}px 可滚——外壳被内容顶穿了`)
+  check('滚动容器在右边主区', layout.mainScrolls,
+    '主区没有可滚内容，长页面会再次把外壳顶穿')
+
   // 区块齐全
   //
   // 失败时把屏上**实际看到的文字**带进消息：这一屏加载失败时会整块换成错误提示，

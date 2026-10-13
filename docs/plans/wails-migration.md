@@ -986,6 +986,11 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 **关口**：全新机器从零安装 + 旧版升级，两条路径均通过。
 
+> ⚠️ **交付冻结前必须先清掉 §4.5 的 S1 / S2**（2026-10-13 记录）：
+> `POST /api/backup`、`/api/export/all`、`/api/export/audit` 三个写端点没有本机闸门；
+> 远程形态下会回传服务器绝对路径。两项都是既有行为、单机形态无影响，
+> 但**发布给跨机用户之前必须处理** —— 现在记在这里，免得随合并一起被忘掉。
+
 ### Round 9 · 移除 Fyne 构建入口
 
 - [ ] Web UI 稳定一个版本后，移除 `cmd/desktop` 的构建入口
@@ -1075,6 +1080,23 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 | 6 | **无登出端点** | `internal/api` 中 `logout` 零命中；`ui/app.go` 的"退出登录"只调本地 `auth.Logout()`，**`Client.tok` 不清** | Round 1 补（见 §4.6 会话设计）|
 | 7 | **无超时 / 无限流 / 无安全响应头** | 无 `ReadTimeout`/`WriteTimeout`/`IdleTimeout`；登录失败不计数不锁定 | Round 1 补 |
 | 8 | **`nativefiledialog` 无对应物** | `SHBrowseForFolderW` 仅 `ui/backup.go`、`ui/setup.go` 两处调用 | ✅ Round 5 已按宿主注入解决（见 §2.4.1）；`ui/setup.go` 仍走文本输入 |
+
+### 🔴 遗留待办：远程服务器联机启动后处理（2026-10-13 记录）
+
+本轮安全自检发现两项**既有**问题（都不是本轮引入），用户决定**记录下来、等远程服务器
+联机计划开始后一并处理**。记在这里是为了它们不在合并中消失。
+
+| # | 问题 | 证据 | 为什么现在不修 |
+|---|---|---|---|
+| S1 | **三个写操作端点没有本机闸门** | `POST /api/backup`、`POST /api/export/all`、`POST /api/export/audit` 都没有 `requireHostOperations`；同组的 `restore` / `clear` / `set-datadir` / `pick` / `export/all/open` 都有 | 远程形态的导出流程尚未设计（§4 Round 2「运行模式选择」暂缓）。现在加闸门会挡住一条还没定型的路径。远程形态定稿时必须一并决定这三个是否纳入能力矩阵 |
+| S2 | **远程形态泄露服务器绝对路径** | `GET /api/datadir`、`POST /api/export/all`、`POST /api/export/audit` 都回绝对路径（`dataDir` / `backupDir` / `backupDirs` / `dir`） | 单机形态下这是**必需**的：界面上不显示路径，用户就不知道东西去哪了、也不知道该去哪里取回。远程形态下这些是**服务器**的路径布局。需在远程形态里区分「本机路径照常显示」与「远程路径只显示相对位置」 |
+
+影响评估：S1 是磁盘占用向量（客户端可让服务器写文件），S2 泄露目录布局但**不含任何口令**
+（`config.json` 的 `password_enc` 从来不经端点回传）。两项都**不影响当前的单机形态**——
+单机形态下 `hostOperations` 恒为 true，闸门不改变行为；路径也只有用户自己看得到。
+
+处理时的验收要点：① 三个端点在 `cmd/server`（跨机形态）下必须与 `restore`/`clear` 一样
+被 403 挡下，或按矩阵明确豁免；② 关口需补远程形态下"路径不出现绝对盘符"的断言。
 
 ### 本地 / 远程能力矩阵（2026-10-02 新增）
 

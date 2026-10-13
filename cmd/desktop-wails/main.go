@@ -264,6 +264,15 @@ type embeddedServer struct {
 // -serve 模式用固定端口（Vite 开发期需要一个已知地址），这时可能撞上，
 // 所以错误信息必须说清「换一个端口」，而不是只抛一句 address already in use。
 func listenLoopback(addr string) (net.Listener, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		return nil, fmt.Errorf("桌面服务只允许回环地址，请使用 -serve-addr 127.0.0.1:端口")
+	}
+	// Host operations are enabled here, so bind the validated IP without DNS resolution.
+	addr = net.JoinHostPort(host, port)
 	ln, err := net.Listen("tcp", addr)
 	if err == nil {
 		return ln, nil

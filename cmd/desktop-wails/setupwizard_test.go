@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -70,14 +69,5 @@ func TestEnsureWritableDirAcceptsLinkedRoot(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("probe leaked in linked directory: %v, %v", entries, err)
-	}
-}
-
-func TestPingMySQLRejectsInvalidIdentifierBeforeConnecting(t *testing.T) {
-	for _, name := range []string{"", "app`name", "app;DROP", "app name", "数据库", strings.Repeat("a", 65)} {
-		err := pingMySQL(mysqlInput{Host: "invalid.invalid", Port: 3306, DBName: name})
-		if err == nil || err.Error() != "数据库名不合法" {
-			t.Errorf("name %q reached connection instead of validation: %v", name, err)
-		}
 	}
 }

@@ -632,11 +632,17 @@ func ensureWritableDir(dir string) (err error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("无法创建目录：%w", err)
 	}
-	probe, err := os.CreateTemp(dir, ".rferp-write-test-*")
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("无法打开目录：%w", err)
+	}
+	defer root.Close()
+	name := ".rferp-write-test-" + rand.Text()
+	probe, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("目录不可写：%w", err)
 	}
-	defer func() { err = errors.Join(err, os.Remove(probe.Name())) }()
+	defer func() { err = errors.Join(err, root.Remove(name)) }()
 	_, writeErr := probe.WriteString("ok")
 	return errors.Join(writeErr, probe.Close())
 }

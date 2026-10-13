@@ -318,8 +318,12 @@ func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
 		t.Fatalf("启动器被调用 %d 次，期望 %d", len(opened), len(want))
 	}
 	for i, d := range opened {
-		if d != want[i] {
-			t.Errorf("第 %d 次传给启动器的目录 = %q，期望 %q", i+1, d, want[i])
+		expected, err := filepath.EvalSymlinks(want[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d != expected {
+			t.Errorf("第 %d 次传给启动器的目录 = %q，期望 %q", i+1, d, expected)
 		}
 	}
 }

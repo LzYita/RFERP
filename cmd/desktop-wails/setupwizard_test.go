@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -49,6 +51,25 @@ func TestEnsureWritableDirRejectsFile(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "keep" {
 		t.Fatalf("file changed: %q, %v", data, err)
+	}
+}
+
+func TestEnsureWritableDirAcceptsLinkedRoot(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "data")
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, dir).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+	} else if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWritableDir(link); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("probe leaked in linked directory: %v, %v", entries, err)
 	}
 }
 

@@ -258,6 +258,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/audit", s.auth(s.handleAuditByRecord, "Audit.GetAuditLogs"))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats, "Stats.GetStockStats"))
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
+	// 文件流单独一个端点：只给确实需要字节的调用方（Go 客户端、远程界面形态）。
+	// 主机形态下文件就在用户自己机器上，界面报位置即可，不该再往「下载」里塞一份。
+	mux.HandleFunc("POST /api/export/audit/download", s.auth(s.handleDownloadAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
 	mux.HandleFunc("POST /api/export/all/open", s.auth(s.handleOpenExportFolder, "Backup.ExportAllDataCSV"))

@@ -94,9 +94,74 @@ func TestExportAuditEndpointAcceptsWebPayload(t *testing.T) {
 	if !apps.gotEnd.After(apps.gotStart) {
 		t.Errorf("结束日没有顺延一天，区间是空的：%v .. %v", apps.gotStart, apps.gotEnd)
 	}
-	// 下载到的必须真的是 CSV，而不是一段 JSON
-	if ct := w.Header().Get("Content-Disposition"); ct == "" {
-		t.Error("没有 Content-Disposition，浏览器会用兜底名存成乱码文件名")
+}
+
+// 与全量导出一致：导出只回报**位置**，不把内容塞进下载。
+//
+// 用户明确要求审计日志也不再出现在「下载」里：文件已经在数据目录中，
+// 再丢一份只会多出一个认不出的文件，还每次导出多一份重复数据。
+func TestExportAuditReportsLocationNotFile(t *testing.T) {
+	apps := &exportApps{}
+	s := newBackupServer(t, apps)
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/export/audit", tok, map[string]string{
+		"start": "2026-10-01",
+		"end":   "2026-10-13",
+	})
+	var out struct {
+		Dir   string   `json:"dir"`
+		Files []string `json:"files"`
+		Count int      `json:"count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Dir == "" || len(out.Files) != 1 {
+		t.Fatalf("应回报目录与文件名，实际 %+v", out)
+	}
+	// 旧版约定：导出\audit_log\<时间戳>\
+	if !strings.HasPrefix(out.Dir, filepath.Join(paths.ExportDir(), exportSubdirAuditLog)) {
+		t.Errorf("目录 = %q，不在 audit_log 分组下", out.Dir)
+	}
+	if strings.ContainsAny(out.Files[0], `/\`) {
+		t.Errorf("应只给文件名，实际 %q", out.Files[0])
+	}
+	// 文件名里的结束日期要用**用户填的**那一天，不是顺延后的内部边界
+	if !strings.Contains(out.Files[0], "20261001") || !strings.Contains(out.Files[0], "20261013") {
+		t.Errorf("文件名 = %q，应含用户选的起止日期", out.Files[0])
+	}
+	// 关键：响应不是 CSV，且文件确实落在目录里
+	if ct := w.Header().Get("Content-Type"); strings.Contains(ct, "csv") {
+		t.Errorf("Content-Type = %q，导出端点不该再回 CSV", ct)
+	}
+	full := filepath.Join(out.Dir, out.Files[0])
+	if _, err := os.Stat(full); err != nil {
+		t.Errorf("文件没有真的落到数据目录：%v", err)
+	}
+}
+
+// 需要字节的调用方（Go 客户端、远程界面）走 /download，仍然拿到 CSV。
+func TestExportAuditDownloadEndpointStreamsCSV(t *testing.T) {
+	apps := &exportApps{}
+	s := newBackupServer(t, apps)
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/export/audit/download", tok, map[string]string{
+		"start": "2026-10-01",
+		"end":   "2026-10-13",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("下载端点 = %d, body=%s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "csv") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+		t.Errorf("Content-Disposition = %q，浏览器会用兜底名存成乱码文件名", cd)
+	}
+	if !strings.Contains(w.Body.String(), "CREATE") {
+		t.Errorf("响应体不是 CSV 内容：%q", w.Body.String())
 	}
 }
 

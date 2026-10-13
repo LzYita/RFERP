@@ -94,8 +94,14 @@ export function BackupScreen() {
 
   // 自动定期备份的设置与状态
   const [auto, setAuto] = useState<AutoBackupSchedule | null>(null)
-  // 全量导出的结果：文件夹路径 + 本次生成的文件名
-  const [exportAll, setExportAll] = useState<{ dir: string; files: string[] } | null>(null)
+  // 导出结果（审计日志 / 全量导出共用同一个弹窗）
+  const [exported, setExported] = useState<{
+    title: string
+    dir: string
+    files: string[]
+    /** 远程形态下才提供"下载"：文件在服务器上，打开文件夹没有意义 */
+    downloadable?: boolean
+  } | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -305,16 +311,34 @@ export function BackupScreen() {
   async function doExportAudit() {
     setBusy('audit')
     setNotice('')
+    setError(null)
+    try {
+      // 与全量导出一致：文件**已经落在数据目录里**，这里只报位置，
+      // 不再顺手往浏览器的「下载」里塞一份 —— 那只会让人多出一个不知道是什么的文件，
+      // 而且每次导出多出一份重复数据。
+      setExported({
+        title: '审计日志已导出',
+        ...(await backupApi.exportAudit({ start: from, end: to })),
+      })
+    } catch (e) {
+      setError({ kind: 'server', text: `导出失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : ''}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /** 远程形态下文件在服务器上，"打开文件夹"用不了，只能把字节取回来。 */
+  async function downloadAudit() {
+    setBusy('auditdl')
     try {
       const { blob, filename } = await api.download(
-        '/api/export/audit',
+        '/api/export/audit/download',
         { start: from, end: to },
         'audit.csv',
       )
       saveBlob(blob, filename)
-      setNotice(`审计日志已导出：${filename}`)
     } catch (e) {
-      setError({ kind: 'server', text: `导出失败：${e instanceof Error ? e.message : ''}` })
+      setError({ kind: 'server', text: `下载失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : ''}` })
     } finally {
       setBusy(null)
     }
@@ -328,7 +352,7 @@ export function BackupScreen() {
       // 全量导出是**多份** CSV 落在数据目录里，不是单个文件。
       // 此前这里按"下载一个文件"处理，把服务端回的 JSON 存成了 all_data.csv ——
       // 打开是乱码（其实是含服务器路径的 JSON），用户既拿不到数据也没人说得清去哪找。
-      setExportAll(await backupApi.exportAll())
+      setExported({ title: '全部数据已导出', ...(await backupApi.exportAll()), downloadable: true })
     } catch (e) {
       setError({ kind: 'server', text: `导出失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : ''}` })
     } finally {
@@ -336,11 +360,10 @@ export function BackupScreen() {
     }
   }
 
-  async function openExportDir() {
-    if (!exportAll) return
+  async function openExportDir(dir: string) {
     setBusy('openexport')
     try {
-      await backupApi.openExportFolder(exportAll.dir)
+      await backupApi.openExportFolder(dir)
     } catch (e) {
       setError({
         kind: e instanceof ApiError && e.isForbidden ? 'forbidden' : 'server',
@@ -677,33 +700,42 @@ export function BackupScreen() {
         </div>
       </Panel>
 
-      {/* 全量导出完成：告诉用户文件**在哪**，而不是丢一个没用的下载 */}
-      {exportAll ? (
-        <Modal title="全部数据已导出" onClose={() => setExportAll(null)} width={560}>
+      {/* 导出完成：告诉用户文件**在哪**，而不是丢一个没用的下载。
+          审计日志与全量导出共用这一个弹窗 —— 两件事的形态是一样的，
+          分成两个弹窗早晚会漂成两套措辞。 */}
+      {exported ? (
+        <Modal title={exported.title} onClose={() => setExported(null)} width={560}>
           <p className="text-[11.5px]">
-            共 {exportAll.files.length} 个 CSV 文件，保存到：
+            共 {exported.files.length} 个文件，保存到：
           </p>
           <p
             className="mt-1 break-all rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2 py-1.5 text-[11.5px]"
             style={{ fontFamily: 'Consolas, monospace' }}
           >
-            {exportAll.dir}
+            {exported.dir}
           </p>
           <div className="mt-2 max-h-[160px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] px-2 py-1.5">
-            {exportAll.files.map((f) => (
+            {exported.files.map((f) => (
               <div key={f} className="truncate text-[11px]" style={{ fontFamily: 'Consolas, monospace' }}>
                 {f}
               </div>
             ))}
           </div>
           <p className="mt-2 text-[11px] text-[var(--color-fg-muted)]">
-            文件不会自动下载到浏览器——它们已经在上面这个文件夹里了。
+            {destructiveReady
+              ? '文件不会自动下载到浏览器——它们已经在上面这个文件夹里了。'
+              : '当前连接的是远程服务器，文件在服务器上，下面可以取一份到本机。'}
           </p>
           <div className="mt-3 flex justify-end gap-2">
-            <Btn onClick={() => setExportAll(null)}>关闭</Btn>
+            <Btn onClick={() => setExported(null)}>关闭</Btn>
             {destructiveReady ? (
-              <Btn primary disabled={busy !== null} onClick={() => void openExportDir()}>
+              <Btn primary disabled={busy !== null} onClick={() => void openExportDir(exported.dir)}>
                 {busy === 'openexport' ? '打开中…' : '打开文件夹'}
+              </Btn>
+            ) : null}
+            {!destructiveReady && exported.downloadable ? (
+              <Btn primary disabled={busy !== null} onClick={() => void downloadAudit()}>
+                {busy === 'auditdl' ? '下载中…' : '下载 CSV 到本机'}
               </Btn>
             ) : null}
           </div>

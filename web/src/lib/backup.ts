@@ -180,6 +180,16 @@ export const backupApi = {
   /** 在资源管理器里打开导出目录（本机操作，远程形态会被闸门挡下）。 */
   openExportFolder: (dir: string) => api.post<{ dir: string }>('/api/export/all/open', { dir }),
 
+  /**
+   * 导出审计日志到**数据目录**，返回文件夹与文件名。
+   *
+   * 不返回文件内容：与全量导出一致，文件已经在磁盘上了，再往浏览器的「下载」
+   * 里塞一份只会多出一个用户认不出的文件，还每次导出多一份重复数据。
+   * 确实需要字节的调用方（远程形态）另有 /export/audit/download。
+   */
+  exportAudit: (range: { start: string; end: string }) =>
+    api.post<{ dir: string; files: string[]; count: number }>('/api/export/audit', range),
+
   autoSchedule: () => api.get<AutoBackupSchedule>('/api/backup/autoschedule'),
 
   /**

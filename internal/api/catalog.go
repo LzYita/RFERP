@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -387,65 +386,101 @@ func parseExportDate(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("日期格式无法识别：%q（应为 2026-10-13 或 RFC 3339）", s)
 }
 
-func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
+// exportAuditRange 解析审计导出的日期区间。
+//
+// 返回的 end 是**内部边界**（已顺延一天，含当天），endUser 是**用户填的那一天** ——
+// 文件名要用后者：用户看到 `audit_log_20261001_20261013.csv` 才知道自己导的是哪一段，
+// 而 `…_20260930` 会让他以为自己选错了日期。
+func (s *Server) exportAuditRange(w http.ResponseWriter, r *http.Request) (start, end, endUser time.Time, ok bool) {
 	var body struct {
 		Start string `json:"start"`
 		End   string `json:"end"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
-		return
+		return time.Time{}, time.Time{}, time.Time{}, false
 	}
 	start, err := parseExportDate(body.Start)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return time.Time{}, time.Time{}, time.Time{}, false
 	}
-	end, err := parseExportDate(body.End)
+	endUser, err = parseExportDate(body.End)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
-		return
+		return time.Time{}, time.Time{}, time.Time{}, false
 	}
 	// 区间含两端：界面选的是"从这一天到那一天"，用户要的是这两天都包含。
+	end = endUser
 	if !end.Before(start) {
 		end = end.AddDate(0, 0, 1)
 	}
+	return start, end, endUser, true
+}
 
-	// 除了给浏览器下载一份，也在数据目录里留一份 —— 与旧版一致
-	// （ui/backup.go:577 写 导出\audit_log\<时间戳>\）。
-	// 界面上写的是"保存到 …"，用户会照着这句话去那个目录找文件；
-	// 只下载不留存，那句话就是假的。
-	keepDir := filepath.Join(paths.ExportDir(), exportSubdirAuditLog, time.Now().Format("20060102_150405"))
-	if err := os.MkdirAll(keepDir, 0o755); err != nil {
-		log.Printf("api: export audit: create keep dir: %v", err)
+// runAuditExport 生成审计 CSV 并**落到数据目录**，返回目录、文件名、内容与条数。
+//
+// 两个端点共用它：界面的"导出"与"下载"拿到的是同一份东西，
+// 分成两处写就会出现"界面上说保存到了 A，下载下来的却是 B"。
+func (s *Server) runAuditExport(start, end, endUser time.Time) (dir, name string, data []byte, count int, err error) {
+	// 与旧版一致：导出\audit_log\<时间戳>\（ui/backup.go:577）
+	dir = filepath.Join(paths.ExportDir(), exportSubdirAuditLog, time.Now().Format("20060102_150405"))
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		return "", "", nil, 0, fmt.Errorf("创建导出目录: %w", mkErr)
 	}
-	tmpDir, err := os.MkdirTemp("", "rferp-audit-*")
+	name = fmt.Sprintf("audit_log_%s_%s.csv", start.Format("20060102"), endUser.Format("20060102"))
+	full := filepath.Join(dir, name)
+
+	count, err = s.apps.ExportAuditLogCSV(start, end, full)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	data, err = os.ReadFile(full)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	return dir, name, data, count, nil
+}
+
+// handleExportAudit 导出审计日志：**只回报位置**，不把内容塞进下载。
+//
+// 与 handleExportAll 对齐。界面上写的是"保存到 …"，用户照这句话去目录找文件；
+// 顺手再往浏览器的「下载」里丢一份，只会让人多出一个不知道是什么的文件，
+// 而且每次导出会多出一份重复数据。
+func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
+	start, end, endUser, ok := s.exportAuditRange(w, r)
+	if !ok {
+		return
+	}
+	dir, name, _, count, err := s.runAuditExport(start, end, endUser)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer os.RemoveAll(tmpDir)
-	tmp := filepath.Join(tmpDir, "audit.csv")
-	count, err := s.apps.ExportAuditLogCSV(start, end, tmp)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dir":   dir,
+		"files": []string{name},
+		"count": count,
+	})
+}
+
+// handleDownloadAudit 把审计 CSV 作为文件流返回。
+//
+// 只给**确实需要字节**的调用方：Go 侧客户端（远程模式）与远程界面形态。
+// 主机形态下文件就在用户自己机器上，走 handleExportAudit 报位置即可。
+func (s *Server) handleDownloadAudit(w http.ResponseWriter, r *http.Request) {
+	start, end, endUser, ok := s.exportAuditRange(w, r)
+	if !ok {
+		return
+	}
+	_, name, data, count, err := s.runAuditExport(start, end, endUser)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	data, err := os.ReadFile(tmp)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	// 留一份到数据目录（失败只记日志：已经导出成功了，不该因此报错让用户以为没导出）
-	keepName := fmt.Sprintf("audit_log_%s_%s.csv", start.Format("20060102"), start.Format("20060102"))
-	if err := os.WriteFile(filepath.Join(keepDir, keepName), data, 0o600); err != nil {
-		log.Printf("api: export audit: keep copy: %v", err)
-	}
-
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition",
-		"attachment; filename*=UTF-8''"+urlEscape(keepName))
+		"attachment; filename*=UTF-8''"+urlEscape(name))
 	w.Header().Set("X-Count", strconv.Itoa(count))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)

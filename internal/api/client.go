@@ -442,7 +442,9 @@ func (c *Client) ClearDatabase() (usecase.ClearResult, error) {
 
 func (c *Client) ExportAuditLogCSV(startDate, endDate time.Time, filePath string) (int, error) {
 	body := map[string]any{"start": startDate, "end": endDate}
-	raw, err := c.doBytes(http.MethodPost, "/api/export/audit", body)
+	// 走 /download 而不是 /api/export/audit：后者现在只回报文件**位置**（与全量导出对齐，
+	// 不往「下载」里塞文件），要字节得问专门的下载端点。
+	raw, err := c.doBytes(http.MethodPost, "/api/export/audit/download", body)
 	if err != nil {
 		return 0, err
 	}

@@ -607,10 +607,24 @@ async function backupGate(page) {
   // 刻意不直接调 API：应用限制同一账号只保留一个会话，关口自己再 login 一次
   // 会把页面上那个会话顶掉，整屏变成"登录已失效"（这个坑踩过一次）。
   await page.click('button:has-text("导出审计日志 CSV")')
-  await sleep(1500)
-  const auditFailed = await page.locator('text=导出失败').count()
-  check('导出日志不再报 invalid body', auditFailed === 0,
-    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(0, 220)))
+  await sleep(1800)
+  // 与全量导出对齐：导出只报位置，不往浏览器的「下载」里塞文件。
+  // 所以这里断言的是**弹窗**，而不是下载事件。
+  const auditDialog = page.locator('[role="dialog"]')
+  check('导出日志不再报 invalid body',
+    (await page.locator('text=导出失败').count()) === 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  check('导出日志后弹出位置对话框（不再直接下载）', (await auditDialog.count()) > 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  const auditText = (await auditDialog.count()) > 0 ? await auditDialog.first().innerText() : ''
+  check('审计日志落在 audit_log 分组下（旧版约定）', auditText.includes('audit_log'),
+    `弹窗内容：${auditText.replace(/\s+/g, ' ').slice(-260)}`)
+  check('审计日志文件名含用户选的起止日期',
+    /\d{8}_\d{8}\.csv/.test(auditText), `弹窗内容：${auditText.replace(/\s+/g, ' ').slice(-260)}`)
+  if ((await auditDialog.count()) > 0) {
+    await auditDialog.locator('button:has-text("关闭")').click()
+    await sleep(400)
+  }
 
   // 全部数据导出：回的是"文件夹 + 文件名"，不是文件内容。
   // 此前按"下载单个文件"处理，把这段 JSON 存成了 all_data.csv，打开是乱码。

@@ -5,7 +5,8 @@
 // 自己拍脑袋写的规则——同一份命名约定（backup_ / pre_restore / pre_clear + 时间戳）
 // 两端必须一致，否则用户照着旧文档猜口令会一直失败。
 import { describe, it, expect } from 'vitest'
-import { restoreTokenFor } from '../src/lib/backup'
+import { classifyDirPick, isDirPickUnavailable, restoreTokenFor } from '../src/lib/backup'
+import { ApiError } from '../src/lib/api'
 
 describe('restoreTokenFor', () => {
   it('从三种合法前缀里导出时间戳', () => {
@@ -45,5 +46,34 @@ describe('restoreTokenFor', () => {
     const a = restoreTokenFor('backup_20260925_101530.sql')
     const b = restoreTokenFor('backup_20260101_000000.sql')
     expect(a).not.toBe(b)
+  })
+})
+
+// 原生目录框的失败处理（方案丙）。三种结果的含义互不相同，混在一起最容易写错：
+// 取消不是错、没有窗口是常态、路径已选才是要落盘的那一种。
+describe('classifyDirPick', () => {
+  it('用户取消 → cancelled（不是错误，界面保持原状）', () => {
+    expect(classifyDirPick({ dir: '' })).toEqual({ kind: 'cancelled' })
+  })
+
+  it('选中了 → chosen，带上路径', () => {
+    expect(classifyDirPick({ dir: 'D:\\仓库数据' })).toEqual({ kind: 'chosen', dir: 'D:\\仓库数据' })
+  })
+})
+
+describe('isDirPickUnavailable', () => {
+  // 501：没有宿主窗口（cmd/server、浏览器）。500：弹框本身失败。
+  // 这两种都该降级成手填，而不是把错误甩给用户。
+  it('501 与 500 都算"弹不了"，应回退手填', () => {
+    expect(isDirPickUnavailable(new ApiError(501, '当前服务无法弹出目录选择框，请手动输入路径'))).toBe(true)
+    expect(isDirPickUnavailable(new ApiError(500, '目录选择框无法打开，请手动输入路径'))).toBe(true)
+  })
+
+  it('403 不算弹不了——那是权限问题，不该诱导向手填', () => {
+    expect(isDirPickUnavailable(new ApiError(403, 'forbidden'))).toBe(false)
+  })
+
+  it('非 ApiError（网络断、解析失败）不降级', () => {
+    expect(isDirPickUnavailable(new Error('network down'))).toBe(false)
   })
 })

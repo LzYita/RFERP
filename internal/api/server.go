@@ -65,9 +65,42 @@ type Server struct {
 	// 阶段 B/C 应当只对 server 所在机器开放，而漏传 Option 的后果必须是不放行。
 	hostOperations bool
 
+	// picker 由桌面宿主注入，负责弹**原生**目录选择框。为 nil 表示当前部署形态
+	// 没有可弹框的窗口（cmd/server、-serve 之外的纯 HTTP 访问、浏览器）。
+	//
+	// 与 hostOperations 分开：能不能做（权限与形态）与"用什么方式做"是两件事。
+	// 没有 picker 时数据目录仍可改，只是要走文本输入。
+	picker DirectoryPicker
+
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
+}
+
+// DirectoryPicker 由宿主实现的原生目录选择框。
+//
+// 为什么要绕这一圈、而不是让前端直接调 Wails 绑定：web/ 是**宿主无关**的——
+// 同一份页面要能跑在 vite dev、纯浏览器（自动化关口）与内嵌服务里，
+// 它全程不引用 window.go / wailsjs。原生选择框只能由宿主进程弹出，
+// 所以能力从宿主注入、服务端裁决，前端只发一个普通 HTTP 请求，
+// 架构边界与现有的 WithHostOperations 完全一致。
+//
+// 返回空字符串表示用户取消（不是错误）。
+type DirectoryPicker interface {
+	PickDirectory(current string) (string, error)
+}
+
+// DirectoryPickerFunc 让普通函数直接满足 DirectoryPicker。
+type DirectoryPickerFunc func(current string) (string, error)
+
+func (f DirectoryPickerFunc) PickDirectory(current string) (string, error) { return f(current) }
+
+// WithDirectoryPicker 注入宿主的原生目录选择框。
+//
+// 只有 cmd/desktop-wails 该传——只有它持有可弹框的 Wails 窗口。cmd/server 不传，
+// 于是那条端点会明确告诉前端"这里弹不了，请手填"，而不是静默失败。
+func WithDirectoryPicker(p DirectoryPicker) Option {
+	return func(s *Server) { s.picker = p }
 }
 
 // Option 用于可选装配（保持 New 的旧调用点不变）。
@@ -234,6 +267,9 @@ func (s *Server) Handler() http.Handler {
 	// 本机闸门是"在哪台机器上可以做"，两者都要，缺一个都会在阶段 B/C 出事。
 	mux.HandleFunc("GET /api/backup/files", s.auth(s.handleListBackups, "Backup.DataDir"))
 	mux.HandleFunc("GET /api/datadir", s.auth(s.handleDataDir, "Backup.DataDir"))
+	// 选目录不改数据，权限点挂在 Backup.SetDataDir 上是因为它服务于这个操作，
+	// 且要跟真正写入的那一步保持同一档位——否则只读账号能弹框却提交不了。
+	mux.HandleFunc("POST /api/datadir/pick", s.auth(s.handlePickDataDir, "Backup.SetDataDir"))
 	mux.HandleFunc("POST /api/datadir", s.auth(s.handleSetDataDir, "Backup.SetDataDir"))
 	mux.HandleFunc("POST /api/restore", s.auth(s.handleRestoreDatabase, "Backup.RestoreDatabase"))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClearDatabase, "Backup.ClearDatabase"))

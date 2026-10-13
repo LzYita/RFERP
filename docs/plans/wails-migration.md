@@ -431,6 +431,38 @@ RFERP/
 | `internal/ui/setup.go:54` | 选数据目录 | 文本输入 + `GET /api/v1/serverinfo` 校验；必要时加目录枚举端点 |
 | `internal/ui/backup.go:277` | 选备份目录 | **本轮不做**（备份屏属 Round 5） |
 
+##### 2.4.1 选数据目录：宿主注入的原生框（方案丙，2026-10-13 定）
+
+上面第二行留到 Round 5 才做，因为它和 §2.4 的「文本输入」不是一回事：
+**备份屏需要给出原生文件夹框**，否则桌面用户明明装的是桌面软件，却被要求手打
+`D:\仓库数据`。
+
+做法是**宿主注入、服务端裁决**，与 `WithHostOperations` 同构：
+
+```
+浏览器 ──POST /api/datadir/pick──▶ internal/api  ──▶ DirectoryPicker 接口
+                                                        │ 由 cmd/desktop-wails 注入
+                                                        ▼
+                                              wails runtime.OpenDirectoryDialog
+```
+
+关键约束：**`web/` 不能直接调 Wails 绑定**。它全程不引用 `window.go` / `wailsjs`，
+同一份页面要能跑在 vite dev、纯浏览器（自动化关口）与内嵌服务里——这是它刻意保持的
+宿主无关性。为了一个选择框引入第一个宿主耦合点，收益与代价不成比例。所以原生能力
+从宿主注入、前端只发普通 HTTP 请求，架构边界没被推动。
+
+- [x] `internal/api`：`DirectoryPicker` 接口 + `WithDirectoryPicker` Option + `POST /api/datadir/pick`
+- [x] 无 picker 的形态（`cmd/server`、浏览器）回 **501**，不是 500：界面据此降级
+- [x] `cmd/desktop-wails/nativeDirPicker`：内嵌服务先于 `wails.Run` 建好而 ctx 后到，
+      故用可后填的槽位 + `sync.RWMutex`（`OnStartup` 写入，picker 调用时读）
+- [x] `cmd/server` **不**注入 picker；`-serve` 无头模式同理
+- [x] 前端：501/500 → 亮出手填输入框；用户取消 → 静默保持原状（取消不是错误）
+- [x] 关口断言按钮**显隐**门控，**刻意不点击**（点了会弹真模态框挡住跑批，
+      且会改掉关口自己的数据目录）
+
+用户决策：改数据目录**要提示**「旧目录已有的备份不会自动迁移」，但**不做成确认门**——
+改目录可逆、不影响已有数据，多一道确认只会让人多按一次。
+
 - [x] 首启流程：`GET /api/users/count` → 为 0 则进建管理员向导，否则直接登录
 - [x] 建管理员：复用 `POST /api/bootstrap-admin`，密码强度校验与错误提示对齐 Fyne 版
 - [ ] **运行模式选择（`runmode.go`）：暂缓（2026-10-11 定）** —— 服务器模式未完善时，
@@ -540,6 +572,9 @@ RFERP/
       `cmd/desktop-wails`（窗口 + `-serve`，都只绑回环）传
 - [x] **路径穿越防线**：恢复只接受**文件名**，服务端在备份目录内解析。
       两道独立检查（`filepath.Base` + `filepath.Rel` 包含性），去掉任一道另一道仍挡住
+- [x] **「更改数据目录」按钮**：Fyne 版有（`ui/backup.go:82`，`CanWrite` 时显示），
+      Web 版一度只显示路径、漏了入口。原生文件夹框经**宿主注入**取得，
+      前端保持宿主无关；无宿主窗口时降级为手填输入框。详见 §2.4.1
 - [x] 副本路径只回**文件名**（`preRestore`/`preClear`），不回绝对路径
 
 **关口**：三分类各有实机用例，含"结果不确定"路径。
@@ -793,7 +828,7 @@ RFERP/
 | 5 | **备份下载返回服务器路径** | `client.go:424-433` 丢弃 `saveDir`，返回服务端绝对路径 | 改为文件流；现形态属信息泄露 |
 | 6 | **无登出端点** | `internal/api` 中 `logout` 零命中；`ui/app.go` 的"退出登录"只调本地 `auth.Logout()`，**`Client.tok` 不清** | Round 1 补（见 §4.6 会话设计）|
 | 7 | **无超时 / 无限流 / 无安全响应头** | 无 `ReadTimeout`/`WriteTimeout`/`IdleTimeout`；登录失败不计数不锁定 | Round 1 补 |
-| 8 | **`nativefiledialog` 无对应物** | `SHBrowseForFolderW` 仅 `ui/backup.go`、`ui/setup.go` 两处调用 | Round 2 定替代方案 |
+| 8 | **`nativefiledialog` 无对应物** | `SHBrowseForFolderW` 仅 `ui/backup.go`、`ui/setup.go` 两处调用 | ✅ Round 5 已按宿主注入解决（见 §2.4.1）；`ui/setup.go` 仍走文本输入 |
 
 ### 本地 / 远程能力矩阵（2026-10-02 新增）
 

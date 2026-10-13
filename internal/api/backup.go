@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -166,6 +167,39 @@ func (s *Server) handleClearDatabase(w http.ResponseWriter, r *http.Request) {
 		"cleared":  res.Cleared,
 		"preClear": safetyCopyName(res.PreClear),
 	})
+}
+
+// handlePickDataDir 请求宿主弹一个**原生**目录选择框。
+//
+// 这条端点存在的意义是让原生能力穿过 HTTP 这条线到达前端，而前端始终不知道
+// 自己跑在桌面上（见 DirectoryPicker 的说明）。没注入 picker 的部署形态
+// （cmd/server、浏览器）会得到一个明确的"不支持"而不是 500——界面据此把
+// 文本输入框亮出来，而不是让用户对着一个点不动的按钮发呆。
+func (s *Server) handlePickDataDir(w http.ResponseWriter, _ *http.Request) {
+	// 选目录本身不改任何东西，权限与本机闸门挂在真正的写操作 SetDataDir 上。
+	// 但既然它是为"改数据目录"服务的，就跟着 Backup.SetDataDir 的档位要求，
+	// 免得只读账号能弹出框却提交不了。
+	if !s.requireHostOperations(w, "更改数据目录") {
+		return
+	}
+	if s.picker == nil {
+		writeErr(w, http.StatusNotImplemented, "当前服务无法弹出目录选择框，请手动输入路径")
+		return
+	}
+	dir, err := s.picker.PickDirectory(s.apps.DataDir())
+	if err != nil {
+		// 弹框失败（WebView2 异常等）是宿主的问题，不是用户的输入问题，
+		// 回 500 让界面提示"手动输入"，并把原因写进日志。
+		log.Printf("api: pick data dir: %v", err)
+		writeErr(w, http.StatusInternalServerError, "目录选择框无法打开，请手动输入路径")
+		return
+	}
+	if dir == "" {
+		// 用户取消是正常结果，用 200 + 空串表达，界面保持原状。
+		writeJSON(w, http.StatusOK, map[string]any{"dir": ""})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir})
 }
 
 // handleDataDir 读取数据目录。

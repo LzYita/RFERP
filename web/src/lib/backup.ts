@@ -9,7 +9,7 @@
  *    目录布局）。唯一的例外是数据目录本身：用户要知道自己把备份放在哪，
  *    而 GET /api/datadir 已鉴权且要求 backup 模块读权限。
  */
-import { api, saveBlob, type OperationState } from './api'
+import { ApiError, api, saveBlob, type OperationState } from './api'
 
 export interface BackupFile {
   name: string
@@ -48,6 +48,17 @@ export const backupApi = {
 
   setDataDir: (dir: string) => api.post<DataDirInfo>('/api/datadir', { dir }),
 
+  /**
+   * 请求宿主弹**原生**目录选择框。
+   *
+   * 前端刻意不认识 Wails：原生框只能由宿主进程弹出，所以能力从宿主注入、
+   * 服务端裁决，这里只是一个普通 HTTP 请求（方案丙）。因此这个方法在
+   * 桌面形态之外必然失败，调用方要负责降级：
+   *   - 用户取消 → 返回空串（正常结果，不算错）
+   *   - 没有窗口 → 501，文案里带「手动输入」，此时应回退到文本输入框
+   */
+  pickDataDir: () => api.post<{ dir: string }>('/api/datadir/pick'),
+
   /** 生成备份并下载到本机。服务端以文件流返回，因此这里拿到的是字节。 */
   downloadBackup: async () => {
     const { blob, filename } = await api.download('/api/backup', undefined, 'backup.sql')
@@ -80,4 +91,32 @@ export const CLEAR_CONFIRM_TOKEN = 'drop'
 export function restoreTokenFor(fileName: string): string | null {
   const m = /^(?:backup|pre_restore|pre_clear)_(\d{8}_\d{6})\.(?:sql|db)$/.exec(fileName.trim())
   return m ? `restore ${m[1]}` : null
+}
+
+/**
+ * 选目录失败后的处理方式。
+ *
+ * 原生框只能由宿主弹出（方案丙），所以这条路径**必然**会遇到失败。把三种结果
+ * 各自对应什么动作定成纯函数，是因为它们含义互不相同、混在一起最容易写错：
+ * 取消不是错（静默保持原状），没有窗口是常态（降级手填，不是错误）。
+ */
+export type DirPickOutcome =
+  | { kind: 'cancelled' }
+  | { kind: 'chosen'; dir: string }
+  /** 该形态弹不出框（501）或弹框失败（500）→ 界面亮出手填输入框。 */
+  | { kind: 'fallback'; reason: string }
+
+/**
+ * 把 pickDataDir 的结果/异常归一成一个界面动作。
+ *
+ * 取消返回空串、而不是抛错，是后端有意为之（见 internal/api/backup.go
+ * handlePickDataDir）：用户按了「取消」不是故障，不该弹红色错误。
+ */
+export function classifyDirPick(result: { dir: string }): DirPickOutcome {
+  return result.dir ? { kind: 'chosen', dir: result.dir } : { kind: 'cancelled' }
+}
+
+/** 无宿主窗口 / 弹框失败时，界面据此回退到文本输入并说明原因。 */
+export function isDirPickUnavailable(e: unknown): boolean {
+  return e instanceof ApiError && (e.status === 501 || e.status === 500)
 }

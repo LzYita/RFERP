@@ -156,7 +156,11 @@ func main() {
 		return
 	}
 
-	emb, stop, err := serve(res.Apps, updateURL)
+	// 原生目录选择框：先建好再起服务，真正的 ctx 由下面的 OnStartup 回填
+	// （内嵌服务必须先于 wails.Run 建好，而 ctx 只有 wails.Run 才有）。
+	dirPicker := newNativeDirPicker()
+
+	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
 	if err != nil {
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
@@ -173,6 +177,8 @@ func main() {
 		// Assets 留空：全部请求都交给 Handler（反向代理）。
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},
+		// 窗口起来了才有 ctx，原生目录选择框从这一刻起才可用。
+		OnStartup: func(ctx context.Context) { dirPicker.setCtx(ctx) },
 		Windows: &windows.Options{
 			WebviewGpuIsDisabled: false,
 			// WebView2 缺失/版本异常/崩溃时的提示。
@@ -292,6 +298,12 @@ func serve(apps usecase.Applications, updateURL string) (*embeddedServer, func()
 // serveOn 在指定地址启动内嵌服务。addr 为 ":0" 时由内核分配端口
 // （Round 1 关口：随机端口分配、就绪等待、异常退出清理）。
 func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer, func(), error) {
+	return serveOnWithPicker(apps, addr, updateURL, nil)
+}
+
+// serveOnWithPicker 同 serveOn，但可注入宿主的原生目录选择框。
+// picker 为 nil 时那条端点回"无法弹框，请手填"——缺省安全，且测试无需 Wails 窗口。
+func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
@@ -319,6 +331,9 @@ func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer
 		//
 		// 与 WithUpdate / WithRemember 同构：默认不放行，漏传就是安全的。
 		api.WithHostOperations(),
+		// 原生目录选择框：只有 Wails 形态传（有窗口才能弹框）。
+		// 无头 -serve 与测试走的是 nil 那条路。
+		api.WithDirectoryPicker(picker),
 		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
 		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
 		api.WithStaticFS(webassets.FS(), webassets.Dir),

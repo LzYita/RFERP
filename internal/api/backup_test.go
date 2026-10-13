@@ -168,6 +168,129 @@ func TestDestructiveEndpointsWorkOnHost(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------- 原生目录选择框（宿主注入）
+//
+// 这一组守的是方案丙的边界：picker 是宿主能力，没注入的形态要**明确**告诉前端
+// "弹不了，请手填"，而不是 500 或静默空串——界面靠这个提示决定要不要把输入框亮出来。
+
+func TestPickDataDirRequiresHostOperations(t *testing.T) {
+	apps := &backupApps{}
+	// 不传 WithHostOperations：远程形态连框都不该弹。
+	s := newBackupServer(t, apps,
+		WithDirectoryPicker(DirectoryPickerFunc(func(string) (string, error) {
+			t.Error("被本机闸门挡下时仍然弹了框")
+			return "", nil
+		})))
+	tok := issueAdmin(t, s)
+	if w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil); w.Code != http.StatusForbidden {
+		t.Errorf("远程形态下选目录 = %d，期望 403", w.Code)
+	}
+}
+
+func TestPickDataDirReturnsChosenPath(t *testing.T) {
+	want := `D:\仓库数据`
+	apps := &backupApps{}
+	var gotCurrent string
+	s := newBackupServer(t, apps,
+		WithHostOperations(),
+		WithDirectoryPicker(DirectoryPickerFunc(func(current string) (string, error) {
+			gotCurrent = current
+			return want, nil
+		})))
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("选目录 = %d, body=%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if out["dir"] != want {
+		t.Errorf("dir = %v, want %q", out["dir"], want)
+	}
+	// 框应当从当前目录打开，用户才容易在邻近位置挑，而不是从盘符根开始找。
+	if gotCurrent != apps.dataDir {
+		t.Errorf("弹框时的当前目录 = %q, want %q", gotCurrent, apps.dataDir)
+	}
+}
+
+// 用户取消是正常结果：200 + 空串。界面据此保持原状，不能报错弹窗。
+func TestPickDataDirCancelIsNotAnError(t *testing.T) {
+	apps := &backupApps{}
+	s := newBackupServer(t, apps,
+		WithHostOperations(),
+		WithDirectoryPicker(DirectoryPickerFunc(func(string) (string, error) { return "", nil })))
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("取消选目录 = %d, body=%s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if out["dir"] != "" {
+		t.Errorf("取消时 dir = %v, want 空串", out["dir"])
+	}
+}
+
+// cmd/server 与浏览器形态：没有窗口可弹。必须是可识别的 501 + 中文提示，
+// 前端据此回退到文本输入框。
+func TestPickDataDirWithoutPickerIs501(t *testing.T) {
+	apps := &backupApps{}
+	s := newBackupServer(t, apps, WithHostOperations()) // 不注入 picker
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("无 picker 时 = %d, body=%s，期望 501", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "手动输入") {
+		t.Errorf("501 响应没有告诉用户怎么继续：%s", w.Body.String())
+	}
+}
+
+// 弹框失败（WebView2 异常等）不该让用户以为是自己输错了：500 + 同样可行动的中文。
+func TestPickDataDirHostErrorIs500(t *testing.T) {
+	apps := &backupApps{}
+	s := newBackupServer(t, apps,
+		WithHostOperations(),
+		WithDirectoryPicker(DirectoryPickerFunc(func(string) (string, error) {
+			return "", errors.New("webview2 not available")
+		})))
+	tok := issueAdmin(t, s)
+
+	w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("弹框失败 = %d, body=%s，期望 500", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "手动输入") {
+		t.Errorf("500 响应没有告诉用户怎么继续：%s", w.Body.String())
+	}
+}
+
+// 选目录只是挑一个路径，**不**写配置。写入由 SetDataDir 负责。
+func TestPickDataDirDoesNotChangeDataDir(t *testing.T) {
+	apps := &backupApps{}
+	s := newBackupServer(t, apps,
+		WithHostOperations(),
+		WithDirectoryPicker(DirectoryPickerFunc(func(string) (string, error) {
+			return `D:\选中的但还没确认的目录`, nil
+		})))
+	tok := issueAdmin(t, s)
+	before := apps.dataDir
+
+	if w := doJSON(t, s, "POST", "/api/datadir/pick", tok, nil); w.Code != http.StatusOK {
+		t.Fatalf("选目录 = %d, body=%s", w.Code, w.Body.String())
+	}
+	if apps.dataDir != before {
+		t.Errorf("选目录顺手改了数据目录：%q -> %q", before, apps.dataDir)
+	}
+}
+
 // 权限点之外还要校验口令：绕过界面直接调端点不能清库。
 func TestClearRequiresConfirmToken(t *testing.T) {
 	apps := &backupApps{}

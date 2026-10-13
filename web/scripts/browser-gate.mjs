@@ -580,6 +580,25 @@ async function backupGate(page) {
   // 造一个备份文件（页面端点验证列表，不做恢复）
   check('备份文件列表端点可用', true, '')
 
+  // 数据目录区块：「更改数据目录」按同一套本机闸门显隐。
+  //
+  // 刻意**不点**它：那是宿主的原生模态框，一弹出来就会挡住整个自动化跑批，
+  // 而且点下去真会改掉关口自己的数据目录。显隐门控在这里验证就够了，
+  // 真正的弹框与落地留给实机（1.6.x 测试版）验。
+  const changeDirBtn = page.locator('button', { hasText: '更改数据目录' })
+  const pathShown = (await page.locator('text=/[A-Za-z]:\\\\|备份与导出文件的存放位置/').count()) > 0
+  check('数据目录区块显示当前路径或说明', pathShown, '既没有路径也没有说明')
+  if (remoteMode) {
+    check('远程形态下没有「更改数据目录」按钮', (await changeDirBtn.count()) === 0,
+      '远程形态竟提供了改目录入口——闸门泄露')
+  } else {
+    check('本机形态有「更改数据目录」按钮', (await changeDirBtn.count()) > 0,
+      '本机形态竟缺改目录入口')
+    // 手填降级态默认收起：它是异常路径的兜底，不该常驻占地方。
+    check('手填输入框默认不显示', (await page.getByLabel('新数据目录').count()) === 0,
+      '降级输入框常驻了')
+  }
+
   // 清空：口令门控。
   //
   // 用源码构建的 server 走 cmd/server，**不带** WithHostOperations（跨机形态），

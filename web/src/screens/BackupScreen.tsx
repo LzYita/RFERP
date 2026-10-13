@@ -23,6 +23,8 @@ import { canWrite } from '../lib/permissions'
 import {
   CLEAR_CONFIRM_TOKEN,
   backupApi,
+  classifyDirPick,
+  isDirPickUnavailable,
   restoreTokenFor,
   type BackupFile,
   type ClearResult,
@@ -62,6 +64,13 @@ export function BackupScreen() {
   // 导出
   const [from, setFrom] = useState(today())
   const [to, setTo] = useState(today())
+
+  // 「更改数据目录」。manualDir 为 null = 不显示手填输入框；非 null = 显示。
+  //
+  // 为什么要这个降级态：原生目录框由宿主注入（方案丙），cmd/server 与浏览器
+  // 里根本没有窗口可弹。那种形态下不能让用户对着一个按了没反应的按钮发呆，
+  // 所以那条端点会明确回 501，界面据此把输入框亮出来。
+  const [manualDir, setManualDir] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -124,6 +133,78 @@ export function BackupScreen() {
       await reload()
     } catch (e) {
       setError({ kind: 'server', text: `备份失败：${e instanceof Error ? e.message : ''}` })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /**
+   * 落地一个新数据目录。
+   *
+   * 单独抽出来是因为两条路径（原生框选中的、手填的）最后必须走**同一段**校验与
+   * 保存逻辑——分成两处的话，改天给手填那条补了可写性校验、选中那条没补，
+   * 用户就会遇到"框里选的不行、手打的行"。
+   */
+  async function applyDataDir(next: string) {
+    const trimmed = next.trim()
+    if (!trimmed) {
+      // 空路径不提交：留在手填态，让用户看到自己还没填。
+      setManualDir(next)
+      return
+    }
+    setBusy('datadir')
+    setNotice('')
+    setError(null)
+    try {
+      const d = await backupApi.setDataDir(trimmed)
+      setDir(d)
+      setManualDir(null)
+      // 备份列表跟着换目录而失效：清空是对的，但必须重新拉一次——新目录里
+      // 未必是空的（用户可能选中了一个已有备份的目录），清空不刷新的话界面
+      // 会一直显示空列表，而本屏没有手动刷新按钮。
+      await reload()
+      // 迁移提示：旧目录里的备份**不会**跟着走。不说清楚的话，用户回到旧目录
+      // 看见文件还在、或者在新目录找不到文件，都会以为备份丢了。
+      setNotice(`数据目录已改为 ${d.dataDir}。原目录中已有的备份文件不会自动迁移，仍保留在原处。`)
+    } catch (e) {
+      setError({
+        kind: e instanceof ApiError && e.isForbidden ? 'forbidden' : 'server',
+        text: `更改数据目录失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : '未知错误'}`,
+      })
+      if (e instanceof ApiError && e.isForbidden) {
+        // 被本机闸门挡下：手填框也没用，一并收掉。
+        setManualDir(null)
+      }
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function doChangeDataDir() {
+    setBusy('datadir')
+    setNotice('')
+    setError(null)
+    try {
+      const outcome = classifyDirPick(await backupApi.pickDataDir())
+      if (outcome.kind === 'cancelled') {
+        // 用户取消。取消不是错误，界面保持原状，也不必弹任何东西。
+        return
+      }
+      if (outcome.kind === 'chosen') {
+        await applyDataDir(outcome.dir)
+      }
+    } catch (e) {
+      if (isDirPickUnavailable(e)) {
+        // 没有窗口可弹（501）或弹框本身失败（500）：回退到手填，并说明原因。
+        setManualDir(dir?.dataDir ?? '')
+      } else if (e instanceof ApiError && e.isForbidden) {
+        setError({ kind: 'forbidden', text: '更改数据目录只能在服务器所在机器上执行。请在主机上操作。' })
+      } else {
+        setError({
+          kind: 'server',
+          text: `选择数据目录失败：${e instanceof ApiError ? e.message : e instanceof Error ? e.message : '未知错误'}`,
+        })
+      }
     } finally {
       setBusy(null)
     }
@@ -219,7 +300,17 @@ export function BackupScreen() {
 
       {/* 数据目录 */}
       <Panel className="p-3">
-        <SectionTitle>数据目录</SectionTitle>
+        <div className="flex items-center justify-between gap-2">
+          <SectionTitle>数据目录</SectionTitle>
+          {/* 与 Fyne 版一致：有写权限才有这个按钮（那边 ui/backup.go:81）。
+              这里还多一道本机闸门——SetDataDir 端点本来就要求本机形态，
+              不跟着藏的话远程形态下会是个按了报 403 的按钮。 */}
+          {destructiveReady ? (
+            <Btn primary disabled={busy !== null} onClick={doChangeDataDir}>
+              更改数据目录
+            </Btn>
+          ) : null}
+        </div>
         <p className="mt-1 text-[11.5px] text-[var(--color-fg-muted)]">
           备份与导出文件的存放位置：
         </p>
@@ -229,6 +320,43 @@ export function BackupScreen() {
         >
           {dir?.dataDir ?? '—'}
         </p>
+
+        {/* 降级手填：只有真的弹不出框时才出现，不是常驻控件 */}
+        {manualDir !== null ? (
+          <div className="mt-2 flex items-end gap-2">
+            <div className="min-w-0 flex-1">
+              <Field label="新数据目录">
+                <input
+                  value={manualDir}
+                  onChange={(e) => setManualDir(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void applyDataDir(manualDir)
+                  }}
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="新数据目录"
+                  disabled={busy !== null}
+                  placeholder="例如 D:\仓库数据"
+                  className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)]"
+                />
+              </Field>
+            </div>
+            <Btn primary disabled={busy !== null} onClick={() => void applyDataDir(manualDir)}>
+              保存
+            </Btn>
+            <Btn disabled={busy !== null} onClick={() => setManualDir(null)}>
+              取消
+            </Btn>
+          </div>
+        ) : null}
+
+        {/* 用户明确要求：改目录要有提示，但不做成确认门。
+            改目录可逆、不影响已有数据，多一道确认只会让人多按一次。 */}
+        {manualDir !== null ? (
+          <p className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+            更改后，新产生的备份与导出文件会写入该目录；原目录中已有的备份文件不会自动迁移。
+          </p>
+        ) : null}
       </Panel>
 
       {/* 一键备份 */}

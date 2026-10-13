@@ -19,10 +19,42 @@ import {
 import { ApiError } from '../src/lib/api'
 
 describe('restoreTokenFor', () => {
+  // 口令取**时分秒**：`restore 172919`，不是 `restore 20260924_172919`。
+  // 这道门的作用是让人停下来读后果，不是校验文件身份；23 个字符的输入摩擦
+  // 只会让人更想无意识地划过去。
+  it('口令只含时分秒', () => {
+    expect(restoreTokenFor('backup_20260925_101530.sql')).toBe('restore 101530')
+    expect(restoreTokenFor('pre_restore_20260929_110000.sql')).toBe('restore 110000')
+    expect(restoreTokenFor('pre_clear_20260929_105500.sql')).toBe('restore 105500')
+  })
+
+  // 短了但必须仍然随文件变化：换文件换口令，否则这道门退化成勾选框。
+  it('口令随所选文件变化', () => {
+    expect(restoreTokenFor('backup_20260925_101530.sql')).not.toBe(
+      restoreTokenFor('backup_20260925_101531.sql')!,
+    )
+    expect(restoreTokenFor('pre_restore_20260925_101531.sql')).not.toBe(
+      restoreTokenFor('backup_20260925_101530.sql')!,
+    )
+  })
+
+  // 有意接受的局限：口令只带时分秒，所以「不同日期、同一秒」的两份备份会撞口令。
+  //
+  // 依据是这道门的作用——**让人停下来读一遍后果**，而不是校验文件身份。
+  // 而且「同一秒」本来就不是唯一标识：`.sql` / `.final.sql` / `.upgraded.sql`
+  // 三个文件共用一个时间戳，口令本来就相同（真实数据里就是这样）。
+  // 截掉日期只是把碰撞从「同一天同一秒」扩大到「不同天的同一秒」，
+  // 换来 23 个字符降到 14 个。选错文件仍由下拉框里的文件名与时间戳区分。
+  it('不同日期的同一秒会撞口令（有意接受的局限）', () => {
+    expect(restoreTokenFor('backup_20260925_101530.sql')).toBe(
+      restoreTokenFor('backup_20260921_101530.sql')!,
+    )
+  })
+
   it('从三种合法前缀里导出时间戳', () => {
-    expect(restoreTokenFor('backup_20260925_101530.sql')).toBe('restore 20260925_101530')
-    expect(restoreTokenFor('pre_restore_20260929_110000.sql')).toBe('restore 20260929_110000')
-    expect(restoreTokenFor('pre_clear_20260929_105500.sql')).toBe('restore 20260929_105500')
+    expect(restoreTokenFor('backup_20260925_101530.sql')).toBe('restore 101530')
+    expect(restoreTokenFor('pre_restore_20260929_110000.sql')).toBe('restore 110000')
+    expect(restoreTokenFor('pre_clear_20260929_105500.sql')).toBe('restore 105500')
   })
 
   // 真实数据里就是这些名字。D:\仓库数据 中同一时刻 backup_20260924_170830 有三个
@@ -36,13 +68,13 @@ describe('restoreTokenFor', () => {
       'backup_20260924_170830.upgraded.sql',
       'backup_20260924_170830.final.sql',
     ]
-    three.forEach((n) => expect(restoreTokenFor(n)).toBe('restore 20260924_170830'))
-    expect(restoreTokenFor('backup_20260721_154617.sql')).toBe('restore 20260721_154617')
-    expect(restoreTokenFor('pre_restore_20260924_172919.sql')).toBe('restore 20260924_172919')
+    three.forEach((n) => expect(restoreTokenFor(n)).toBe('restore 170830'))
+    expect(restoreTokenFor('backup_20260721_154617.sql')).toBe('restore 154617')
+    expect(restoreTokenFor('pre_restore_20260924_172919.sql')).toBe('restore 172919')
   })
 
   it('qualifier 之后仍可用 SQLite 快照（.db）', () => {
-    expect(restoreTokenFor('backup_20260924_170830.final.db')).toBe('restore 20260924_170830')
+    expect(restoreTokenFor('backup_20260924_170830.final.db')).toBe('restore 170830')
   })
 
   // qualifier 只允许**一个**点分段、字符集 [A-Za-z0-9_-]。放宽到 .* 会把
@@ -54,11 +86,11 @@ describe('restoreTokenFor', () => {
   })
 
   it('SQLite 快照（.db）同样可用', () => {
-    expect(restoreTokenFor('pre_restore_20260929_110000.db')).toBe('restore 20260929_110000')
+    expect(restoreTokenFor('pre_restore_20260929_110000.db')).toBe('restore 110000')
   })
 
   it('首尾空白不影响识别', () => {
-    expect(restoreTokenFor('  backup_20260925_101530.sql  ')).toBe('restore 20260925_101530')
+    expect(restoreTokenFor('  backup_20260925_101530.sql  ')).toBe('restore 101530')
   })
 
   // 无法导出时间戳必须返回 null 而不是猜一个：界面据此拒绝恢复。

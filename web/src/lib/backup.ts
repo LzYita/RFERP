@@ -207,7 +207,15 @@ export function restoreTokenFor(fileName: string): string | null {
   const m = /^(?:backup|pre_restore|pre_clear)_(\d{8}_\d{6})(?:\.[A-Za-z0-9_-]+)?\.(?:sql|db)$/.exec(
     fileName.trim(),
   )
-  return m ? `restore ${m[1]}` : null
+  if (!m) return null
+  // 只取**时分秒**，去掉日期：`restore 172919` 而不是 `restore 20260924_172919`。
+  //
+  // 为什么能砍掉日期又不削弱这道门：这道门的作用是让人停下来读一遍后果，
+  // 不是校验文件身份——同一份目录里不会有两份备份落在同一秒，而选错文件
+  // 本来就由下拉框里的文件名与时间戳负责区分。原来那串要打 23 个字符，
+  // 而它换来的只是让人多点几下输入法；输入摩擦越大，这道门越容易被
+  // 无意识地划过去。
+  return `restore ${m[1].slice(9)}`
 }
 
 /**

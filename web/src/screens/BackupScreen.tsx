@@ -566,7 +566,7 @@ export function BackupScreen() {
         ) : null}
         {wantToken && pickedUsable ? (
           <p className="mt-2 text-[11.5px] text-[var(--color-fg-muted)]">
-            请在输入框中准确输入：
+            请在输入框中准确输入（区分大小写）：
             <b style={{ fontFamily: 'Consolas, monospace' }}>{wantToken}</b>
           </p>
         ) : null}

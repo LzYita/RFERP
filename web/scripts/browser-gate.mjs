@@ -557,8 +557,13 @@ async function backupGate(page) {
   check('备份屏不再是占位屏', !(await page.locator('text=该屏尚未迁移').count()), '仍是占位页')
 
   // 区块齐全
+  //
+  // 失败时把屏上**实际看到的文字**带进消息：这一屏加载失败时会整块换成错误提示，
+  // 只说"缺少区块"的话，排查的人还得自己去猜是哪个请求挂了。
+  const screenText = await page.locator('body').innerText()
   for (const t of ['数据目录', '一键备份', '整库恢复（覆盖现有数据）', '清空业务数据（危险操作）', '审计日志导出', '全部数据导出']) {
-    check(`含区块「${t}」`, (await page.locator(`text=${t}`).count()) > 0, '缺少该区块')
+    check(`含区块「${t}」`, (await page.locator(`text=${t}`).count()) > 0,
+      `缺少该区块；屏上实际显示：${screenText.replace(/\s+/g, ' ').slice(0, 300)}`)
   }
 
   // G1/G2：破坏性操作区。
@@ -593,13 +598,42 @@ async function backupGate(page) {
     check('含自动备份间隔下拉框', false, '没找到')
   }
 
-  // 二级级联：备份文件下拉框按类别分组（optgroup）。
-  const fileSelect = page.locator('select').filter({ has: page.locator('option[value="请选择…"]') })
-  const groups = await page.locator('optgroup').count()
-  check('备份文件按类别分组（optgroup）', groups >= 0, '未使用分组')
-
   // 造一个备份文件（页面端点验证列表，不做恢复）
   check('备份文件列表端点可用', true, '')
+
+  // 二级级联：备份文件下拉框按类别分组（optgroup）。
+  //
+  // 必须真的有一份文件可分组 —— 空目录时下拉框里一个 optgroup 都没有，
+  // 那时断言"分组数 >= 0"是**恒真**的，等于什么都没验。
+  //
+  // 造备份走**界面按钮**而不是直接调 API：应用限制同一账号只保留一个会话
+  // （"已达单次登录上限"），关口自己再 login 一次会把页面上那个会话顶掉，
+  // 于是整屏变成"登录已失效"。而 token 只存在 JS 模块变量里、页面取不到，
+  // 借不到它。按钮走的是页面自己的会话，没有这个问题。
+  // 关口的存储是 SQLite，快照不依赖 mysqldump，任何机器上都能造出来。
+  await page.click('button:has-text("一键备份")')
+  await sleep(1500)
+  // 离开再回来才会重新拉列表（列表在 useEffect 的空依赖里，只在挂载时取一次）
+  await page.click('text=产品管理')
+  await sleep(500)
+  await page.click('text=备份导出')
+  await sleep(1200)
+
+  const groupLabels = await page.locator('optgroup').evaluateAll((els) =>
+    els.map((e) => e.getAttribute('label')),
+  )
+  check('造出备份后下拉框出现分组', groupLabels.length > 0, `分组数 ${groupLabels.length}`)
+  check('手动备份归到「手动备份」组',
+    groupLabels.includes('手动备份'),
+    `实际分组：${JSON.stringify(groupLabels)}`)
+  // 手动备份必须落在 manual/ 而不是别处：手动备份永不自动删除这条策略
+  // 正是靠它独立成目录实现的，落到 safety/ 就等于混进滚动清理里了。
+  const manualFiles = await page
+    .locator('optgroup[label="手动备份"] option')
+    .evaluateAll((els) => els.map((e) => e.textContent.trim()))
+  check('手动备份文件名以 backup_ 开头',
+    manualFiles.length > 0 && manualFiles.every((t) => t.startsWith('backup_')),
+    `实际：${JSON.stringify(manualFiles)}`)
 
   // 数据目录区块：「更改数据目录」按同一套本机闸门显隐。
   //

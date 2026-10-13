@@ -44,7 +44,10 @@ type Entry struct {
 	Name     string
 	Category paths.BackupCategory
 	// Legacy 为 true 表示它还在 备份\ 根下（未迁移）。
-	Legacy  bool
+	Legacy bool
+	// Dir 是它实际所在的目录。调用方要打开文件时用这个，
+	// 而不是拿 Category 去拼路径——legacy 项的目录并不是 CategoryDir。
+	Dir     string
 	Size    int64
 	ModTime time.Time
 }
@@ -122,6 +125,7 @@ func listDir(dir string, cat paths.BackupCategory, legacyRoot bool) ([]Entry, er
 			Name:     e.Name(),
 			Category: cat,
 			Legacy:   legacyRoot,
+			Dir:      dir,
 			Size:     info.Size(),
 			ModTime:  info.ModTime(),
 		})

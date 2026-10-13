@@ -1,6 +1,7 @@
 package dbbackup
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -36,6 +37,13 @@ type Coverage struct {
 	// 只会一行都匹配不到，于是「全部业务表被清空、零行回填」却报告成功。
 	// VerifyDumpFile 会在此之前按字节找不到完成标记而拦下，但那时用户已经输完口令、
 	// 点完确认了——失败得太晚。
+	//
+	// 另一种不可用：文件编码正确、结束标记也在，但**内容本身是坏的**。
+	// 真实案例：D:\仓库数据 里那份 09-24 的 pre_restore 副本，是
+	// `mysqldump | Out-File` 在 PowerShell(GBK 控制台) 里生成的——UTF-8 字节被按
+	// GBK 解码，中文变乱码，还**吃掉了字符串的结束单引号**（`'常熟仓库'` →
+	// `瀹佹尝浜旈噾?`）。MySQL 收到它会回 Error 1064 语法错，
+	// 而那已经是在用户输完口令、点完恢复之后了。
 	Usable bool
 
 	// Reason 是不可用时的中文原因，直接用于界面。
@@ -107,6 +115,20 @@ func InspectDump(path string, required []string) Coverage {
 		present[strings.ToLower(string(m[1]))] = true
 	}
 
+	// 语法可重放性：字符串没闭合的 INSERT 一定会被 MySQL 拒（Error 1064）。
+	//
+	// 判据必须与**真实重放**一致，所以这里刻意镜像 service.replayDumpInserts 的
+	// 分句逻辑（同样的跳过规则、同样的 `;` 收尾、以同样方式缓冲跨行语句）。
+	// 逐行数引号是错的：mysqldump 的 extended-insert 会把一条 INSERT 写成一整行，
+	// 但也可能跨行，逐行判定会把合法的跨行语句误报成损坏。
+	if broken := countUnclosedInserts(head); broken > 0 {
+		cov.Usable = false
+		cov.Reason = fmt.Sprintf("文件中有 %d 条 INSERT 语句的引号未闭合，MySQL 会拒绝执行；"+
+			"这类文件通常是导出时被 PowerShell 之类的工具按错误编码转存过，内容已损坏，无法作为恢复来源", broken)
+		// 与编码不兼容时同理：不可用时**不**同时报缺表，会把用户引向错的方向。
+		return cov
+	}
+
 	// 读到了文件结尾才算「读完」。只读了窗口就断言缺表，等于把「没读到」
 	// 谎报成「备份里没有」。
 	cov.SchemaKnown = int64(n) >= info.Size()
@@ -120,6 +142,66 @@ func InspectDump(path string, required []string) Coverage {
 
 	cov.Usable = true
 	return cov
+}
+
+// countUnclosedInserts 统计引号数为奇数的**完整** INSERT 语句条数。
+//
+// 窗口边界处还没收尾的语句不计入：那只是没读到，不是损坏。
+// 转义的引号（反斜杠转义或 ” 双写）不参与计数，否则 `'it\'s'` 这种
+// 完全合法的字面量会被数成奇数，把好文件误判成坏文件。
+func countUnclosedInserts(head []byte) int {
+	var (
+		buf      strings.Builder
+		inInsert bool
+		broken   int
+	)
+	for _, line := range strings.Split(string(head), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inInsert {
+			if trimmed == "" || strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			if !strings.HasPrefix(strings.ToUpper(trimmed), "INSERT INTO") {
+				continue
+			}
+			buf.Reset()
+			buf.WriteString(line)
+		} else {
+			buf.WriteString("\n")
+			buf.WriteString(line)
+		}
+		last := strings.HasSuffix(strings.TrimRight(trimmed, " \t"), ";")
+		if !last {
+			inInsert = true
+			continue
+		}
+		if countUnescapedQuotes(buf.String())%2 != 0 {
+			broken++
+		}
+		inInsert = false
+	}
+	return broken
+}
+
+// countUnescapedQuotes 数**未被转义**的单引号个数。
+//
+// mysqldump 有两种转义：反斜杠（\'）与双写（”）。双写的两个引号都会被计，
+// 奇偶性不受影响，正确；反斜杠转义的那个必须跳过，否则奇偶性就错了。
+func countUnescapedQuotes(s string) int {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\'' {
+			continue
+		}
+		backslashes := 0
+		for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
+			backslashes++
+		}
+		if backslashes%2 == 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // detectEncoding 只做一件事：判断它是不是 UTF-16。这是唯一必须硬性拒绝的编码——

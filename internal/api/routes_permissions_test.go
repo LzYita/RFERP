@@ -54,14 +54,15 @@ var routesWithoutAuth = map[string]string{
 
 // 权限表里已定义、但还没有路由消费的权限点。
 // 每一条要么是待办（Round 5 补端点），要么是有意不接线。
+//
+// Backup.DataDir / SetDataDir / RestoreDatabase / ClearDatabase 原先在这里
+// （Round 5 待办），现已接上路由：GET /api/backup/files 与 GET /api/datadir →
+// DataDir、POST /api/datadir → SetDataDir、POST /api/restore → RestoreDatabase、
+// POST /api/clear → ClearDatabase。
 var opPointsWithoutRoute = map[string]string{
 	"System.CheckUpdate":      "端点公开（登录页要能查），此权限点仅作登记；见 update_authz_test.go",
 	"Identity.UserCount":      "端点公开（首启判断），此权限点仅作登记",
 	"Identity.ChangePassword": "路由用空权限点（改自己密码不限角色），此权限点仅作登记",
-	"Backup.DataDir":          "Round 5 补端点（§4.5 缺口 4）",
-	"Backup.SetDataDir":       "Round 5 补端点（§4.5 缺口 4）",
-	"Backup.RestoreDatabase":  "Round 5 补端点（§4.5 缺口 4）",
-	"Backup.ClearDatabase":    "Round 5 补端点（§4.5 缺口 4）",
 }
 
 type routeEntry struct {

@@ -203,6 +203,9 @@ func runHeadless(apps usecase.Applications, addr string) {
 		// 无头模式同样开启「记住登录」：它只绑回环地址（listenLoopback），
 		// 威胁等级与桌面形态一致，自动化验证也需要走同一条代码路径。
 		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
+		// 也开破坏性操作：-serve 与窗口模式都是 desktop-wails（单机形态），
+		// 只绑回环。浏览器关口要能真正验证恢复/清空，缺这一项只能验到 403。
+		api.WithHostOperations(),
 	)
 	ln, err := listenLoopback(addr)
 	if err != nil {
@@ -308,6 +311,14 @@ func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer
 		// 便携测试版指向自己的目录）一起变，测试不会污染用户真实凭证，
 		// 也不会和另一份实例抢同一个文件。
 		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
+		// 单机桌面形态才允许破坏性操作：整库恢复、清空业务数据、修改数据目录。
+		//
+		// 依据 §4.5 本地/远程能力矩阵（wails-migration.md:750-769）：这三项在
+		// 阶段 B/C（客户端/浏览器 → server）应当只对 server 所在机器开放。四道
+		// 确认门建立在"操作者就是这台机器的主人"之上，跨机后它只剩仪式。
+		//
+		// 与 WithUpdate / WithRemember 同构：默认不放行，漏传就是安全的。
+		api.WithHostOperations(),
 		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
 		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
 		api.WithStaticFS(webassets.FS(), webassets.Dir),

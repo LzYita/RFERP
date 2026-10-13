@@ -642,9 +642,17 @@ async function backupGate(page) {
   // 文件名是纯文本（parts.csv 等），不是带 .csv 类的元素 —— 按文本判。
   check('弹窗列出本次生成的文件',
     modalText.includes('.csv'), `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
-  check('弹窗提供「打开文件夹」',
-    (await dialog.locator('button:has-text("打开文件夹")').count()) > 0,
-    `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  // 「打开文件夹」是**本机操作**（explorer.exe 启动的是这台机器上的程序），
+  // 所以期望值随形态变。之前这里不分形态，等于在远程形态下断言一个
+  // 本就不该出现的按钮 —— 那种断言逼着实现去给远程用户开本机入口。
+  const openFolderBtn = await dialog.locator('button:has-text("打开文件夹")').count()
+  if (remoteMode) {
+    check('远程形态下不提供「打开文件夹」', openFolderBtn === 0,
+      `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  } else {
+    check('本机形态提供「打开文件夹」', openFolderBtn > 0,
+      `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  }
   if (modalShown > 0) {
     await dialog.locator('button:has-text("关闭")').click()
     await sleep(400)
@@ -715,6 +723,26 @@ async function backupGate(page) {
   const clearBtn = page.locator('button', { hasText: '清空业务数据（危险操作）' }).first()
   if (remoteMode) {
     check('远程形态下「清空」按钮禁用', await clearBtn.isDisabled(), '远程形态竟可点清空')
+
+    // 远程联机尚未完成，所以远程弹窗里的「下载 CSV」**必须**是隐藏的
+    // （REMOTE_EXPORT_DOWNLOAD_AVAILABLE = false）。
+    // 在那之前给远程用户一个同样打不开的按钮，只会被当成坏了 ——
+    // 这条断言就是为了让那个开关不被顺手删掉。
+    await page.click('button:has-text("导出审计日志 CSV")')
+    await sleep(1600)
+    const rDialog = page.locator('[role="dialog"]')
+    if (await rDialog.count()) {
+      check('远程形态下不出现「下载 CSV」按钮（远程联机未完成，先隐藏）',
+        (await rDialog.locator('button:has-text("下载 CSV")').count()) === 0,
+        `弹窗内容：${(await rDialog.first().innerText()).replace(/\s+/g, ' ').slice(-200)}`)
+      check('远程形态下也不出现「打开文件夹」（那是本机操作）',
+        (await rDialog.locator('button:has-text("打开文件夹")').count()) === 0,
+        '远程形态提供了本机操作入口')
+      await rDialog.locator('button:has-text("关闭")').click()
+      await sleep(300)
+    } else {
+      check('远程形态导出后弹出位置对话框', false, '没有弹出对话框')
+    }
   } else {
     check('本机形态：口令未输入时「清空」禁用', await clearBtn.isDisabled(), '按钮可点')
     await dropInput.fill('nope')

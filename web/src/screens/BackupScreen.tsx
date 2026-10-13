@@ -43,6 +43,20 @@ import { OutcomeDialog, type OutcomeView } from './backupOutcome'
 const today = () => new Date().toISOString().slice(0, 10)
 
 /**
+ * 远程形态的「下载 CSV」按钮是否开放。
+ *
+ * 代码路径已经就绪：服务端有 POST /api/export/audit/download（CSV 文件流），
+ * internal/api/client.go 也指向它，远程弹窗里按钮与 handler 都写好了。
+ *
+ * 但**远程联机本身还没完成**（计划 §Round 2 的"运行模式选择"暂缓，
+ * 详见 wails-migration.md）。在那之前，远程用户点导出只会拿到一个
+ * **打不开的服务器路径**——而一个同样打不开的"下载"按钮只会让他以为是坏的。
+ *
+ * 所以现在先隐藏。等远程形态真正可用时把这个开关打开即可，代码不用动。
+ */
+const REMOTE_EXPORT_DOWNLOAD_AVAILABLE = false
+
+/**
  * 下拉框里每项的后缀标记。
  *
  * 放在文件名旁边而不是等到选中之后才提示，是因为下拉框是用户比较候选的唯一界面：
@@ -724,7 +738,7 @@ export function BackupScreen() {
           <p className="mt-2 text-[11px] text-[var(--color-fg-muted)]">
             {destructiveReady
               ? '文件不会自动下载到浏览器——它们已经在上面这个文件夹里了。'
-              : '当前连接的是远程服务器，文件在服务器上，下面可以取一份到本机。'}
+              : '当前连接的是远程服务器，文件保存在服务器上，本机打不开这个文件夹。'}
           </p>
           <div className="mt-3 flex justify-end gap-2">
             <Btn onClick={() => setExported(null)}>关闭</Btn>
@@ -733,7 +747,7 @@ export function BackupScreen() {
                 {busy === 'openexport' ? '打开中…' : '打开文件夹'}
               </Btn>
             ) : null}
-            {!destructiveReady && exported.downloadable ? (
+            {!destructiveReady && exported.downloadable && REMOTE_EXPORT_DOWNLOAD_AVAILABLE ? (
               <Btn primary disabled={busy !== null} onClick={() => void downloadAudit()}>
                 {busy === 'auditdl' ? '下载中…' : '下载 CSV 到本机'}
               </Btn>

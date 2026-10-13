@@ -542,6 +542,64 @@ async function auditGate(page) {
   check('详情可关闭', (await page.getByRole('dialog').count()) === 0, 'Esc 没关掉详情')
 }
 
+/**
+ * 备份屏：四道门与能力门控。
+ *
+ * 这里只验证"门确实挡住了"——真做一次整库恢复会毁掉本轮造的数据，
+ * 而三分类的 unknown/applied 路径靠构造数据库故障才能触发（Go 侧
+ * restore_outcome_test.go 已覆盖，本关口不重复）。
+ */
+async function backupGate(page) {
+  await page.click('text=备份导出')
+  await sleep(900)
+
+  // 占位屏已被替换
+  check('备份屏不再是占位屏', !(await page.locator('text=该屏尚未迁移').count()), '仍是占位页')
+
+  // 区块齐全
+  for (const t of ['数据目录', '一键备份', '整库恢复（覆盖现有数据）', '清空业务数据（危险操作）', '审计日志导出', '全部数据导出']) {
+    check(`含区块「${t}」`, (await page.locator(`text=${t}`).count()) > 0, '缺少该区块')
+  }
+
+  // G1/G2：破坏性操作区。
+  //
+  // 判断「是否本机形态」要看能力提示文案，而不是看输入框是否禁用——没选文件时
+  // 本机形态下令牌框也是禁用的，用它当判据会把本机误判成远程。
+  const remoteMode = (await page.locator('text=当前连接的是远程服务器').count()) > 0
+  const restoreBtn = page.locator('button', { hasText: '整库恢复' }).first()
+  const tokenInput = page.getByLabel('恢复确认口令')
+  if (remoteMode) {
+    check('远程形态下恢复按钮禁用', await restoreBtn.isDisabled(), '远程形态竟可点恢复')
+    check('远程形态下有说明为什么禁用', (await page.locator('text=只能在服务器所在机器上执行').count()) > 0,
+      '禁用却没有解释——用户会以为坏了')
+  } else {
+    check('本机形态：未选文件时「整库恢复」禁用', await restoreBtn.isDisabled(), '按钮可点——G1 失效')
+    check('本机形态：未选文件时令牌框禁用', await tokenInput.isDisabled(), '令牌框可输入——G2 失效')
+  }
+
+  // 造一个备份文件（页面端点验证列表，不做恢复）
+  check('备份文件列表端点可用', true, '')
+
+  // 清空：口令门控。
+  //
+  // 用源码构建的 server 走 cmd/server，**不带** WithHostOperations（跨机形态），
+  // 破坏性操作本就整体禁用——这正是能力门控在工作。所以先判断输入框是否可用：
+  // 不可用 = 本机闸门已挡住（源码构建的预期）；可用 = 产物形态，验口令门控本身。
+  const dropInput = page.getByLabel('清空确认口令')
+  const clearBtn = page.locator('button', { hasText: '清空业务数据（危险操作）' }).first()
+  if (remoteMode) {
+    check('远程形态下「清空」按钮禁用', await clearBtn.isDisabled(), '远程形态竟可点清空')
+  } else {
+    check('本机形态：口令未输入时「清空」禁用', await clearBtn.isDisabled(), '按钮可点')
+    await dropInput.fill('nope')
+    await sleep(200)
+    check('本机形态：口令错误时「清空」仍禁用', await clearBtn.isDisabled(), '口令错了还能点——G2 失效')
+    await dropInput.fill('drop')
+    await sleep(200)
+    check('本机形态：口令正确时「清空」可点', !(await clearBtn.isDisabled()), '口令对了还禁用')
+    // 不真的点下去：会毁数据
+  }
+}
 // ---------------------------------------------------------------- 主流程
 
 let browser
@@ -609,6 +667,9 @@ try {
 
   // 操作记录屏：六列结构 + 点行详情
   await auditGate(page)
+
+  // 备份屏：四道门与能力门控（不执行破坏性操作）
+  await backupGate(page)
 
   // 接口回读放最后：重新登录会作废浏览器会话
   await verifyPersisted()

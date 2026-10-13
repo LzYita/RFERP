@@ -45,3 +45,6 @@ internal/webassets/dist/*
 # 所以 wailsjs 目录是死代码；package.json.md5 只是构建状态文件。
 cmd/desktop-wails/frontend/wailsjs/
 cmd/desktop-wails/frontend/package.json.md5
+
+# 浏览器关口失败时的现场截图，不入库
+web/gate-failure.png

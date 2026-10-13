@@ -455,7 +455,7 @@ export function BatchScreen() {
         <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
           <span className="text-[12px] font-semibold">投料追溯记录</span>
           <span className="text-[11.5px] text-[var(--color-fg-subtle)]">
-            {sel === null ? '请先选择批次' : traceBatch === sel ? `${(trace ?? []).length} 条` : '加载中…'}
+            {sel === null ? '请先选择批次' : traceBatch === sel ? `共 ${(trace ?? []).length} 条` : '加载中…'}
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">

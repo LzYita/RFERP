@@ -106,6 +106,16 @@
   .data-table .mid {
     text-align: center;
   }
+  /*
+   * 允许换行的单元格。默认 nowrap 是为了"一行一条记录"的扫读效率；
+   * 但变更明细这类**内容长度不可控**的列必须能折行——不折就会把表格
+   * 横向撑到几百像素以上，其它列全被挤出去。
+   * 用语义类而不是逐表内联 style，理由同 .num/.mid。
+   */
+  .data-table .wrap {
+    white-space: normal;
+    word-break: break-word;
+  }
   .data-table th {
     text-align: left;
     font-weight: 600;

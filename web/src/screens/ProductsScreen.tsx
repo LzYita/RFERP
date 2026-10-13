@@ -205,7 +205,7 @@ export function ProductsScreen() {
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)]">
         <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
           <span className="text-[12px] font-semibold">产品列表</span>
-          <span className="text-[11.5px] text-[var(--color-fg-subtle)]">共 {filtered.length} 个</span>
+          <span className="text-[11.5px] text-[var(--color-fg-subtle)]">共 {filtered.length} 项</span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="data-table">

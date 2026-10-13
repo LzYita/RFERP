@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -241,12 +242,17 @@ func TestOpenExportFolderRequiresHostOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := newBackupServer(t, &exportApps{}) // 不传 WithHostOperations
+	opened := 0
+	s := newBackupServer(t, &exportApps{}, // 不传 WithHostOperations
+		WithFolderOpener(func(string) error { opened++; return nil }))
 	tok := issueAdmin(t, s)
 
 	w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": paths.ExportDir()})
 	if w.Code != http.StatusForbidden {
 		t.Errorf("远程形态下打开文件夹 = %d，期望 403", w.Code)
+	}
+	if opened != 0 {
+		t.Errorf("被闸门挡下时仍然启动了资源管理器 %d 次", opened)
 	}
 }
 
@@ -256,8 +262,13 @@ func TestOpenExportFolderRequiresHostOperations(t *testing.T) {
 // 于是测到的是 `D:\Windows`（前缀检查当然能拒），而不是客户端真会发来的
 // `D:\...\导出\..\outside`（前缀检查会被绕过，落点在导出目录之外）。
 // 我第一版正是这么写的，测试绿着、功能却能被绕过。
+//
+// ⚠️ 同时注入假的 opener：**这个端点有真实副作用**（会在开发者桌面上弹窗）。
+// 测试走真实实现的话，每跑一遍就开一个窗口，CI 上还会去启动 GUI 程序。
 func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
-	s := newBackupServer(t, &exportApps{}, WithHostOperations())
+	var opened []string
+	s := newBackupServer(t, &exportApps{}, WithHostOperations(),
+		WithFolderOpener(func(d string) error { opened = append(opened, d); return nil }))
 	tok := issueAdmin(t, s)
 	exportRoot := paths.ExportDir()
 	if err := os.MkdirAll(exportRoot, 0o755); err != nil {
@@ -285,9 +296,14 @@ func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
 			t.Errorf("目录 %q 被接受了——客户端可以打开这台机器上的任意文件夹", p)
 		}
 	}
+	if len(opened) != 0 {
+		t.Errorf("被拒的目录也启动了资源管理器：%v", opened)
+	}
 
-	// 导出目录本身与真实子目录必须仍然放行，否则这个校验就过度了
-	for _, ok := range []string{exportRoot, filepath.Join(exportRoot, "all_data")} {
+	// 导出目录本身与真实子目录必须仍然放行，否则这个校验就过度了。
+	// 顺带断言传给启动器的**正是**那个目录，而不只是"返回了 200"。
+	want := []string{exportRoot, filepath.Join(exportRoot, "all_data")}
+	for _, ok := range want {
 		if err := os.MkdirAll(ok, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -295,5 +311,27 @@ func TestOpenExportFolderRejectsForeignPaths(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("合法目录 %q 被拒：%d %s", ok, w.Code, w.Body.String())
 		}
+	}
+	if len(opened) != len(want) {
+		t.Fatalf("启动器被调用 %d 次，期望 %d", len(opened), len(want))
+	}
+	for i, d := range opened {
+		if d != want[i] {
+			t.Errorf("第 %d 次传给启动器的目录 = %q，期望 %q", i+1, d, want[i])
+		}
+	}
+}
+
+// 启动器失败要如实回 500，不能假装成功。
+func TestOpenExportFolderReportsLauncherFailure(t *testing.T) {
+	s := newBackupServer(t, &exportApps{}, WithHostOperations(),
+		WithFolderOpener(func(string) error { return errors.New("no explorer here") }))
+	tok := issueAdmin(t, s)
+	if err := os.MkdirAll(paths.ExportDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := doJSON(t, s, "POST", "/api/export/all/open", tok, map[string]string{"dir": paths.ExportDir()})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("启动器失败 = %d，期望 500", w.Code)
 	}
 }

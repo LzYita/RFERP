@@ -192,6 +192,17 @@ func (s *Server) handleExportAll(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"files": names, "dir": dir})
 }
 
+// explorerFolderOpener 是默认的打开方式：调起 Windows 资源管理器。
+//
+// 之所以做成可注入（Server.openFolder）：这个动作**有真实副作用**——
+// 在开发者的桌面上弹出一个窗口。测试若走真实路径，每跑一遍就开一个窗口，
+// 而且在 CI 上还会去启动一个 GUI 程序。所以测试注入一个只记录不执行的实现，
+// 顺带还能断言"传给启动器的到底是哪个目录"，比只断言 200 更强。
+func explorerFolderOpener(dir string) error {
+	// explorer.exe 选中该目录而不是打开它的父目录
+	return exec.Command("explorer.exe", dir).Start()
+}
+
 // dirUnder 判断 child 是否等于 root 或位于 root 之下。
 //
 // **必须先 Clean 再用 filepath.Rel 比较**，不能用字符串前缀。
@@ -243,7 +254,7 @@ func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// explorer.exe 选中该目录而不是打开它的父目录
-	if err := exec.Command("explorer.exe", dir).Start(); err != nil {
+	if err := s.openFolder(dir); err != nil {
 		writeErr(w, http.StatusInternalServerError, "无法打开文件夹："+err.Error())
 		return
 	}

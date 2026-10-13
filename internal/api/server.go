@@ -65,6 +65,13 @@ type Server struct {
 	// 阶段 B/C 应当只对 server 所在机器开放，而漏传 Option 的后果必须是不放行。
 	hostOperations bool
 
+	// openFolder 是「在文件管理器里打开某个目录」的实际动作，默认调 explorer.exe。
+	//
+	// 做成可注入是因为它**有真实副作用**：会在开发者桌面上弹窗。测试注入一个
+	// 只记录不执行的实现，于是跑测试不再开窗口、CI 上也不会去启动 GUI 程序，
+	// 而且顺带能断言"传给启动器的到底是哪个目录"。
+	openFolder func(dir string) error
+
 	// picker 由桌面宿主注入，负责弹**原生**目录选择框。为 nil 表示当前部署形态
 	// 没有可弹框的窗口（cmd/server、-serve 之外的纯 HTTP 访问、浏览器）。
 	//
@@ -165,6 +172,12 @@ func WithHostOperations() Option {
 	return func(s *Server) { s.hostOperations = true }
 }
 
+// WithFolderOpener 替换「打开文件夹」的实际动作。仅供测试与将来的无头形态使用；
+// 不传就用 explorer.exe。
+func WithFolderOpener(f func(dir string) error) Option {
+	return func(s *Server) { s.openFolder = f }
+}
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -173,6 +186,11 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
 	s.remember.file = s.rememberFile
+	// 同理：打开文件夹的实现必须在 opts 之后兜底，否则漏传就会 nil panic，
+	// 而"漏传"在这里等价于"一点就崩"。
+	if s.openFolder == nil {
+		s.openFolder = explorerFolderOpener
+	}
 	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
 	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。
 	if s.rememberEnabled {

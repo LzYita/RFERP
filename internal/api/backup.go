@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -252,6 +253,42 @@ func (s *Server) requireHostOperations(w http.ResponseWriter, op string) bool {
 	return false
 }
 
+// restoreFilePattern 是「可作为恢复来源」的备份文件名规则，也是确认口令的唯一来源。
+//
+//	backup_20260924_170830.sql            一键备份
+//	backup_20260924_170830.final.sql      同上，中间态/改名（见下方 qualifier）
+//	backup_20260924_170830.upgraded.sql
+//	pre_restore_20260924_172919.sql       恢复前的自动副本
+//	pre_clear_20260924_105500.sql         清空前的自动副本
+//
+// **qualifier 是为真实数据补的**：D:\仓库数据 里躺着
+// backup_20260924_170830.final.sql 与 .upgraded.sql —— 本程序自己从不产出这类名字
+// （dbbackup 只写 %s_%s.sql），它们是迁移期间手工改名 / 外部工具留下的。同一时刻
+// 因此会有三个世代并存。早先的规则只认结尾 .sql，于是**旧备份一个都恢复不了**，
+// 而用户看到的只是一句「请选择本应用生成的文件」——那是在教用户去做软件该做的事。
+//
+// 限定为一个点分段、字符集 [A-Za-z0-9_-]：能覆盖 .final/.upgraded 以及以后
+// .v2 之类，又不会把 `backup_20260924_170830.a b c.sql`、`..` 这类放进来。
+// 结尾仍必须是 .sql / .db，所以 `xxx.sql.bak` 依旧被拒。
+//
+// 这条规则必须**只有一处**。它此前只活在前端 restoreTokenFor 里，于是服务端
+// resolveBackupFile 只防目录穿越、不看文件名格式：界面拒绝的文件，直接调 API
+// 又能恢复。两边不一致时，界面那道门就是个摆设。
+var restoreFilePattern = regexp.MustCompile(
+	`^(?:backup|pre_restore|pre_clear)_(\d{8}_\d{6})(?:\.[A-Za-z0-9_-]+)?\.(?:sql|db)$`)
+
+// BackupTimestamp 从备份文件名导出时间戳，第二个返回值表示该文件是否可作为恢复来源。
+//
+// 前端 web/src/lib/backup.ts 的 restoreTokenFor 是它的镜像；
+// internal/api/backup_contract_test.go 用同一批真实文件名锁住两者一致。
+func BackupTimestamp(name string) (string, bool) {
+	m := restoreFilePattern.FindStringSubmatch(strings.TrimSpace(name))
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // resolveBackupFile 把客户端给的**文件名**解析成备份目录内的绝对路径。
 //
 // 拒绝任何含路径分隔符或盘符的输入，并再次确认解析结果仍在备份目录内——
@@ -261,6 +298,9 @@ func (s *Server) resolveBackupFile(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", errBackupFileRequired
+	}
+	if _, ok := BackupTimestamp(name); !ok {
+		return "", errBackupFileNotARestore
 	}
 	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
 		return "", errBackupFileNotInDir
@@ -305,7 +345,8 @@ func urlEscape(s string) string {
 // 是提示重新选择（缺失/不在目录）还是报服务端配置问题。用户看到「请选择备份文件」
 // 和看到「内部错误」的处置完全不同。
 var (
-	errBackupFileRequired = errors.New("请先选择要恢复的备份文件")
-	errBackupFileNotInDir = errors.New("备份文件必须位于本应用的备份目录内，不能指定路径")
-	errBackupFileMissing  = errors.New("备份文件不存在或无法访问，请重新选择")
+	errBackupFileRequired    = errors.New("请先选择要恢复的备份文件")
+	errBackupFileNotInDir    = errors.New("备份文件必须位于本应用的备份目录内，不能指定路径")
+	errBackupFileMissing     = errors.New("备份文件不存在或无法访问，请重新选择")
+	errBackupFileNotARestore = errors.New("无法从该文件名识别备份时间戳，拒绝恢复")
 )

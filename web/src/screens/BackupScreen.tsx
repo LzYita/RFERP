@@ -416,7 +416,9 @@ export function BackupScreen() {
         {pickedFile && !wantToken ? (
           <p className="mt-2 rounded-[6px] border border-[#E5A50A] bg-[#FFFBEB] px-2.5 py-1.5 text-[11.5px] text-[#8A6100]">
             无法从文件名「{pickedFile.name}」识别备份时间戳，为避免恢复错文件已拒绝恢复。
-            请选择本应用「一键备份」或「操作前自动副本」生成的文件。
+            请选择形如
+            <span style={{ fontFamily: 'Consolas, monospace' }}> backup_20260925_101530.sql </span>
+            的文件；本应用生成的备份、以及导出后自行改名的副本（结尾加 .final / .upgraded 等）都可以用。
           </p>
         ) : null}
         {wantToken ? (

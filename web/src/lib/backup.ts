@@ -85,11 +85,22 @@ export const CLEAR_CONFIRM_TOKEN = 'drop'
  * 本计划要求「不可预填、不可复制粘贴」——预填 + 可粘贴等于把第二道门降级成
  * 一个勾选框，用户不需要读懂任何东西就能划过去。
  *
- * 识别规则同样只认 `backup_` / `pre_restore_` / `pre_clear_` 三个前缀：
+ * 识别规则只认 `backup_` / `pre_restore` / `pre_clear` 三个前缀：
  * 无法导出时间戳时返回 null，界面据此**拒绝恢复**（这正是第一道门的一部分）。
+ *
+ * ── 中间的可选点分段（`.final` / `.upgraded`）是为真实数据补的 ──
+ * D:\仓库数据 里同时躺着 backup_20260924_170830.sql、.final.sql 与 .upgraded.sql：
+ * 本程序自己只写 `%s_%s.sql`，后两个是迁移期间手工改名 / 外部工具留下的，同一时刻
+ * 因此有三个世代并存。早先只认结尾 `.sql`，于是旧备份**一个都恢复不了**。
+ * 限定为一个点分段、字符集 [A-Za-z0-9_-]，结尾仍须 .sql/.db（`xxx.sql.bak` 照拒）。
+ *
+ * ⚠️ 这是服务端 internal/api/backup.go 的 restoreFilePattern 的**镜像**，不是副本之外
+ * 的独立规则；backup_contract_test.go 用真实文件名锁住两者一致。改这里必须同步改那边。
  */
 export function restoreTokenFor(fileName: string): string | null {
-  const m = /^(?:backup|pre_restore|pre_clear)_(\d{8}_\d{6})\.(?:sql|db)$/.exec(fileName.trim())
+  const m = /^(?:backup|pre_restore|pre_clear)_(\d{8}_\d{6})(?:\.[A-Za-z0-9_-]+)?\.(?:sql|db)$/.exec(
+    fileName.trim(),
+  )
   return m ? `restore ${m[1]}` : null
 }
 

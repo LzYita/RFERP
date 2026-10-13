@@ -345,6 +345,73 @@ func TestRestoreRejectsPathsOutsideBackupDir(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------- 真实备份文件名（含 .final/.upgraded）
+//
+// 这一组是回归：早先的规则只认结尾 `.sql`，而 D:\仓库数据 里躺着
+// backup_20260924_170830.final.sql 与 .upgraded.sql（迁移期间手工改名留下的），
+// 于是**旧备份一个都恢复不了**，界面只回一句「请选择本应用生成的文件」。
+//
+// 这些文件名此前只在前端被校验，服务端 resolveBackupFile 只防目录穿越、不看格式：
+// 界面拒绝的文件直接调 API 又能恢复。所以这里验的是**服务端**这一侧。
+
+func TestRestoreAcceptsRealWorldBackupNames(t *testing.T) {
+	for _, name := range []string{
+		"backup_20260721_154617.sql",
+		"backup_20260924_170830.sql",
+		"backup_20260924_170830.final.sql",
+		"backup_20260924_170830.upgraded.sql",
+		"pre_restore_20260924_172919.sql",
+		"backup_20260924_170830.final.db",
+	} {
+		t.Run(name, func(t *testing.T) {
+			apps := &backupApps{}
+			s := newBackupServer(t, apps, WithHostOperations())
+			seedBackupFile(t, name)
+			tok := issueAdmin(t, s)
+
+			if w := doJSON(t, s, "POST", "/api/restore", tok, map[string]string{"file": name}); w.Code != http.StatusOK {
+				t.Errorf("真实备份 %q 被拒：%d %s", name, w.Code, w.Body.String())
+			}
+			if apps.restored == "" {
+				t.Errorf("真实备份 %q 没有调用 RestoreDatabase", name)
+			}
+		})
+	}
+}
+
+// 反向：备份目录里确实存在、但命名不合规的文件，服务端也必须拒。
+//
+// 文件真实存在这一点很重要——否则测试可能只是被「文件不存在」挡住的，
+// 看起来通过，实际没测到新加的那道校验。
+func TestRestoreRejectsFilesWithoutRecoverableTimestamp(t *testing.T) {
+	for _, name := range []string{
+		"notes.txt",
+		"audit_log_20260721_20260721.csv",
+		"backup_20260925_101530.sql.bak",
+		"backup.sql",
+		"backup_20260925.sql",
+		"manual_dump.sql",
+	} {
+		t.Run(name, func(t *testing.T) {
+			apps := &backupApps{}
+			s := newBackupServer(t, apps, WithHostOperations())
+			seedBackupFile(t, name) // 文件确实存在
+			tok := issueAdmin(t, s)
+
+			w := doJSON(t, s, "POST", "/api/restore", tok, map[string]string{"file": name})
+			if w.Code == http.StatusOK {
+				t.Fatalf("%q 被接受了（%d）——命名不合规的文件也能恢复", name, w.Code)
+			}
+			if apps.restored != "" {
+				t.Fatalf("%q 竟然调用了 RestoreDatabase(%q)", name, apps.restored)
+			}
+			if !strings.Contains(w.Body.String(), "时间戳") {
+				t.Errorf("%q 的拒绝理由没提到时间戳，用户会看不懂：%s", name, w.Body.String())
+			}
+		})
+	}
+}
+
 // --------------------------------------------------------------- 三分类
 
 // 三种结局必须在响应里可程序化区分——界面要靠它决定用黄色还是红色、

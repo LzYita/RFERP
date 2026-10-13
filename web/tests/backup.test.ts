@@ -15,6 +15,34 @@ describe('restoreTokenFor', () => {
     expect(restoreTokenFor('pre_clear_20260929_105500.sql')).toBe('restore 20260929_105500')
   })
 
+  // 真实数据里就是这些名字。D:\仓库数据 中同一时刻 backup_20260924_170830 有三个
+  // 世代：.sql / .upgraded.sql / .final.sql（后两个是迁移期间手工改名留下的，
+  // 本程序只写 `%s_%s.sql`）。早先只认结尾 `.sql`，于是旧备份一个都恢复不了，
+  // 界面只回一句「请选择本应用生成的文件」——那是在教用户做软件该做的事。
+  // 三个世代导出**同一个**口令：口令确认的是"你读过后果"，不是"你选了哪个版本"。
+  it('D:\\仓库数据 里的真实文件名都能识别，且同一时刻口令一致', () => {
+    const three = [
+      'backup_20260924_170830.sql',
+      'backup_20260924_170830.upgraded.sql',
+      'backup_20260924_170830.final.sql',
+    ]
+    three.forEach((n) => expect(restoreTokenFor(n)).toBe('restore 20260924_170830'))
+    expect(restoreTokenFor('backup_20260721_154617.sql')).toBe('restore 20260721_154617')
+    expect(restoreTokenFor('pre_restore_20260924_172919.sql')).toBe('restore 20260924_172919')
+  })
+
+  it('qualifier 之后仍可用 SQLite 快照（.db）', () => {
+    expect(restoreTokenFor('backup_20260924_170830.final.db')).toBe('restore 20260924_170830')
+  })
+
+  // qualifier 只允许**一个**点分段、字符集 [A-Za-z0-9_-]。放宽到 .* 会把
+  // `..`、`a.b` 这类一起放进来，而结尾仍须 .sql/.db，所以 .sql.bak 照拒。
+  it('多段或含空格的 qualifier 一律拒绝', () => {
+    expect(restoreTokenFor('backup_20260925_101530.a.b.sql')).toBeNull()
+    expect(restoreTokenFor('backup_20260925_101530.a b.sql')).toBeNull()
+    expect(restoreTokenFor('backup_20260925_101530..sql')).toBeNull()
+  })
+
   it('SQLite 快照（.db）同样可用', () => {
     expect(restoreTokenFor('pre_restore_20260929_110000.db')).toBe('restore 20260929_110000')
   })
@@ -35,10 +63,14 @@ describe('restoreTokenFor', () => {
     expect(restoreTokenFor('')).toBeNull()
   })
 
+  // 这些是备份目录里真实存在的**别的**文件，不能因为"在备份目录里"就能当备份恢复。
   it('不是备份的文件名不给令牌', () => {
     expect(restoreTokenFor('notes.txt')).toBeNull()
     expect(restoreTokenFor('backup_20260925_101530.zip')).toBeNull()
     expect(restoreTokenFor('backup_20260925_101530.sql.bak')).toBeNull()
+    expect(restoreTokenFor('audit_log_20260721_20260721.csv')).toBeNull()
+    expect(restoreTokenFor('batch_trace.csv')).toBeNull()
+    expect(restoreTokenFor('rferp.log')).toBeNull()
   })
 
   // 令牌随文件变化：换一个文件，令牌必须跟着变，否则这道门就挡不住"恢复错文件"。

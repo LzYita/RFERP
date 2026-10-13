@@ -13,6 +13,7 @@ import (
 
 	"app/internal/auth"
 	"app/internal/model"
+	"app/internal/update"
 	"app/internal/usecase"
 )
 
@@ -71,6 +72,26 @@ type Server struct {
 	// 只记录不执行的实现，于是跑测试不再开窗口、CI 上也不会去启动 GUI 程序，
 	// 而且顺带能断言"传给启动器的到底是哪个目录"。
 	openFolder func(dir string) error
+
+	// applyUpdate 是「用更新包替换并重启自己」的实际动作，默认 update.ApplyAndRestart。
+	//
+	// 更要紧的是可注入：真实实现会**替换正在运行的测试进程并启动它**。
+	// 测试绝不能走真实路径。
+	applyUpdate func(zipPath string) error
+
+	// pendingUpdate 保存**下载步骤刚产生并通过校验**的更新包。
+	//
+	// apply 只认这一个 —— 客户端不能再指认任意路径。此前 apply 直接接受请求体里的
+	// path 且不做校验，等于给了任何持有 System.ApplyUpdate 的会话一个
+	// 「任意路径 → 取出 exe → 覆盖程序并运行」的原语。
+	//
+	// 存 sha 是为了在 apply 之前**再核对一次**：下载校验的是那个临时文件，
+	// 而下载与 apply 之间隔着一次 HTTP 往返和一次客户端决策，中间文件可能被换掉。
+	pendingUpdate struct {
+		mu   sync.Mutex
+		path string
+		sha  string
+	}
 
 	// picker 由桌面宿主注入，负责弹**原生**目录选择框。为 nil 表示当前部署形态
 	// 没有可弹框的窗口（cmd/server、-serve 之外的纯 HTTP 访问、浏览器）。
@@ -178,6 +199,12 @@ func WithFolderOpener(f func(dir string) error) Option {
 	return func(s *Server) { s.openFolder = f }
 }
 
+// WithUpdateApplier 替换「用更新包替换并重启自己」的实际动作。**仅供测试**：
+// 真实实现会替换正在运行的进程，跑测试时用它会把自己的测试二进制换掉。
+func WithUpdateApplier(f func(zipPath string) error) Option {
+	return func(s *Server) { s.applyUpdate = f }
+}
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -190,6 +217,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	// 而"漏传"在这里等价于"一点就崩"。
 	if s.openFolder == nil {
 		s.openFolder = explorerFolderOpener
+	}
+	if s.applyUpdate == nil {
+		s.applyUpdate = update.ApplyAndRestart
 	}
 	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
 	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。

@@ -202,6 +202,24 @@ func (c *Checker) downloadOnce(m *Manifest, dir string, progress func(done, tota
 	return path, nil
 }
 
+// FileSHA256 计算一个文件的 SHA-256（小写十六进制）。
+//
+// 单独导出是因为**同一个校验要做两次**：下载时核对一次，apply 之前再核对一次。
+// 写两份实现就会有漂移（一边改成大小写不敏感、另一边没改），而这里的漂移
+// 后果是"校验通过的文件"和"真正被替换的文件"不是同一个。
+func FileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // ApplyAndRestart replaces the running executable with the one inside zipPath
 // and launches the new process. The caller is expected to exit afterwards.
 func ApplyAndRestart(zipPath string) error {

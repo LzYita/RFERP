@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,15 +104,53 @@ func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "下载失败: "+err.Error())
 		return
 	}
+	// 记住「刚下载并通过校验的那一个」。apply 只认它，客户端不再有机会指认路径。
+	// sha 用清单里的值：downloadOnce 已经核对过文件与它一致。
+	s.setPendingUpdate(zipPath, m.SHA256)
 	writeJSON(w, http.StatusOK, map[string]any{"path": zipPath, "version": m.Version})
+}
+
+// setPendingUpdate 记录待应用的更新包。
+func (s *Server) setPendingUpdate(path, sha string) {
+	s.pendingUpdate.mu.Lock()
+	defer s.pendingUpdate.mu.Unlock()
+	s.pendingUpdate.path = path
+	s.pendingUpdate.sha = sha
+}
+
+// takePendingUpdate 读取待应用的更新包。none 为 true 表示没有下载过。
+func (s *Server) takePendingUpdate() (path, sha string, none bool) {
+	s.pendingUpdate.mu.Lock()
+	defer s.pendingUpdate.mu.Unlock()
+	return s.pendingUpdate.path, s.pendingUpdate.sha, s.pendingUpdate.path == ""
+}
+
+// clearPendingUpdate 清掉待应用的更新包（应用成功后调用）。
+func (s *Server) clearPendingUpdate() {
+	s.pendingUpdate.mu.Lock()
+	defer s.pendingUpdate.mu.Unlock()
+	s.pendingUpdate.path = ""
+	s.pendingUpdate.sha = ""
 }
 
 // handleApplyUpdate 解压替换 exe 并重启。
 //
-// 单独一步是刻意的：前面两步都不碰用户正在运行的程序，只有到这里才动。
-// 调用方必须已经拿到用户确认。
+// **只能用「下载步骤刚产生并校验过」的那个更新包**：请求体里的 path 一律忽略。
+//
+// 这一条是 2026-10-13 审计后改的。此前它直接拿请求体的 path 交给
+// update.ApplyAndRestart，而那条链是「从该路径的 zip 里取出任意 .exe →
+// 覆盖程序自身 → 启动它」，且 apply 阶段不验签。于是任何持有 System.ApplyUpdate
+// 的会话，只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
+// 攻击者的程序（随之可读 config.json、连数据库、读写全部备份）。
+//
+// 原设计里「下载时验过 SHA-256」是对的，但**验证绑在下载产生的临时文件上，
+// 与 apply 传进来的路径毫无关联** —— 等于把校验和"将执行的文件"割开了。
+// 现在两者是同一个对象：路径由服务端记住，apply 前再核一次哈希，
+// 连"下载与 apply 之间被换文件"这个窗口也一并关掉。
 func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
+		// Path 保留仅为线协议兼容，**不再使用**。前端仍会回传下载得到的路径，
+		// 但服务端只认自己记住的那一个。
 		Path    string `json:"path"`
 		Confirm bool   `json:"confirm"`
 	}
@@ -119,19 +158,37 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	// 没有显式确认就不替换。这条不能省——它是"下载"和"动手"之间唯一的闸门。
+	// 显式确认仍然要。它是「下载」和「动手」之间给**用户**看的闸门；
+	// 真正拦住路径替换的是下面那条因果链，不是这个布尔值。
 	if !in.Confirm {
 		writeErr(w, http.StatusBadRequest, "需要显式确认才能替换程序文件")
 		return
 	}
-	if in.Path == "" {
-		writeErr(w, http.StatusBadRequest, "缺少下载包路径")
+
+	zipPath, wantSHA, none := s.takePendingUpdate()
+	if none {
+		writeErr(w, http.StatusBadRequest, "尚未下载更新包，请先下载")
 		return
 	}
-	if err := update.ApplyAndRestart(in.Path); err != nil {
+	// apply 之前再核对一次哈希：验证过的文件与即将执行的文件必须是同一个。
+	gotSHA, err := update.FileSHA256(zipPath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "更新包已不可读取，请重新下载")
+		return
+	}
+	if !strings.EqualFold(gotSHA, wantSHA) {
+		// 文件被换过了。作废这个待办，逼用户重新走一次下载（下载会重新验签）。
+		s.clearPendingUpdate()
+		writeErr(w, http.StatusBadRequest, "更新包内容与下载时不一致，已拒绝应用，请重新下载")
+		return
+	}
+
+	if err := s.applyUpdate(zipPath); err != nil {
+		// 失败**不清**待办：文件还在，用户可以直接重试，不必重新下载。
 		writeErr(w, http.StatusInternalServerError, "更新失败: "+err.Error())
 		return
 	}
+	s.clearPendingUpdate()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }
 

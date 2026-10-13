@@ -21,11 +21,21 @@ func (s *Server) handleMyPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := auth.RoleFromString(u.Role)
-	out := make(map[string]string, len(auth.AllModules()))
+	modules := make(map[string]string, len(auth.AllModules()))
 	for _, m := range auth.AllModules() {
-		out[m] = accessWord(auth.AccessFor(role, m))
+		modules[m] = accessWord(auth.AccessFor(role, m))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"modules": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"modules": modules,
+		// hostOperations 与模块档位是**正交**的两种维度：档位回答"谁可以做"，
+		// 这一位回答"在哪台机器上可以做"。只下发档位的话，前端无法区分
+		// 「没有备份权限」与「这是远程服务，破坏性操作只能在主机上做」——
+		// 前者要提示联系管理员，后者要提示换到主机，两者的处置完全不同。
+		//
+		// 放在这个端点（已鉴权）而不是 serverinfo（免登录）：部署形态不该
+		// 暴露给未认证的调用方。
+		"hostOperations": s.hostOperations,
+	})
 }
 
 // accessWord 把权限档位翻译成前端使用的字。

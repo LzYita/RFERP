@@ -2,13 +2,16 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"app/internal/model"
+	"app/internal/paths"
 	"app/internal/usecase"
 )
 
@@ -362,33 +365,122 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
+// parseExportDate 接受审计导出请求里的日期。
+//
+// 两种格式都要收：
+//   - "2006-01-02"：界面选的是**日期范围**，发过来就是纯日期
+//   - RFC 3339：Go 侧客户端（client.go 远程模式）把 time.Time 序列化过来的形状
+//
+// 之前这里直接把字段声明成 time.Time，而 Go 的 time.Time 只认 RFC 3339，
+// 于是界面发来的 "2026-10-13" 解析失败 → 400 "invalid body"。
+// 一个只在真实使用中才暴露的格式错：两端的 Go 测试都各自通过，
+// 因为没人从界面发过一次请求。
+func parseExportDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("日期格式无法识别：%q（应为 2026-10-13 或 RFC 3339）", s)
+}
+
+// exportAuditRange 解析审计导出的日期区间。
+//
+// 返回的 end 是**内部边界**（已顺延一天，含当天），endUser 是**用户填的那一天** ——
+// 文件名要用后者：用户看到 `audit_log_20261001_20261013.csv` 才知道自己导的是哪一段，
+// 而 `…_20260930` 会让他以为自己选错了日期。
+func (s *Server) exportAuditRange(w http.ResponseWriter, r *http.Request) (start, end, endUser time.Time, ok bool) {
 	var body struct {
-		Start time.Time `json:"start"`
-		End   time.Time `json:"end"`
+		Start string `json:"start"`
+		End   string `json:"end"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
+		return time.Time{}, time.Time{}, time.Time{}, false
+	}
+	start, err := parseExportDate(body.Start)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return time.Time{}, time.Time{}, time.Time{}, false
+	}
+	endUser, err = parseExportDate(body.End)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return time.Time{}, time.Time{}, time.Time{}, false
+	}
+	// 区间含两端：界面选的是"从这一天到那一天"，用户要的是这两天都包含。
+	end = endUser
+	if !end.Before(start) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return start, end, endUser, true
+}
+
+// runAuditExport 生成审计 CSV 并**落到数据目录**，返回目录、文件名、内容与条数。
+//
+// 两个端点共用它：界面的"导出"与"下载"拿到的是同一份东西，
+// 分成两处写就会出现"界面上说保存到了 A，下载下来的却是 B"。
+func (s *Server) runAuditExport(start, end, endUser time.Time) (dir, name string, data []byte, count int, err error) {
+	// 与旧版一致：导出\audit_log\<时间戳>\（ui/backup.go:577）
+	dir = filepath.Join(paths.ExportDir(), exportSubdirAuditLog, time.Now().Format("20060102_150405"))
+	if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+		return "", "", nil, 0, fmt.Errorf("创建导出目录: %w", mkErr)
+	}
+	name = fmt.Sprintf("audit_log_%s_%s.csv", start.Format("20060102"), endUser.Format("20060102"))
+	full := filepath.Join(dir, name)
+
+	count, err = s.apps.ExportAuditLogCSV(start, end, full)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	data, err = os.ReadFile(full)
+	if err != nil {
+		return "", "", nil, 0, err
+	}
+	return dir, name, data, count, nil
+}
+
+// handleExportAudit 导出审计日志：**只回报位置**，不把内容塞进下载。
+//
+// 与 handleExportAll 对齐。界面上写的是"保存到 …"，用户照这句话去目录找文件；
+// 顺手再往浏览器的「下载」里丢一份，只会让人多出一个不知道是什么的文件，
+// 而且每次导出会多出一份重复数据。
+func (s *Server) handleExportAudit(w http.ResponseWriter, r *http.Request) {
+	start, end, endUser, ok := s.exportAuditRange(w, r)
+	if !ok {
 		return
 	}
-	tmpDir, err := os.MkdirTemp("", "rferp-audit-*")
+	dir, name, _, count, err := s.runAuditExport(start, end, endUser)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	defer os.RemoveAll(tmpDir)
-	tmp := filepath.Join(tmpDir, "audit.csv")
-	count, err := s.apps.ExportAuditLogCSV(body.Start, body.End, tmp)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dir":   dir,
+		"files": []string{name},
+		"count": count,
+	})
+}
+
+// handleDownloadAudit 把审计 CSV 作为文件流返回。
+//
+// 只给**确实需要字节**的调用方：Go 侧客户端（远程模式）与远程界面形态。
+// 主机形态下文件就在用户自己机器上，走 handleExportAudit 报位置即可。
+func (s *Server) handleDownloadAudit(w http.ResponseWriter, r *http.Request) {
+	start, end, endUser, ok := s.exportAuditRange(w, r)
+	if !ok {
 		return
 	}
-	data, err := os.ReadFile(tmp)
+	_, name, data, count, err := s.runAuditExport(start, end, endUser)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition",
+		"attachment; filename*=UTF-8''"+urlEscape(name))
 	w.Header().Set("X-Count", strconv.Itoa(count))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)

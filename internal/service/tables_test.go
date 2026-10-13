@@ -3,6 +3,8 @@ package service
 import (
 	"strings"
 	"testing"
+
+	"app/internal/paths"
 )
 
 func TestInsertTargetIsPreservedRecognisesQuotedAndBareNames(t *testing.T) {
@@ -49,10 +51,14 @@ func TestPreservedTablesCoverTheTablesRestoreMustNotTouch(t *testing.T) {
 
 func TestSafetyCopyKeepIsBounded(t *testing.T) {
 	// 副本份数必须有上限，否则备份目录会无限增长。
-	if safetyCopyKeep <= 0 {
-		t.Fatalf("safetyCopyKeep = %d, want a positive bound", safetyCopyKeep)
+	if paths.SafetyCopyKeep <= 0 {
+		t.Fatalf("SafetyCopyKeep = %d, want a positive bound", paths.SafetyCopyKeep)
 	}
-	if safetyCopyKeep > 20 {
-		t.Fatalf("safetyCopyKeep = %d, want a small bound", safetyCopyKeep)
+	if paths.SafetyCopyKeep > 20 {
+		t.Fatalf("SafetyCopyKeep = %d, want a small bound", paths.SafetyCopyKeep)
+	}
+	// 手动备份必须**不**有上限：用户主动留的东西不该被自动清理。
+	if paths.AutoBackupKeep <= 0 {
+		t.Fatalf("AutoBackupKeep = %d, want a positive bound", paths.AutoBackupKeep)
 	}
 }

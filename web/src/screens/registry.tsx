@@ -8,6 +8,7 @@
 import type { ReactNode } from 'react'
 import type { ModuleKey } from '../lib/nav'
 import { AuditScreen } from './AuditScreen'
+import { BackupScreen } from './BackupScreen'
 import { DashboardScreen } from './DashboardScreen'
 import { PartsScreen } from './PartsScreen'
 import { ProductsScreen } from './ProductsScreen'
@@ -48,8 +49,9 @@ export const REGISTRY: Record<ModuleKey, Factory> = {
   bom: () => <BOMScreen />,
   batch: () => <BatchScreen />,
   audit: () => <AuditScreen />,
-  // Round 5 交付；且依赖目录枚举端点替代 nativefiledialog。
-  backup: () => <PlaceholderScreen title="备份导出" />,
+  // Round 5 交付。破坏性操作另有服务端本机闸门（api.WithHostOperations），
+  // 界面只是把按钮置灰并说明原因——置灰不是边界，服务端才是不放行的那个。
+  backup: () => <BackupScreen />,
   users: (ctx) => <UsersScreen meId={ctx.meId} />,
 }
 

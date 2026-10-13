@@ -4,7 +4,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 
 	"app/internal/paths"
 	"app/internal/usecase"
@@ -158,20 +163,89 @@ func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) handleBackupDatabase(w http.ResponseWriter, _ *http.Request) {
-	path, err := s.apps.BackupDatabase(paths.BackupDir())
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"path": path})
-}
+// 导出目录下的分类子目录名。与旧版一致（ui/backup.go:313/317）。
+//
+// 这不是洁癖：旧版的用户已经知道东西在 导出\all_data\ 与 导出\audit_log\，
+// Web 版一开始直接扔在 导出\ 根下，于是每次导出多出一个
+// `20261013_160107-1666890059` 这种临时目录名 —— 用户找不到，也不敢删。
+const (
+	exportSubdirAllData  = "all_data"
+	exportSubdirAuditLog = "audit_log"
+)
 
 func (s *Server) handleExportAll(w http.ResponseWriter, _ *http.Request) {
-	files, dir, err := s.apps.ExportAllDataCSV(paths.ExportDir())
+	// 恢复到旧版的分组目录，而不是 os.MkdirTemp 在 导出\ 根下造随机名目录。
+	files, dir, err := s.apps.ExportAllDataCSV(filepath.Join(paths.ExportDir(), exportSubdirAllData))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"files": files, "dir": dir})
+	// 回**文件名**而不是完整路径：界面要列出文件，用不着每条都带一遍目录，
+	// 而把绝对路径逐条回给客户端是这个端点从 Round 5 起就在避免的事。
+	names := make([]string, 0, len(files))
+	for _, p := range files {
+		names = append(names, filepath.Base(p))
+	}
+	sort.Strings(names)
+	// dir 是服务器端路径，但界面上必须显示它——否则用户不知道东西去哪了。
+	// 与 handleDataDir 同理：本端点已鉴权且要求备份模块权限，是"展示给操作者本人"。
+	writeJSON(w, http.StatusOK, map[string]any{"files": names, "dir": dir})
+}
+
+// dirUnder 判断 child 是否等于 root 或位于 root 之下。
+//
+// **必须先 Clean 再用 filepath.Rel 比较**，不能用字符串前缀。
+// 前缀比较挡不住 `导出\..\outside`：它确实以 `导出\` 开头，但 Clean 之后
+// 落在导出目录之外 —— 而客户端发来的就是这种**未清理**的原始字符串
+// （filepath.Join 会先 Clean，所以拿它构造的测试根本测不到这个绕过）。
+//
+// 这与 backuplayout.Resolve 用的是同一套判据：两处都在防"客户端指定路径"，
+// 判据必须一致，否则总有一处是弱的。
+func dirUnder(root, child string) bool {
+	if strings.TrimSpace(child) == "" || strings.TrimSpace(root) == "" {
+		return false
+	}
+	cleanRoot := filepath.Clean(root)
+	cleanChild := filepath.Clean(child)
+	if cleanChild == cleanRoot {
+		return true
+	}
+	rel, err := filepath.Rel(cleanRoot, cleanChild)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// handleOpenExportFolder 在资源管理器里打开导出目录。
+//
+// 本机操作：它启动的是**这台机器上**的程序。阶段 B/C 的远程客户端点了只会
+// 在用户自己电脑上打开一个不存在的路径，所以走 hostOperations 闸门。
+func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) {
+	if !s.requireHostOperations(w, "打开导出文件夹") {
+		return
+	}
+	var body struct {
+		Dir string `json:"dir"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	dir := strings.TrimSpace(body.Dir)
+	exportRoot := paths.ExportDir()
+	if !dirUnder(exportRoot, dir) {
+		writeErr(w, http.StatusBadRequest, "只能打开本应用的导出目录")
+		return
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		writeErr(w, http.StatusNotFound, "导出目录不存在")
+		return
+	}
+	// explorer.exe 选中该目录而不是打开它的父目录
+	if err := exec.Command("explorer.exe", dir).Start(); err != nil {
+		writeErr(w, http.StatusInternalServerError, "无法打开文件夹："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir})
 }

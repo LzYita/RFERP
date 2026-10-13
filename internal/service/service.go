@@ -1413,8 +1413,24 @@ func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, e
 	if err := os.MkdirAll(saveDir, 0755); err != nil {
 		return nil, "", fmt.Errorf("create export parent: %w", err)
 	}
-	subDir, err := os.MkdirTemp(saveDir, time.Now().Format("20060102_150405-"))
-	if err != nil {
+	// 子目录用**可读的时间戳**，与旧版一致（ui/backup.go:596 → 导出\all_data\<时间戳>\）。
+	//
+	// 之前用 os.MkdirTemp(saveDir, "<时间戳>-")，于是路径变成
+	// `导出\20261013_160107-1666890059`：既丢了分组，又多一串随机数 ——
+	// 用户在自己的数据目录里看到这种名字，既不知道这是什么也不敢删。
+	//
+	// 但**不能**直接 MkdirAll 到已存在的时间戳目录：failExport 会 RemoveAll
+	// 那个目录，如果它是上一次导出留下的，就会把人家的数据删掉。
+	// 所以这里只在**目录不存在**时创建，并且记住是不是自己建的。
+	base := filepath.Join(saveDir, time.Now().Format("20060102_150405"))
+	subDir := base
+	for i := 2; i < 100; i++ {
+		if _, err := os.Stat(subDir); os.IsNotExist(err) {
+			break
+		}
+		subDir = fmt.Sprintf("%s-%d", base, i)
+	}
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
 		return nil, "", fmt.Errorf("create export dir: %w", err)
 	}
 	files := make(map[string]string)

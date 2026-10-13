@@ -21,12 +21,28 @@ export function setToken(t: string | null): void {
   sessionToken = t
 }
 
+/**
+ * 破坏性操作的三分类结局。
+ *
+ * 与 internal/api/destructive.go 的 OpState* 一一对应。缺省是 rolled_back
+ * （服务端对普通错误的语义就是"已确认回滚"），所以拿不到 state 时按它处理是安全的。
+ *
+ * 三种情况的正确处置完全相反，所以界面**必须**按它分支，不能只显示文案：
+ *   rolled_back → 补料/换文件后可以重试
+ *   unknown     → 先核对数据，绝不能重试（§Round 5 要求黄色 + 不渲染重试按钮）
+ *   applied     → 数据已经变了，重试等于做两遍
+ */
+export type OperationState = 'rolled_back' | 'unknown' | 'applied'
+
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** 仅破坏性端点的错误带这个字段；其它错误为 undefined */
+  readonly state?: OperationState
+  constructor(status: number, message: string, state?: OperationState) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.state = state
   }
   /** 401 表示会话失效（过期、被登出、被强制下线），界面应回到登录页 */
   get isUnauthorized(): boolean {
@@ -34,6 +50,15 @@ export class ApiError extends Error {
   }
   get isForbidden(): boolean {
     return this.status === 403
+  }
+  /**
+   * 结局是否已确定到可以重试。
+   *
+   * 只有 rolled_back 可以重试。unknown 与 applied 都**不能**：前者可能已经部分
+   * 应用，后者已经应用过了。
+   */
+  get isRetryableOutcome(): boolean {
+    return this.state === 'rolled_back'
   }
 }
 
@@ -71,6 +96,30 @@ function broadcastUnauthorized() {
 }
 
 /**
+ * 出错时把服务端 JSON 里的 error / state 读出来。
+ *
+ * state 是破坏性操作的三分类，缺了它界面就只能显示一句话、分不出该不该重试
+ * （见 OperationState）。
+ */
+async function throwApiError(resp: Response, token: string | null): Promise<never> {
+  let msg = resp.statusText
+  let state: OperationState | undefined
+  try {
+    const body = await resp.json()
+    if (body?.error) msg = body.error
+    if (body?.state) state = body.state as OperationState
+  } catch {
+    /* 响应不是 JSON，用状态文本 */
+  }
+  if (resp.status === 401) {
+    setToken(null)
+    // 只在携带凭据时广播：登录本身失败不是「会话过期」
+    if (token) broadcastUnauthorized()
+  }
+  throw new ApiError(resp.status, msg, state)
+}
+
+/**
  * 统一请求入口。
  *
  * 凭据用 `Authorization: Bearer` 而不是 Cookie：阶段 A 的启动 Cookie 由
@@ -85,23 +134,64 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   const resp = await fetch(path, { ...init, headers, credentials: 'same-origin' })
-  if (!resp.ok) {
-    let msg = resp.statusText
-    try {
-      const body = await resp.json()
-      if (body?.error) msg = body.error
-    } catch {
-      /* 响应不是 JSON，用状态文本 */
-    }
-    if (resp.status === 401) {
-      setToken(null)
-      // 只在携带凭据时广播：登录本身失败不是「会话过期」
-      if (token) broadcastUnauthorized()
-    }
-    throw new ApiError(resp.status, msg)
-  }
+  if (!resp.ok) await throwApiError(resp, token)
   if (resp.status === 204) return undefined as T
   return (await resp.json()) as T
+}
+
+/** 从 Content-Disposition 里取文件名。取不到就退回默认名。 */
+function filenameFromDisposition(header: string | null, fallback: string): string {
+  if (!header) return fallback
+  // 优先 RFC 5987 的 filename*=UTF-8''…（中文文件名必须这样编码，
+  // 否则浏览器会按 ISO-8859-1 解出乱码），再退回普通 filename=
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      /* 编码坏了就用下面的 fallback */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header)
+  return plain ? plain[1] : fallback
+}
+
+/**
+ * 下载二进制响应（备份 / 导出）。
+ *
+ * 不能复用 request：它结尾固定 `resp.json()`，而备份是 .sql 文件流。这里把内容
+ * 与文件名一起交给调用方，由界面触发浏览器下载——服务端只管把字节送出来。
+ */
+async function requestDownload(
+  path: string,
+  init: RequestInit = {},
+  fallbackName = 'download.bin',
+): Promise<{ blob: Blob; filename: string }> {
+  const token = getToken()
+  const headers = new Headers(init.headers)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  if (init.body && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  const resp = await fetch(path, { ...init, headers, credentials: 'same-origin' })
+  if (!resp.ok) await throwApiError(resp, token)
+  return {
+    blob: await resp.blob(),
+    filename: filenameFromDisposition(resp.headers.get('Content-Disposition'), fallbackName),
+  }
+}
+
+/** 把 Blob 交给浏览器下载。用完必须 revoke，否则 blob 会一直占着内存。 */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  // 不立刻 revoke：部分 WebView 在 click 后仍异步读取该 URL
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 export const api = {
@@ -111,6 +201,12 @@ export const api = {
   put: <T>(p: string, body?: unknown) =>
     request<T>(p, { method: 'PUT', body: body === undefined ? undefined : JSON.stringify(body) }),
   del: <T>(p: string) => request<T>(p, { method: 'DELETE' }),
+  download: (p: string, body?: unknown, fallbackName?: string) =>
+    requestDownload(
+      p,
+      { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) },
+      fallbackName,
+    ),
 }
 
 export interface Me {
@@ -173,10 +269,18 @@ export async function logout(): Promise<void> {
 
 export function usePermissions(): {
   modules: ModulePermissions | null
+  /**
+   * 是否本机形态（决定破坏性操作是否可用）。
+   *
+   * 缺省 false 而不是"未知"：拿不到就当作不可用，方向是安全的——
+   * 顶多让按钮置灰，不会让人在远程服务器上一键清库。
+   */
+  hostOperations: boolean
   loading: boolean
   reload: () => void
 } {
   const [modules, setModules] = useState<ModulePermissions | null>(null)
+  const [hostOperations, setHostOperations] = useState(false)
   const [loading, setLoading] = useState(true)
   const [nonce, setNonce] = useState(0)
 
@@ -186,12 +290,16 @@ export function usePermissions(): {
     let alive = true
     setLoading(true)
     api
-      .get<{ modules: ModulePermissions }>('/api/me/permissions')
+      .get<{ modules: ModulePermissions; hostOperations?: boolean }>('/api/me/permissions')
       .then((r) => {
-        if (alive) setModules(r.modules)
+        if (!alive) return
+        setModules(r.modules)
+        setHostOperations(r.hostOperations === true)
       })
       .catch(() => {
-        if (alive) setModules(null)
+        if (!alive) return
+        setModules(null)
+        setHostOperations(false)
       })
       .finally(() => {
         if (alive) setLoading(false)
@@ -201,7 +309,7 @@ export function usePermissions(): {
     }
   }, [nonce])
 
-  return { modules, loading, reload }
+  return { modules, hostOperations, loading, reload }
 }
 
 /**

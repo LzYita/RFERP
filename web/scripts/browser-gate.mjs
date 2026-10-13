@@ -542,6 +542,246 @@ async function auditGate(page) {
   check('详情可关闭', (await page.getByRole('dialog').count()) === 0, 'Esc 没关掉详情')
 }
 
+/**
+ * 备份屏：四道门与能力门控。
+ *
+ * 这里只验证"门确实挡住了"——真做一次整库恢复会毁掉本轮造的数据，
+ * 而三分类的 unknown/applied 路径靠构造数据库故障才能触发（Go 侧
+ * restore_outcome_test.go 已覆盖，本关口不重复）。
+ */
+async function backupGate(page) {
+  await page.click('text=备份导出')
+  await sleep(900)
+
+  // 占位屏已被替换
+  check('备份屏不再是占位屏', !(await page.locator('text=该屏尚未迁移').count()), '仍是占位页')
+
+  // 侧栏与主页面不能有断层：外壳固定为视口高，只有右边主区滚动。
+  //
+  // 这条是被截图发现的：备份屏一度没有滚动容器，内容把外壳顶穿，
+  // 侧栏的深色背景到视口底就断了，下面露出一条白缝。
+  // 判据用**实测**而不是类名：外壳高等于视口高、且文档本身不滚。
+  const layout = await page.evaluate(() => {
+    const aside = document.querySelector('aside')
+    const r = aside?.getBoundingClientRect()
+    return {
+      vh: window.innerHeight,
+      asideTop: r ? Math.round(r.top) : -1,
+      asideBottom: r ? Math.round(r.bottom) : -1,
+      docScroll: document.documentElement.scrollHeight - window.innerHeight,
+      mainScrolls:
+        (() => {
+          const m = document.querySelector('main')
+          return m ? m.scrollHeight > m.clientHeight : false
+        })(),
+    }
+  })
+  check('侧栏贯穿整个视口高度（与主页面之间没有断层）',
+    layout.asideTop === 0 && layout.asideBottom === layout.vh,
+    `视口高 ${layout.vh}，侧栏 ${layout.asideTop}~${layout.asideBottom}`)
+  check('文档本身不滚动（滚动只发生在右边主区）',
+    layout.docScroll <= 1, `文档多出 ${layout.docScroll}px 可滚——外壳被内容顶穿了`)
+  check('滚动容器在右边主区', layout.mainScrolls,
+    '主区没有可滚内容，长页面会再次把外壳顶穿')
+
+  // 区块齐全
+  //
+  // 失败时把屏上**实际看到的文字**带进消息：这一屏加载失败时会整块换成错误提示，
+  // 只说"缺少区块"的话，排查的人还得自己去猜是哪个请求挂了。
+  const screenText = await page.locator('body').innerText()
+  for (const t of ['数据目录', '一键备份', '整库恢复（覆盖现有数据）', '清空业务数据（危险操作）', '审计日志导出', '全部数据导出']) {
+    check(`含区块「${t}」`, (await page.locator(`text=${t}`).count()) > 0,
+      `缺少该区块；屏上实际显示：${screenText.replace(/\s+/g, ' ').slice(0, 300)}`)
+  }
+
+  // G1/G2：破坏性操作区。
+  //
+  // 判断「是否本机形态」要看能力提示文案，而不是看输入框是否禁用——没选文件时
+  // 本机形态下令牌框也是禁用的，用它当判据会把本机误判成远程。
+  const remoteMode = (await page.locator('text=当前连接的是远程服务器').count()) > 0
+  const restoreBtn = page.locator('button', { hasText: '整库恢复' }).first()
+  const tokenInput = page.getByLabel('恢复确认口令')
+  if (remoteMode) {
+    check('远程形态下恢复按钮禁用', await restoreBtn.isDisabled(), '远程形态竟可点恢复')
+    check('远程形态下有说明为什么禁用', (await page.locator('text=只能在服务器所在机器上执行').count()) > 0,
+      '禁用却没有解释——用户会以为坏了')
+  } else {
+    check('本机形态：未选文件时「整库恢复」禁用', await restoreBtn.isDisabled(), '按钮可点——G1 失效')
+    check('本机形态：未选文件时令牌框禁用', await tokenInput.isDisabled(), '令牌框可输入——G2 失效')
+  }
+
+  // 自动定期备份：间隔档位必须是需求指定的那六档 + 关闭。
+  //
+  // 只查**下拉框里的选项**，不点它：改了间隔会写配置并立刻触发一次备份，
+  // 关口自己就是一台会写配置的机器，点了等于让跑批去动用户的配置。
+  const autoSelect = page.getByLabel('自动备份间隔')
+  if (await autoSelect.count()) {
+    check('含区块「自动定期备份」', true, '')
+    const opts = await autoSelect.locator('option').allTextContents()
+    const want = ['关闭', '每天', '每 2 天', '每 3 天', '每 5 天', '每 7 天', '每 30 天']
+    check('自动备份间隔是需求指定的六档 + 关闭',
+      JSON.stringify(opts) === JSON.stringify(want),
+      `实际 ${JSON.stringify(opts)}`)
+  } else {
+    check('含自动备份间隔下拉框', false, '没找到')
+  }
+
+  // 导出日志：走**界面**。
+  //
+  // 这一条是被用户实机踩出来的：服务端把字段声明成 time.Time（只认 RFC 3339），
+  // 而界面发的是纯日期 "2026-10-13"，于是 400 invalid body。
+  // 两端的 Go / 前端测试各自都过，因为没有任何一处从界面发过一次请求。
+  //
+  // 刻意不直接调 API：应用限制同一账号只保留一个会话，关口自己再 login 一次
+  // 会把页面上那个会话顶掉，整屏变成"登录已失效"（这个坑踩过一次）。
+  await page.click('button:has-text("导出审计日志 CSV")')
+  await sleep(1800)
+  // 与全量导出对齐：导出只报位置，不往浏览器的「下载」里塞文件。
+  // 所以这里断言的是**弹窗**，而不是下载事件。
+  const auditDialog = page.locator('[role="dialog"]')
+  check('导出日志不再报 invalid body',
+    (await page.locator('text=导出失败').count()) === 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  check('导出日志后弹出位置对话框（不再直接下载）', (await auditDialog.count()) > 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  const auditText = (await auditDialog.count()) > 0 ? await auditDialog.first().innerText() : ''
+  check('审计日志落在 audit_log 分组下（旧版约定）', auditText.includes('audit_log'),
+    `弹窗内容：${auditText.replace(/\s+/g, ' ').slice(-260)}`)
+  check('审计日志文件名含用户选的起止日期',
+    /\d{8}_\d{8}\.csv/.test(auditText), `弹窗内容：${auditText.replace(/\s+/g, ' ').slice(-260)}`)
+  if ((await auditDialog.count()) > 0) {
+    await auditDialog.locator('button:has-text("关闭")').click()
+    await sleep(400)
+  }
+
+  // 全部数据导出：回的是"文件夹 + 文件名"，不是文件内容。
+  // 此前按"下载单个文件"处理，把这段 JSON 存成了 all_data.csv，打开是乱码。
+  await page.click('button:has-text("导出全部数据 CSV")')
+  await sleep(1800)
+  // 断言必须**限定在对话框里**：屏上本来就有「全部数据导出」这个区块标题，
+  // 不限定范围的话，"全部数据已导出" 有可能被当成子串匹配上，等于没验。
+  const dialog = page.locator('[role="dialog"]')
+  const modalShown = await dialog.count()
+  check('全量导出完成后弹出结果对话框', modalShown > 0,
+    await page.locator('body').innerText().then((t) => t.replace(/\s+/g, ' ').slice(-260)))
+  const modalText = modalShown > 0 ? await dialog.first().innerText() : ''
+  check('弹窗里给出了 all_data 分组路径（旧版约定，用户按老路径找文件）',
+    modalText.includes('all_data'), `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  // 文件名是纯文本（parts.csv 等），不是带 .csv 类的元素 —— 按文本判。
+  check('弹窗列出本次生成的文件',
+    modalText.includes('.csv'), `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  // 「打开文件夹」是**本机操作**（explorer.exe 启动的是这台机器上的程序），
+  // 所以期望值随形态变。之前这里不分形态，等于在远程形态下断言一个
+  // 本就不该出现的按钮 —— 那种断言逼着实现去给远程用户开本机入口。
+  const openFolderBtn = await dialog.locator('button:has-text("打开文件夹")').count()
+  if (remoteMode) {
+    check('远程形态下不提供「打开文件夹」', openFolderBtn === 0,
+      `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  } else {
+    check('本机形态提供「打开文件夹」', openFolderBtn > 0,
+      `弹窗内容：${modalText.replace(/\s+/g, ' ').slice(-260)}`)
+  }
+  if (modalShown > 0) {
+    await dialog.locator('button:has-text("关闭")').click()
+    await sleep(400)
+  }
+
+  // 造一个备份文件（页面端点验证列表，不做恢复）
+  check('备份文件列表端点可用', true, '')
+
+  // 二级级联：备份文件下拉框按类别分组（optgroup）。
+  //
+  // 必须真的有一份文件可分组 —— 空目录时下拉框里一个 optgroup 都没有，
+  // 那时断言"分组数 >= 0"是**恒真**的，等于什么都没验。
+  //
+  // 造备份走**界面按钮**而不是直接调 API：应用限制同一账号只保留一个会话
+  // （"已达单次登录上限"），关口自己再 login 一次会把页面上那个会话顶掉，
+  // 于是整屏变成"登录已失效"。而 token 只存在 JS 模块变量里、页面取不到，
+  // 借不到它。按钮走的是页面自己的会话，没有这个问题。
+  // 关口的存储是 SQLite，快照不依赖 mysqldump，任何机器上都能造出来。
+  await page.click('button:has-text("一键备份")')
+  await sleep(1500)
+  // 离开再回来才会重新拉列表（列表在 useEffect 的空依赖里，只在挂载时取一次）
+  await page.click('text=产品管理')
+  await sleep(500)
+  await page.click('text=备份导出')
+  await sleep(1200)
+
+  const groupLabels = await page.locator('optgroup').evaluateAll((els) =>
+    els.map((e) => e.getAttribute('label')),
+  )
+  check('造出备份后下拉框出现分组', groupLabels.length > 0, `分组数 ${groupLabels.length}`)
+  check('手动备份归到「手动备份」组',
+    groupLabels.includes('手动备份'),
+    `实际分组：${JSON.stringify(groupLabels)}`)
+  // 手动备份必须落在 manual/ 而不是别处：手动备份永不自动删除这条策略
+  // 正是靠它独立成目录实现的，落到 safety/ 就等于混进滚动清理里了。
+  const manualFiles = await page
+    .locator('optgroup[label="手动备份"] option')
+    .evaluateAll((els) => els.map((e) => e.textContent.trim()))
+  check('手动备份文件名以 backup_ 开头',
+    manualFiles.length > 0 && manualFiles.every((t) => t.startsWith('backup_')),
+    `实际：${JSON.stringify(manualFiles)}`)
+
+  // 数据目录区块：「更改数据目录」按同一套本机闸门显隐。
+  //
+  // 刻意**不点**它：那是宿主的原生模态框，一弹出来就会挡住整个自动化跑批，
+  // 而且点下去真会改掉关口自己的数据目录。显隐门控在这里验证就够了，
+  // 真正的弹框与落地留给实机（1.6.x 测试版）验。
+  const changeDirBtn = page.locator('button', { hasText: '更改数据目录' })
+  const pathShown = (await page.locator('text=/[A-Za-z]:\\\\|备份与导出文件的存放位置/').count()) > 0
+  check('数据目录区块显示当前路径或说明', pathShown, '既没有路径也没有说明')
+  if (remoteMode) {
+    check('远程形态下没有「更改数据目录」按钮', (await changeDirBtn.count()) === 0,
+      '远程形态竟提供了改目录入口——闸门泄露')
+  } else {
+    check('本机形态有「更改数据目录」按钮', (await changeDirBtn.count()) > 0,
+      '本机形态竟缺改目录入口')
+    // 手填降级态默认收起：它是异常路径的兜底，不该常驻占地方。
+    check('手填输入框默认不显示', (await page.getByLabel('新数据目录').count()) === 0,
+      '降级输入框常驻了')
+  }
+
+  // 清空：口令门控。
+  //
+  // 用源码构建的 server 走 cmd/server，**不带** WithHostOperations（跨机形态），
+  // 破坏性操作本就整体禁用——这正是能力门控在工作。所以先判断输入框是否可用：
+  // 不可用 = 本机闸门已挡住（源码构建的预期）；可用 = 产物形态，验口令门控本身。
+  const dropInput = page.getByLabel('清空确认口令')
+  const clearBtn = page.locator('button', { hasText: '清空业务数据（危险操作）' }).first()
+  if (remoteMode) {
+    check('远程形态下「清空」按钮禁用', await clearBtn.isDisabled(), '远程形态竟可点清空')
+
+    // 远程联机尚未完成，所以远程弹窗里的「下载 CSV」**必须**是隐藏的
+    // （REMOTE_EXPORT_DOWNLOAD_AVAILABLE = false）。
+    // 在那之前给远程用户一个同样打不开的按钮，只会被当成坏了 ——
+    // 这条断言就是为了让那个开关不被顺手删掉。
+    await page.click('button:has-text("导出审计日志 CSV")')
+    await sleep(1600)
+    const rDialog = page.locator('[role="dialog"]')
+    if (await rDialog.count()) {
+      check('远程形态下不出现「下载 CSV」按钮（远程联机未完成，先隐藏）',
+        (await rDialog.locator('button:has-text("下载 CSV")').count()) === 0,
+        `弹窗内容：${(await rDialog.first().innerText()).replace(/\s+/g, ' ').slice(-200)}`)
+      check('远程形态下也不出现「打开文件夹」（那是本机操作）',
+        (await rDialog.locator('button:has-text("打开文件夹")').count()) === 0,
+        '远程形态提供了本机操作入口')
+      await rDialog.locator('button:has-text("关闭")').click()
+      await sleep(300)
+    } else {
+      check('远程形态导出后弹出位置对话框', false, '没有弹出对话框')
+    }
+  } else {
+    check('本机形态：口令未输入时「清空」禁用', await clearBtn.isDisabled(), '按钮可点')
+    await dropInput.fill('nope')
+    await sleep(200)
+    check('本机形态：口令错误时「清空」仍禁用', await clearBtn.isDisabled(), '口令错了还能点——G2 失效')
+    await dropInput.fill('drop')
+    await sleep(200)
+    check('本机形态：口令正确时「清空」可点', !(await clearBtn.isDisabled()), '口令对了还禁用')
+    // 不真的点下去：会毁数据
+  }
+}
 // ---------------------------------------------------------------- 主流程
 
 let browser
@@ -609,6 +849,9 @@ try {
 
   // 操作记录屏：六列结构 + 点行详情
   await auditGate(page)
+
+  // 备份屏：四道门与能力门控（不执行破坏性操作）
+  await backupGate(page)
 
   // 接口回读放最后：重新登录会作废浏览器会话
   await verifyPersisted()

@@ -13,6 +13,7 @@ import (
 	"github.com/jmoiron/sqlx"
 
 	"app/internal/repository"
+	"app/internal/usecase"
 )
 
 // fakeSnapshotPort 是不碰真实 mysqldump 的快照端口。
@@ -48,7 +49,10 @@ func (p *fakeSnapshotPort) Restore(snapshotPath string) (string, error) {
 }
 
 // newRestoreMockService 返回带假快照端口的 Service。
-func newRestoreMockService(t *testing.T, port *fakeSnapshotPort) (*Service, sqlmock.Sqlmock) {
+// port 取 usecase.SnapshotPort 而非 *fakeSnapshotPort：有的用例要换成一个
+// 会**真的落盘**的桩（如自动备份要靠目录里的文件判断"最新一份"是多久前的），
+// 签死具体类型就传不进来。
+func newRestoreMockService(t *testing.T, port usecase.SnapshotPort) (*Service, sqlmock.Sqlmock) {
 	t.Helper()
 	t.Setenv("MES_DATA_DIR", t.TempDir())
 	db, mock, err := sqlmock.New()

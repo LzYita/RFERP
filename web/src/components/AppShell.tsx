@@ -96,7 +96,14 @@ export function AppShell({
           </div>
         </header>
 
-        <main className="flex min-h-0 flex-1 flex-col gap-2.5 p-[var(--spacing-content-pad)]">{children}</main>
+        {/* main 自己是滚动容器。
+            各屏多数还自带 `min-h-0 flex-1 overflow-auto` 的包裹（表格类页面要粘性表头），
+            但那要求**每一屏**都记得写：备份屏一度没写，内容就撑破外壳，侧栏的深色
+            背景到视口底就断了（截图里那条白缝）。把滚动收在这里，任何屏漏写包裹都
+            只会退化成"多一层能滚的容器"，不会再把布局顶穿。 */}
+        <main className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-[var(--spacing-content-pad)]">
+          {children}
+        </main>
       </div>
     </div>
   )

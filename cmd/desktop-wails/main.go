@@ -156,7 +156,18 @@ func main() {
 		return
 	}
 
-	emb, stop, err := serve(res.Apps, updateURL)
+	// 原生目录选择框：先建好再起服务，真正的 ctx 由下面的 OnStartup 回填
+	// （内嵌服务必须先于 wails.Run 建好，而 ctx 只有 wails.Run 才有）。
+	dirPicker := newNativeDirPicker()
+
+	// 自动定期备份：启动时判一次（到期就立刻补一份），运行期每小时再判。
+	//
+	// 语义要说清楚：**没有后台服务**，所以「每 n 天」的实际含义是
+	//「每 n 天里第一次打开这个软件时」。关着软件的那天不会备份。
+	stopAutoBackup := startAutoBackup(res.Apps)
+	defer stopAutoBackup()
+
+	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
 	if err != nil {
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
@@ -173,6 +184,8 @@ func main() {
 		// Assets 留空：全部请求都交给 Handler（反向代理）。
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},
+		// 窗口起来了才有 ctx，原生目录选择框从这一刻起才可用。
+		OnStartup: func(ctx context.Context) { dirPicker.setCtx(ctx) },
 		Windows: &windows.Options{
 			WebviewGpuIsDisabled: false,
 			// WebView2 缺失/版本异常/崩溃时的提示。
@@ -197,12 +210,18 @@ func main() {
 //
 // 其余——装配、静态资源、会话、鉴权——与窗口模式完全相同，所以用它验证界面有意义。
 func runHeadless(apps usecase.Applications, addr string) {
+	// 无头模式也要判一次自动备份：它是给「无人值守的服务器形态」用的，
+	// 那正是最需要定时备份、也最不可能有人去点「一键备份」的场合。
+	defer startAutoBackup(apps)()
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
 		// 无头模式同样开启「记住登录」：它只绑回环地址（listenLoopback），
 		// 威胁等级与桌面形态一致，自动化验证也需要走同一条代码路径。
 		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
+		// 也开破坏性操作：-serve 与窗口模式都是 desktop-wails（单机形态），
+		// 只绑回环。浏览器关口要能真正验证恢复/清空，缺这一项只能验到 403。
+		api.WithHostOperations(),
 	)
 	ln, err := listenLoopback(addr)
 	if err != nil {
@@ -281,6 +300,28 @@ func randomPortSuggestion(addr string) int {
 	return 54321
 }
 
+// startAutoBackup 开启自动定期备份，返回停止函数。
+//
+// 失败只记日志不弹窗：自动备份是个保底，用户没在等它的结果，
+// 不该因为它失败而影响启动。
+func startAutoBackup(apps usecase.Applications) func() {
+	c, ok := apps.(usecase.AutoBackupController)
+	if !ok || c.AutoBackupDays() <= 0 {
+		return func() {}
+	}
+	s, ok := apps.(usecase.AutoBackupScheduler)
+	if !ok {
+		return func() {}
+	}
+	// 先判一次：软件可能关了很久，一打开就该补上缺的备份。
+	if _, err := s.MaybeAutoBackup(time.Now()); err != nil {
+		log.Printf("auto backup: startup check failed: %v", err)
+	}
+	stop := make(chan struct{})
+	s.StartAutoBackupTicker(stop)
+	return func() { close(stop) }
+}
+
 // serve 在 127.0.0.1 上启动内嵌服务。
 func serve(apps usecase.Applications, updateURL string) (*embeddedServer, func(), error) {
 	return serveOn(apps, "127.0.0.1:0", updateURL)
@@ -289,6 +330,12 @@ func serve(apps usecase.Applications, updateURL string) (*embeddedServer, func()
 // serveOn 在指定地址启动内嵌服务。addr 为 ":0" 时由内核分配端口
 // （Round 1 关口：随机端口分配、就绪等待、异常退出清理）。
 func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer, func(), error) {
+	return serveOnWithPicker(apps, addr, updateURL, nil)
+}
+
+// serveOnWithPicker 同 serveOn，但可注入宿主的原生目录选择框。
+// picker 为 nil 时那条端点回"无法弹框，请手填"——缺省安全，且测试无需 Wails 窗口。
+func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
@@ -308,6 +355,17 @@ func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer
 		// 便携测试版指向自己的目录）一起变，测试不会污染用户真实凭证，
 		// 也不会和另一份实例抢同一个文件。
 		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
+		// 单机桌面形态才允许破坏性操作：整库恢复、清空业务数据、修改数据目录。
+		//
+		// 依据 §4.5 本地/远程能力矩阵（wails-migration.md:750-769）：这三项在
+		// 阶段 B/C（客户端/浏览器 → server）应当只对 server 所在机器开放。四道
+		// 确认门建立在"操作者就是这台机器的主人"之上，跨机后它只剩仪式。
+		//
+		// 与 WithUpdate / WithRemember 同构：默认不放行，漏传就是安全的。
+		api.WithHostOperations(),
+		// 原生目录选择框：只有 Wails 形态传（有窗口才能弹框）。
+		// 无头 -serve 与测试走的是 nil 那条路。
+		api.WithDirectoryPicker(picker),
 		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
 		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
 		api.WithStaticFS(webassets.FS(), webassets.Dir),

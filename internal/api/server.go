@@ -59,9 +59,48 @@ type Server struct {
 	staticFS  fs.FS
 	staticDir string
 
+	// hostOperations 标记「本机形态」，据此放行整库恢复 / 清空业务数据 / 修改数据目录。
+	//
+	// 缺省 false，即**默认不放行**。见 WithHostOperations 的理由：这几项在
+	// 阶段 B/C 应当只对 server 所在机器开放，而漏传 Option 的后果必须是不放行。
+	hostOperations bool
+
+	// picker 由桌面宿主注入，负责弹**原生**目录选择框。为 nil 表示当前部署形态
+	// 没有可弹框的窗口（cmd/server、-serve 之外的纯 HTTP 访问、浏览器）。
+	//
+	// 与 hostOperations 分开：能不能做（权限与形态）与"用什么方式做"是两件事。
+	// 没有 picker 时数据目录仍可改，只是要走文本输入。
+	picker DirectoryPicker
+
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
+}
+
+// DirectoryPicker 由宿主实现的原生目录选择框。
+//
+// 为什么要绕这一圈、而不是让前端直接调 Wails 绑定：web/ 是**宿主无关**的——
+// 同一份页面要能跑在 vite dev、纯浏览器（自动化关口）与内嵌服务里，
+// 它全程不引用 window.go / wailsjs。原生选择框只能由宿主进程弹出，
+// 所以能力从宿主注入、服务端裁决，前端只发一个普通 HTTP 请求，
+// 架构边界与现有的 WithHostOperations 完全一致。
+//
+// 返回空字符串表示用户取消（不是错误）。
+type DirectoryPicker interface {
+	PickDirectory(current string) (string, error)
+}
+
+// DirectoryPickerFunc 让普通函数直接满足 DirectoryPicker。
+type DirectoryPickerFunc func(current string) (string, error)
+
+func (f DirectoryPickerFunc) PickDirectory(current string) (string, error) { return f(current) }
+
+// WithDirectoryPicker 注入宿主的原生目录选择框。
+//
+// 只有 cmd/desktop-wails 该传——只有它持有可弹框的 Wails 窗口。cmd/server 不传，
+// 于是那条端点会明确告诉前端"这里弹不了，请手填"，而不是静默失败。
+func WithDirectoryPicker(p DirectoryPicker) Option {
+	return func(s *Server) { s.picker = p }
 }
 
 // Option 用于可选装配（保持 New 的旧调用点不变）。
@@ -103,6 +142,27 @@ func WithUpdate(url, currentVersion string) Option {
 		s.updater.url = url
 		s.updater.cur = currentVersion
 	}
+}
+
+// WithHostOperations 开启「只有本机才能做」的破坏性操作：整库恢复、清空业务数据、
+// 修改数据目录。
+//
+// 依据 §4.5 本地/远程能力矩阵（wails-migration.md:750-769）：这些能力在阶段 B/C
+// （桌面客户端/浏览器 → server）应当只对 server 所在机器开放。原话是"跨机后这一
+// 前提不成立，四道门只剩仪式"——确认门建立在"操作者就是这台机器的主人"之上。
+//
+// 为什么是显式 Option 而不判断 cfg.Mode / 是否有 startupToken：
+//   - cfg.Mode 只被 cmd/desktop（Fyne 桌面）读取，cmd/server 与 cmd/desktop-wails
+//     都不读，拿它当守卫等于三处行为不一致；
+//   - startupToken 语义是"同机 UI 门禁"，且 -serve 无头模式不带它，用它会把开发
+//     模式误判成跨机，导致破坏性按钮在本地永远验证不了。
+//
+// 显式开关与 WithUpdate / WithRemember 完全同构：那两处也是"单机能力不该在
+// cmd/server 上触发"，写法与评审口径都已定过。
+//
+// **默认值是 false（关闭）** —— 漏传就是不放行，方向是安全的。
+func WithHostOperations() Option {
+	return func(s *Server) { s.hostOperations = true }
 }
 
 // New 用给定用例实现构造 API。
@@ -198,8 +258,27 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/audit", s.auth(s.handleAuditByRecord, "Audit.GetAuditLogs"))
 	mux.HandleFunc("GET /api/stats", s.auth(s.handleStats, "Stats.GetStockStats"))
 	mux.HandleFunc("POST /api/export/audit", s.auth(s.handleExportAudit, "Backup.ExportAuditLogCSV"))
+	// 文件流单独一个端点：只给确实需要字节的调用方（Go 客户端、远程界面形态）。
+	// 主机形态下文件就在用户自己机器上，界面报位置即可，不该再往「下载」里塞一份。
+	mux.HandleFunc("POST /api/export/audit/download", s.auth(s.handleDownloadAudit, "Backup.ExportAuditLogCSV"))
 	mux.HandleFunc("POST /api/backup", s.auth(s.handleBackupDatabase, "Backup.BackupDatabase"))
 	mux.HandleFunc("POST /api/export/all", s.auth(s.handleExportAll, "Backup.ExportAllDataCSV"))
+	mux.HandleFunc("POST /api/export/all/open", s.auth(s.handleOpenExportFolder, "Backup.ExportAllDataCSV"))
+	// Round 5 补齐此前定义了权限点却没有路由消费的四个用例。
+	//
+	// restore / clear / set-datadir 在 handler 内还有一道本机闸门
+	// （s.hostOperations，见 WithHostOperations）：权限点是"谁可以做"，
+	// 本机闸门是"在哪台机器上可以做"，两者都要，缺一个都会在阶段 B/C 出事。
+	mux.HandleFunc("GET /api/backup/files", s.auth(s.handleListBackups, "Backup.DataDir"))
+	mux.HandleFunc("GET /api/datadir", s.auth(s.handleDataDir, "Backup.DataDir"))
+	// 选目录不改数据，权限点挂在 Backup.SetDataDir 上是因为它服务于这个操作，
+	// 且要跟真正写入的那一步保持同一档位——否则只读账号能弹框却提交不了。
+	mux.HandleFunc("POST /api/datadir/pick", s.auth(s.handlePickDataDir, "Backup.SetDataDir"))
+	mux.HandleFunc("POST /api/backup/autoschedule", s.auth(s.handleSetAutoBackup, "Backup.SetDataDir"))
+	mux.HandleFunc("GET /api/backup/autoschedule", s.auth(s.handleGetAutoBackup, "Backup.DataDir"))
+	mux.HandleFunc("POST /api/datadir", s.auth(s.handleSetDataDir, "Backup.SetDataDir"))
+	mux.HandleFunc("POST /api/restore", s.auth(s.handleRestoreDatabase, "Backup.RestoreDatabase"))
+	mux.HandleFunc("POST /api/clear", s.auth(s.handleClearDatabase, "Backup.ClearDatabase"))
 
 	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
 	// /api/ 前缀不会被静态文件截走。

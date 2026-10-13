@@ -1,5 +1,7 @@
 package usecase
 
+import "time"
+
 // 适配端口：库差异与平台差异只出现在实现侧（MySQL / 将来 SQLite 等）。
 // Service 只依赖本文件中的接口，不依赖具体驱动或命令行工具。
 
@@ -29,6 +31,70 @@ type SnapshotPort interface {
 // 实现应保证产物仍是完整快照，可直接作为另一次恢复的输入。
 type PrefixSnapshotPort interface {
 	PrefixSnapshot(saveDir, prefix string) (path string, err error)
+}
+
+// BackupInspection 是一份备份「能不能安全回滚」的预检结论（见 dbbackup.Coverage）。
+//
+// 之所以要把它送到界面上：恢复的实现是「先 DELETE 全部业务表，再回灌 INSERT」，
+// 所以一份早于某张表引入的备份，恢复后那张表会被清空且无处回填。
+// 用户在输完口令、点完确认之后才发现，是最晚的发现时机。
+type BackupInspection struct {
+	// SchemaKnown 为 false 表示预检只读到文件开头、没读到结尾，
+	// 无法断言覆盖度。界面此时必须说「无法确认」，不得显示缺哪几张表。
+	SchemaKnown bool
+	// MissingTables：当前业务表里、这份备份的 schema 中没有的表。
+	MissingTables []string
+	// Usable 为 false 时不可作为恢复来源（典型：非 UTF-8 编码）。
+	Usable bool
+	// Reason 是不可用的中文原因，直接展示给用户。
+	Reason string
+}
+
+// BackupInspector 是「预检一份备份文件」的可选端口。
+//
+// 用可选端口而不是加进 Applications：备份列表是只读的增强，
+// 没实现它时列表照常工作（前端把覆盖度当「无法确认」处理），
+// 而不是让所有实现方与测试桩都必须补一个方法。
+type BackupInspector interface {
+	InspectBackupFile(path string) (BackupInspection, error)
+}
+
+// AutoBackupController 是「按周期自动备份」的可选端口。
+//
+// 同样做成可选端口而非加进 Applications：自动备份需要能生成完整快照的
+// 后端（PrefixSnapshotPort）与可写目录，不是每个实现方都具备；没实现时
+// 界面应当把这一项显示为不可用，而不是整个备份功能挂掉。
+type AutoBackupController interface {
+	AutoBackupDays() int
+	SetAutoBackupDays(days int) error
+	AutoBackupStatus() BackupSchedule
+}
+
+// BackupSchedule 是自动备份的对外状态（service.AutoBackupStatus 的传输形态）。
+type BackupSchedule struct {
+	Enabled bool   `json:"enabled"`
+	Days    int    `json:"days"`
+	Last    string `json:"last,omitempty"`
+	NextDue string `json:"nextDue,omitempty"`
+	Count   int    `json:"count"`
+	Keep    int    `json:"keep"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// AllowedAutoBackupDays 合法间隔；由调用方从 config 取，usecase 不重复定义。
+
+// AutoBackupScheduler 是「立刻判一次要不要备份」的可选端口。
+//
+// 与 AutoBackupController 分开是因为两者的权限含义不同：读取设置是只读的
+// （仓管也该看到「上次自动备份是什么时候」），而**触发**备份会真的动这台机器
+// 上的文件，必须走本机闸门。
+type AutoBackupScheduler interface {
+	MaybeAutoBackup(now time.Time) (bool, error)
+	// StartAutoBackupTicker 周期调用 MaybeAutoBackup，直到 stop 被关闭。
+	//
+	// 为什么要宿主来起这个 goroutine：Service 不该知道自己的生命周期，
+	// 而"进程要退出"这个信号只有入口点拿得到。
+	StartAutoBackupTicker(stop <-chan struct{})
 }
 
 // SessionPort 在“关闭外键/唯一检查”的会话中执行 operation，用于批量导入/清库。

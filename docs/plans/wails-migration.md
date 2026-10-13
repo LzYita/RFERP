@@ -555,6 +555,32 @@ RFERP/
 > （`bulkLoadOutcome` 只在 COMMIT/ROLLBACK 本身失败时才包装成 `OperationError`）。
 > 把缺省判成 unknown 会让绝大多数**可重试**的失败都被标成"别重试"。
 
+> **待办：CodeQL path-injection 告警要治本，不是压制**（2026-10-13 记，用户定）
+>
+> Round 5 的 PR 触发了 30 条 `go/path-injection` 告警（GitHub 报"38 new"，
+> 含重复计数）。**其中只有 3 条在 Round 5 新增的 `internal/api/backup.go`**，
+> 其余 27 条在 `logging`、`dbbackup`、`repository/sqlite_backup`、`restore`、
+> `dbfile`、`client`、`sqlite` —— 本轮从未碰过的文件。它们被判"新"只是因为
+> 这一版让 CodeQL 做了更完整的分析，把 main 上一直存在却没被扫到的同类点翻了出来。
+>
+> 告警的 taint 源头都是 `paths.DataDir()`，而它的值来自**用户自己在首启向导里
+> 选的目录**（或 `config.json` / `MES_DATA_DIR`）。本应用的威胁模型明确写着
+> 「操作者就是这台机器的主人」，所以"数据目录可由用户指定"是**设计本身**，
+> CodeQL 的 taint 规则没有建模这个前提。
+>
+> **但不能因此压制**（用户 2026-10-13 定：治本）。压制的代价是：一条真实存在的
+> 提示被永久静音，而下一任维护者不会知道它被静音过。治本要做的是让"这些路径
+> 是配置根目录下的子路径"成为**代码里可验证的事实**，而不是靠注释说服人：
+>
+> - 在 `paths` 层提供唯一出口（如 `paths.ResolveUnder(root, name)`），内部做
+>   `Abs` + `Rel` 包含性校验，**所有**子路径只能经它构造；
+> - 逐步收敛 `logging` / `dbbackup` / `sqlite_backup` / `restore` 等处散落的
+>   `filepath.Join(dir, name)`；
+> - 收敛完成后若告警仍在，说明真有遗漏，再单独处理那几条。
+>
+> 这件事横跨多个包、触及备份与日志的落盘路径，**不该夹在 Round 5 的 PR 里**。
+> 单开一轮做。
+
 ### Round 6 · 用户管理与权限
 
 > **先做这一轮，再做 Round 5**（2026-10-12 用户定）。Round 6 短且独立，能在动备份之前

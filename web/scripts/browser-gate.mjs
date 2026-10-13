@@ -1,0 +1,628 @@
+// 浏览器关口：用真实浏览器跑真后端 + 真前端，验证只有在浏览器里才暴露的问题。
+//
+// 为什么必须有这一层：分类下拉原来是 <datalist>，DOM 检查一切正常——list 属性能
+// 解析、六个 option 都在——真机（WebView2）上原生弹层就是不出现。任何静态检查、
+// 任何 jsdom 测试都会放它过关。CI 里没有 WebView2，所以这道关口只能在本地跑。
+//
+// 用法（在 web/ 下）：
+//     npm run test:browser
+//
+// 需要：Go 工具链；Chromium。默认用 Playwright 自带的那份，
+// 没装的话先 `npx playwright install chromium`，或用 PW_CHROME 指向本机 chrome.exe。
+//
+// 设计约束（都是踩过的坑）：
+//   - 依赖全部由本进程拉起并收回。用 PowerShell 的 Start-Process 起服务时，
+//     句柄会把执行环境整个带崩；Windows 上还必须按进程树杀，否则 vite 会活到下一轮。
+//   - server.exe 复制进本轮目录。config 查找顺序是「exe 同级 → cwd → 用户目录」，
+//     exe 同级排第一；放在公共目录会被上一轮的 config 抢先命中，于是每轮连到
+//     同一个共享库（曾因此撞唯一键，也曾差点误连正式库）。
+//   - 绝不读写用户配置/正式数据库：本轮配置只指向本轮临时目录里的 SQLite。
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const WEB = path.resolve(HERE, '..')
+const REPO = path.resolve(WEB, '..')
+const API_PORT = process.env.GATE_API_PORT ?? '19098'
+const VITE_URL = `http://127.0.0.1:${process.env.GATE_VITE_PORT ?? '5173'}/`
+const ADMIN = { username: 'admin', password: 'admin12345' }
+const TYPES = ['电子', '五金', '塑料', '硅胶', '包装辅料', '其他']
+
+const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'rferp-gate-'))
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const kids = []
+const fails = []
+/** 被验证的服务自报版本，最后打出来，方便对着构建命令核对。 */
+let served = '(未取到)'
+
+const ok = (n) => console.log(`  \u2713 ${n}`)
+const bad = (n, why) => {
+  console.log(`  \u2717 ${n}  ->  ${why}`)
+  fails.push(n)
+}
+const check = (n, cond, why) => (cond ? ok(n) : bad(n, why))
+
+function run(cmd, args, opts = {}) {
+  const p = spawn(cmd, args, { stdio: 'ignore', windowsHide: true, ...opts })
+  kids.push(p)
+  return p
+}
+
+/** Windows 上 kill() 不带子进程树；npm/vite 会再挂一层，必须按树杀。 */
+function killTree(p) {
+  if (!p?.pid) return
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true }).unref()
+    } else {
+      p.kill()
+    }
+  } catch {
+    /* 已经退出 */
+  }
+}
+
+async function cleanup() {
+  for (const p of kids) killTree(p)
+  await sleep(900)
+  // Windows 上进程退出与文件句柄释放之间有延迟，rmSync 的重试正是为这个
+  // 设计的（server.exe 与 -wal/-shm 常在第一次尝试时仍被占着）。
+  try {
+    fs.rmSync(RUN, { recursive: true, force: true, maxRetries: 24, retryDelay: 500 })
+  } catch {
+    console.log(`  （临时目录未清干净，下次启动会扫掉：${RUN}）`)
+  }
+}
+
+/** 扫掉历史残留：异常退出会留下 server.exe 与数据库，攒着占空间。 */
+function sweepStaleRuns() {
+  const root = os.tmpdir()
+  for (const name of fs.readdirSync(root)) {
+    if (!name.startsWith('rferp-gate-')) continue
+    const p = path.join(root, name)
+    try {
+      // 刚创建的目录属于并发运行的另一份关口，别动。
+      // 阈值取 2 分钟：本机杀软/索引器会短暂锁定新写入的 exe 与 -wal，
+      // 结束后清理往往删不掉，由下一次启动兜掉，不留半个月。
+      if (Date.now() - fs.statSync(p).mtimeMs < 2 * 60 * 1000) continue
+      fs.rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 300 })
+    } catch {
+      /* 还被占着就留到下次 */
+    }
+  }
+}
+
+async function until(fn, ms = 60000) {
+  const end = Date.now() + ms
+  for (;;) {
+    try {
+      if (await fn()) return true
+    } catch {
+      /* 还没起来 */
+    }
+    if (Date.now() > end) return false
+    await sleep(400)
+  }
+}
+
+async function api(pathname, init = {}) {
+  const r = await fetch(`http://127.0.0.1:${API_PORT}${pathname}`, init)
+  const text = await r.text()
+  let body = null
+  try {
+    body = JSON.parse(text)
+  } catch {
+    /* 非 JSON 响应 */
+  }
+  return { code: r.status, body, text }
+}
+
+async function login(username = ADMIN.username, password = ADMIN.password) {
+  const r = await api('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  const tok = r.body?.token
+  if (!tok) throw new Error(`登录失败：${r.code} ${r.text.slice(0, 120)}`)
+  return tok
+}
+
+// ---------------------------------------------------------------- 依赖拉起
+
+function buildServer() {
+  const exe = path.join(RUN, 'server.exe')
+  console.log('  · 构建后端…')
+  return new Promise((resolve, reject) => {
+    const p = spawn('go', ['build', '-o', exe, './cmd/server'], { cwd: REPO, stdio: 'inherit', windowsHide: true })
+    p.on('exit', (code) => (code === 0 ? resolve(exe) : reject(new Error(`go build 退出码 ${code}`))))
+  })
+}
+
+/**
+ * 取被测后端。
+ *
+ * 默认从源码构建；设 GATE_EXE 则直接用现成的可执行文件——**这一条很重要**：
+ * 「源码能跑」和「发出去的那个 exe 能跑」是两件事，嵌入资源陈旧、ldflags 漏了、
+ * 打包漏了文件，都只会让后者坏掉。发版前应当用 GATE_EXE 指向真实产物再跑一遍。
+ */
+async function resolveServer() {
+  const given = process.env.GATE_EXE
+  if (!given) return { exe: await buildServer(), desktopStyle: false }
+  const abs = path.resolve(given)
+  if (!fs.existsSync(abs)) throw new Error(`GATE_EXE 不存在：${abs}`)
+  const dest = path.join(RUN, 'server.exe')
+  fs.copyFileSync(abs, dest)
+  console.log(`  · 使用现成产物：${abs}`)
+  return { exe: dest, desktopStyle: true }
+}
+
+async function startServer(exe, desktopStyle = false) {
+  // 配置放在 exe 同级的本轮目录：exe 同级优先级最高，能盖住任何遗留配置
+  fs.mkdirSync(path.join(RUN, 'data'), { recursive: true })
+  fs.writeFileSync(
+    path.join(RUN, 'config.json'),
+    JSON.stringify({
+      mode: 'local',
+      storage: 'sqlite',
+      autoUpdate: false,
+      dataDir: path.join(RUN, 'data').replace(/\\/g, '/'),
+      sqlitePath: path.join(RUN, 'data', 'rf.db').replace(/\\/g, '/'),
+    }),
+  )
+  // 两个入口的参数名不一样：cmd/server 是 -addr，桌面产物（cmd/desktop-wails）
+  // 是无头验证用的 -serve -serve-addr。参数传错后端根本不会起，而现象只是
+  // 「后端未就绪」，很容易误判成产物坏了。
+  const args = desktopStyle
+    ? ['-serve', '-serve-addr', `127.0.0.1:${API_PORT}`]
+    : ['-addr', `127.0.0.1:${API_PORT}`]
+  run(exe, args, { cwd: RUN })
+  const up = await until(async () => (await api('/healthz')).code === 200)
+  if (!up) throw new Error(`后端未就绪（参数：${args.join(' ')}），日志见 ${path.join(RUN, 'data')}`)
+
+  // 版本以运行中的服务为准，不靠搜二进制字符串：
+  // 标题是 "…v" + version 运行时拼的，搜 "v1.2.3" 必然搜不到；
+  // 而二进制里散落着 changelog 里的历史版本号，搜 "1.2.3" 也可能命中旧版本。
+  const info = await api('/api/v1/serverinfo')
+  served = info.body?.appVersion ?? '(未取到)'
+  console.log(`  · 服务自报版本：${served}`)
+  if (process.env.GATE_EXPECT_VERSION) {
+    check(
+      `产物版本是 ${process.env.GATE_EXPECT_VERSION}`,
+      served === process.env.GATE_EXPECT_VERSION,
+      `自报 ${served}——ldflags 没生效或用了旧产物`,
+    )
+  }
+}
+
+/**
+ * 页面从哪来。
+ *
+ * 默认用 vite（源码，带热更新）；GATE_EXE 模式下**直接访问 exe 自己的地址**——
+ * 那条路径走的是 `internal/webassets` 内嵌的 dist，也就是真正发出去的那份前端。
+ *
+ * 这个区分不是洁癖：用 vite 提供页面时，嵌入资源陈旧这种事故完全测不出来
+ * （后端是新的、页面来自源码，全绿），而它恰恰是最容易发生、又最难发现的一种。
+ */
+async function startFrontend(desktopStyle) {
+  if (desktopStyle) {
+    const url = `http://127.0.0.1:${API_PORT}/`
+    const okPage = await until(async () => {
+      const r = await fetch(url)
+      return r.ok && (await r.text()).includes('<div id="root"')
+    })
+    if (!okPage) throw new Error(`产物没有提供可用的内嵌页面：${url}`)
+    return url
+  }
+  run(process.execPath, [path.join(WEB, 'node_modules', 'vite', 'bin', 'vite.js')], {
+    cwd: WEB,
+    env: { ...process.env, RFERP_DEV_PORT: API_PORT },
+  })
+  const up = await until(async () => (await fetch(VITE_URL)).ok)
+  if (!up) throw new Error('vite 未就绪')
+  return VITE_URL
+}
+
+async function launchBrowser() {
+  const { chromium } = await import('playwright')
+  const exe = process.env.PW_CHROME || undefined
+  try {
+    return await chromium.launch({ executablePath: exe })
+  } catch (e) {
+    throw new Error(
+      process.env.PW_CHROME
+        ? `PW_CHROME 指向的浏览器打不开：${process.env.PW_CHROME}`
+        : `没找到 Chromium：先跑 npx playwright install chromium，或用 PW_CHROME 指向本机 chrome.exe。（${e.message.split('\n')[0]}）`,
+    )
+  }
+}
+
+// ---------------------------------------------------------------- 关口
+
+/**
+ * 分类下拉关口。
+ *
+ * 每条断言都对应一次真实事故，注释里写清「不这么断言会漏掉什么」——
+ * 否则下个人会把它当成可删的重复用例。
+ */
+async function comboGate(page, modal, field) {
+  const menu = () => page.getByRole('listbox')
+
+  // 事故：datalist 弹不出来。只检查 input.list 或 option 数量都会通过。
+  await field.click()
+  await sleep(450)
+  const opened = (await menu().count()) > 0
+  check('候选面板能展开', opened, '点了没反应（datalist 就是这么坏的）')
+  if (!opened) return
+
+  const texts = await menu().getByRole('option').allInnerTexts()
+  const missing = TYPES.filter((t) => !texts.some((x) => x.includes(t)))
+  check('六种类型全部列出', missing.length === 0, `只有 ${texts.length} 项，缺：${missing.join('、')}`)
+
+  // 事故：展开原本只绑 onFocus，选中后输入框仍有焦点，再点没反应；
+  // 而且包裹式 label 会把选项点击转发回输入框，把刚关掉的面板重新打开。
+  const before = await field.inputValue()
+  await menu().getByRole('option', { name: '塑料' }).click()
+  await sleep(400)
+  const after = await field.inputValue()
+  check('能选中另一个类型', after === '塑料' && after !== before, `选中后是「${after}」`)
+  check('选完面板自动收起', (await menu().count()) === 0, '选完还开着（label 点击转发）')
+
+  // 事故：小三角的关闭动作被转发来的点击抵掉，等于永远关不上。
+  const caret = modal.locator('button[aria-hidden="true"]').first()
+  await caret.click()
+  await sleep(400)
+  check('小三角能展开', (await menu().count()) > 0, '点了没反应')
+  if ((await menu().count()) > 0) {
+    await caret.click()
+    await sleep(400)
+    check('小三角能收起', (await menu().count()) === 0, '再点一下没关上')
+  }
+
+  await field.click()
+  await sleep(400)
+  check('可反复展开', (await menu().count()) > 0, '第二次点不开')
+
+  // 事故：Esc 同时被下拉和 Modal 响应，填了一半的表单整个丢掉。
+  const title = page.locator('div[class*="fixed"] h2, div[class*="fixed"] h3').first()
+  if (await title.count()) await title.click({ force: true })
+  await sleep(350)
+  check('点击外部关闭', (await menu().count()) === 0, '面板没关')
+
+  await modal.locator('input[placeholder="零件编码"]').fill('P-ESC')
+  await modal.locator('input[placeholder="零件名称"]').fill('Esc保留件')
+  await field.click()
+  await sleep(400)
+  await page.keyboard.press('Escape')
+  await sleep(450)
+  check('Esc 关掉面板', (await menu().count()) === 0, '面板没关')
+  check(
+    'Esc 不连带关掉弹窗',
+    (await modal.locator('input[placeholder="零件编码"]').count()) > 0,
+    'Esc 把整个表单关了',
+  )
+  const kept = await modal.locator('input[placeholder="零件名称"]').inputValue().catch(() => '')
+  check('Esc 不清空已填内容', kept === 'Esc保留件', `名称变成了「${kept}」`)
+
+  // 自由输入是 ComboInput 区别于 <select> 的根本能力，前后端都依赖它
+  await field.fill('自定义分类')
+  await sleep(250)
+  check('允许自由输入', (await field.inputValue()) === '自定义分类', '自由文本被拒')
+}
+
+/**
+ * 通过界面新建一条零件，验证「下拉选中的值」真的随表单提交出去。
+ * 只做浏览器侧动作；接口侧回读见 verifyPersisted（必须放到最后）。
+ */
+async function persistCreate(page, modal, field) {
+  await field.fill('')
+  await field.click()
+  await sleep(400)
+  await page.getByRole('listbox').getByRole('option', { name: '五金' }).click()
+  await sleep(350)
+  await modal.locator('input[placeholder="零件编码"]').fill('P-9001')
+  await modal.locator('input[placeholder="零件名称"]').fill('落库验证件')
+  await modal.locator('button', { hasText: '保存' }).first().click()
+  await sleep(1500)
+
+  check(
+    '保存后弹窗关闭并回到列表',
+    (await modal.locator('input[placeholder="零件编码"]').count()) === 0,
+    '弹窗没关，可能保存失败了',
+  )
+  const row = page.locator('tr', { hasText: '落库验证件' })
+  check('新建的零件出现在列表', (await row.count()) > 0, '列表里没有落库验证件')
+}
+
+/**
+ * 回读接口确认 part_type 真的落库。
+ *
+ * 必须放在所有浏览器断言之后：这里要重新登录，而会话是「单用户单会话」，
+ * 脚本侧登录会立刻作废浏览器的 token，之后的页面请求全部 401。
+ */
+async function verifyPersisted() {
+  const fresh = await login()
+  const list = await api('/api/parts', { headers: { Authorization: `Bearer ${fresh}` } })
+  const rows = Array.isArray(list.body) ? list.body : list.body?.items
+  if (!Array.isArray(rows)) {
+    bad('落库分类可回读', `接口返回不是列表：${list.text.slice(0, 120)}`)
+    return
+  }
+  const saved = rows.find((p) => p.code === 'P-9001')
+  if (!saved) bad('落库分类可回读', '接口里没有 P-9001')
+  else if (saved.part_type === '五金') ok('落库分类是下拉选中的「五金」')
+  else bad('落库分类是下拉选中的「五金」', `part_type=${JSON.stringify(saved.part_type)}`)
+}
+
+/** 建零件。必须检查返回：静默失败会让后面的断言看起来像产品 bug。 */
+async function seedPart(auth, code, name, type, extra = {}) {
+  const r = await api('/api/parts', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ code, name, spec: '10x10', part_type: type, unit: '个', stock_qty: 100, warn_qty: 10, ...extra }),
+  })
+  if (r.code !== 200) throw new Error(`预置零件 ${code} 失败 ${r.code} ${r.text.slice(0, 120)}`)
+}
+
+/**
+ * 零件列表的分类列、供应商列、筛选与计数文案。
+ *
+ * 分类列与分类筛选是 Fyne 原版有、迁移时整条丢掉的
+ * （Fyne: headers 里的「分类」「供应商」+ filterSel + syncTypeFilter + applyFilter）。
+ *
+ * 只碰浏览器，不发 API 请求：会话是「单用户单会话」，脚本侧一登录就会
+ * 把浏览器的 token 作废，页面随即停在旧数据上，断言会被带偏。
+ */
+async function typeColumnGate(page) {
+  await page.click('text=零件管理')
+  await sleep(900)
+
+  // 表头必须真的有这两列（不是只改了数据、没改表）
+  const headers = await page.locator('table thead th').allInnerTexts()
+  check('列表有「分类」列', headers.some((h) => h.includes('分类')), `表头是：${headers.join('/')}`)
+  check('列表有「供应商」列', headers.some((h) => h.includes('供应商')), `表头是：${headers.join('/')}`)
+
+  // 列里真的渲染出值
+  const row = page.locator('tr', { hasText: '五金验证件' })
+  const rowText = (await row.count()) > 0 ? await row.first().innerText() : ''
+  check('分类值渲染到行里', rowText.includes('五金'), rowText ? `行内容：${rowText.replace(/\s*\n\s*/g, ' | ')}` : '找不到该行')
+  // 种子没填供应商，应显示占位符而不是空白（空白看起来像渲染失败）
+  check('供应商为空时显示占位符', rowText.includes('—'), `行内容：${rowText.replace(/\s*\n\s*/g, ' | ')}`)
+
+  // 筛选项从数据里推（不是表单常量），且首个是「全部」
+  const sel = page.locator('select').filter({ hasText: '全部' }).first()
+  if (!(await sel.count())) {
+    bad('分类筛选存在', '筛选区没有下拉')
+    return
+  }
+  const opts = await sel.locator('option').allInnerTexts()
+  check(
+    '筛选项从数据里推出（含表单常量之外的塑料/五金）',
+    opts[0] === '全部' && opts.includes('塑料') && opts.includes('五金'),
+    `选项：${opts.join('/')}`,
+  )
+
+  const names = async () => page.locator('table tbody tr td:nth-child(3)').allInnerTexts()
+
+  await sel.selectOption('五金')
+  await sleep(600)
+  const onlyWujin = await names()
+  // 注意落库验证件也是五金（下一步 persistCreate 用下拉选的），所以是 2 行不是 1 行。
+  // 该断言的是「精确收窄」：包含全部五金、且不含任何非五金。
+  check(
+    '按分类精确筛选（不模糊捞）',
+    onlyWujin.includes('五金验证件') &&
+      onlyWujin.includes('落库验证件') &&
+      !onlyWujin.some((n) => n.includes('塑料') || n.includes('测试零件')),
+    `筛「五金」后剩：${onlyWujin.join('/')}`,
+  )
+
+  await sel.selectOption('全部')
+  await sleep(500)
+  const all = await names()
+  check('切回全部恢复完整列表', all.length >= 3, `「全部」只有 ${all.length} 行：${all.join('/')}`)
+
+  // 关键字要覆盖规格、分类、供应商：Fyne 占位写「规格」却只匹配到分类，两边各半，
+  // 这里取并集；供应商是 2026-10-13 用户明确要求纳入的
+  await page.locator('input[placeholder="全部"]').first().fill('塑料')
+  await sleep(600)
+  const byType = await names()
+  check('关键字能搜到分类', byType.length === 1 && byType[0].includes('塑料'), `搜「塑料」得到：${byType.join('/')}`)
+
+  await page.locator('input[placeholder="全部"]').first().fill('ABS')
+  await sleep(600)
+  const bySpec = await names()
+  check('关键字能搜到规格', bySpec.length >= 1, `搜「ABS」得到：${bySpec.join('/')}`)
+
+  // 供应商搜索需要一个有供应商的零件：先给五金验证件补一个
+  await page.locator('input[placeholder="全部"]').first().fill('')
+  await sleep(400)
+  const editBtn = page
+    .locator('tr', { hasText: '五金验证件' })
+    .locator('button', { hasText: '编辑' })
+  await editBtn.first().click()
+  await sleep(600)
+  const supField = page
+    .locator('div[class*="fixed"]')
+    .last()
+    .locator('label', { hasText: '供应商' })
+    .first()
+    .locator('input')
+  if (await supField.count()) {
+    await supField.fill('沪东厂')
+    await sleep(200)
+    await page.locator('div[class*="fixed"] button', { hasText: '保存' }).first().click()
+    await sleep(1000)
+    await page.locator('input[placeholder="全部"]').first().fill('沪东厂')
+    await sleep(600)
+    const bySup = await names()
+    check('关键字能搜到供应商', bySup.length === 1 && bySup[0].includes('五金'), `搜「沪东厂」得到：${bySup.join('/')}`)
+  } else {
+    bad('关键字能搜到供应商', '编辑表单里没有供应商输入框')
+  }
+  await page.locator('input[placeholder="全部"]').first().fill('')
+  await sleep(500)
+
+  // 批量栏的计数文案：曾经是「已选 N 项（共 X）」，括号里连量词都没有
+  const box = page.locator('tbody input[type="checkbox"]').first()
+  await box.check()
+  await sleep(400)
+  const bar = page.locator('text=/已选/').first()
+  const barText = (await bar.count()) > 0 ? await bar.innerText() : ''
+  check('批量栏计数带量词「共 N 项」', /共\s*\d+\s*项/.test(barText), `批量栏文案：${barText || '(没出现)'}`)
+  await box.uncheck()
+  await sleep(300)
+
+  // 表头计数也带量词。
+  // 注意定位：表头 div 是**表格父节点**的前一个兄弟（表格在 overflow-auto 容器里），
+  // 写成 table 的 preceding-sibling 会落空。
+  const head = await page
+    .locator('table.data-table')
+    .first()
+    .locator('xpath=../preceding-sibling::div[1]')
+    .innerText()
+    .catch(() => '')
+  check('表头计数带量词', /共\s*\d+\s*项/.test(head), `表头文案：${head.replace(/\s*\n\s*/g, ' | ') || '(取不到)'}`)
+}
+
+/**
+ * 操作记录屏：六列结构 + 点行详情。
+ *
+ * 旧版 audit.go 是「时间/类型/操作/对象/变更明细/操作人」六列，点任意行弹出
+ * 字段级 diff 与原始 JSON。Web 版曾退化成「只认 code/name/batch_no 的身份摘要」，
+ * 出入库、盘点、状态变更、整库操作一律显示 #记录id。
+ */
+async function auditGate(page) {
+  await page.click('text=操作记录')
+  await sleep(1000)
+
+  const headers = await page.locator('table thead th').allInnerTexts()
+  const want = ['时间', '类型', '操作', '对象', '变更明细', '操作人']
+  const missing = want.filter((w) => !headers.some((h) => h.includes(w)))
+  check('六列结构与旧版一致', missing.length === 0, `表头是：${headers.join('/')}，缺：${missing.join('、')}`)
+  if (missing.length > 0) return
+
+  const rows = page.locator('table tbody tr')
+  const n = await rows.count()
+  check('有审计记录可验证', n > 0, '一条都没有——前面的造数步骤应已产生审计')
+  if (n === 0) return
+
+  // 变更明细必须有内容，不能是 #记录id 或破折号
+  const firstRow = rows.first()
+  const cells = await firstRow.locator('td').allInnerTexts()
+  const detail = cells[4] ?? ''
+  check(
+    '变更明细是字段级内容（不是 #记录id）',
+    detail !== '' && detail !== '—' && !/^#\d+$/.test(detail.trim()),
+    `变更明细列是：${JSON.stringify(detail)}`,
+  )
+  // 对象列不能是空（对象应有身份或表名兜底）
+  check('对象列有内容', (cells[3] ?? '').trim() !== '', `对象列是：${JSON.stringify(cells[3])}`)
+
+  // 点行 → 详情
+  await firstRow.click()
+  await sleep(600)
+  const dlg = page.getByRole('dialog')
+  const dlgOpen = (await dlg.count()) > 0
+  check('点行能打开详情', dlgOpen, '没有弹出详情')
+  if (!dlgOpen) return
+
+  const dlgText = await dlg.innerText()
+  for (const label of ['时间', '类型', '操作', '对象', '记录ID', '操作人']) {
+    check(`详情含「${label}」`, dlgText.includes(label), `详情里没有 ${label}`)
+  }
+  check('详情含变更明细区块', dlgText.includes('变更明细'), '详情里没有变更明细')
+  check('详情含原始数据区块', dlgText.includes('原始数据') && dlgText.includes('old_data'), '详情里没有原始 JSON')
+
+  await page.keyboard.press('Escape')
+  await sleep(400)
+  check('详情可关闭', (await page.getByRole('dialog').count()) === 0, 'Esc 没关掉详情')
+}
+
+// ---------------------------------------------------------------- 主流程
+
+let browser
+try {
+  sweepStaleRuns()
+  const { exe, desktopStyle } = await resolveServer()
+  await startServer(exe, desktopStyle)
+  ok('后端就绪（本轮独立 SQLite）')
+
+  await api('/api/bootstrap-admin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...ADMIN, display_name: '管理员' }),
+  })
+  const tok = await login()
+  const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` }
+  // 注意：零件用 snake_case（part_type），users 那套才是驼峰。
+  // 分类要在浏览器登录**之前**备齐——登录会作废脚本侧 token（单用户单会话），
+  // 之后再补数据浏览器就读不到了。
+  await seedPart(auth, 'P-0001', '测试零件', '电子', { spec: '10x10' })
+  await seedPart(auth, 'P-8001', '五金验证件', '五金', { spec: 'M3' })
+  await seedPart(auth, 'P-8002', '塑料验证件', '塑料', { spec: 'ABS' })
+  ok('装配管理员与零件（电子/五金/塑料）')
+
+  const pageUrl = await startFrontend(desktopStyle)
+  ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
+
+  browser = await launchBrowser()
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  await page.goto(pageUrl, { waitUntil: 'domcontentloaded' })
+  await sleep(800)
+
+  await page.fill('input[autocomplete="username"]', ADMIN.username)
+  await page.fill('input[type="password"]', ADMIN.password)
+  await page.click('button[type="submit"]')
+  await sleep(1500)
+  if (!(await page.locator('text=零件管理').count())) {
+    const seen = (await page.locator('body').innerText()).slice(0, 160).replace(/\s*\n\s*/g, ' | ')
+    throw new Error(`登录后没到工作台，画面：${seen}`)
+  }
+  ok('登录并进入工作台')
+
+  await page.click('text=零件管理')
+  await sleep(1000)
+  await page.locator('button', { hasText: '新增零件' }).first().click()
+  await sleep(700)
+
+  // 必须限定在弹窗内：列表屏也有「分类」筛选框，全页匹配会命中它，
+  // 于是整套断言都在测筛选框，而不是出问题的那个控件。
+  const modal = page.locator('div[class*="fixed"]').last()
+  const field = modal.locator('label', { hasText: '分类' }).first().locator('input')
+  if (!(await field.count())) {
+    const labels = await page.locator('label').allInnerTexts()
+    throw new Error(`弹窗内没有分类输入框；页面字段：${labels.join('、')}`)
+  }
+  ok('定位到弹窗内的分类字段')
+
+  await comboGate(page, modal, field)
+
+  // 通过界面新建一条（弹窗还开着），保存后自动回到列表
+  await persistCreate(page, modal, field)
+
+  // 列表屏：分类/供应商列、筛选、计数文案（纯浏览器，不发 API）
+  await typeColumnGate(page)
+
+  // 操作记录屏：六列结构 + 点行详情
+  await auditGate(page)
+
+  // 接口回读放最后：重新登录会作废浏览器会话
+  await verifyPersisted()
+} catch (e) {
+  bad('流程中断', e.message.split('\n')[0])
+  if (browser) {
+    const pages = browser.contexts().flatMap((c) => c.pages())
+    for (const p of pages) await p.screenshot({ path: path.join(WEB, 'gate-failure.png') }).catch(() => {})
+  }
+} finally {
+  if (browser) await browser.close().catch(() => {})
+  await cleanup()
+}
+
+console.log(fails.length === 0 ? '\n  浏览器关口全部通过' : `\n  失败 ${fails.length} 项：${fails.join('、')}`)
+console.log(`  被验证的服务版本：${served}`)
+process.exit(fails.length === 0 ? 0 : 1)

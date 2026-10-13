@@ -165,9 +165,10 @@ func categoryForPrefix(prefix string) (paths.BackupCategory, bool) {
 
 // Resolve 按文件名在布局里定位一份备份，返回其绝对路径。
 //
-// 防御与布局无关，两道都要：客户端只能给**文件名**（不能给路径），
-// 且解析结果必须仍在某个备份目录内——后者挡 symlink/junction 指向目录外。
-// 客户端是 WebView2 里的网页，XSS 或手工构造请求都能到这里。
+// 客户端只能给**文件名**（不能给路径）：不是文件名的输入在这里就被拒。
+// 拼子路径一律走 paths.ResolveUnder —— 它用 filepath.IsLocal 拒掉绝对路径、
+// `..` 逃逸、Windows 保留名，且是「配置根目录下拼子路径」的唯一出口
+// （判据只有一份，见 internal/paths 的说明）。
 //
 // 搜索顺序与 List() 一致（auto → safety → manual → 旧根），同名取**第一个**命中。
 func Resolve(name string) (string, error) {
@@ -175,18 +176,15 @@ func Resolve(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("请先选择要恢复的备份文件")
 	}
-	if name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
-		return "", fmt.Errorf("备份文件必须位于本应用的备份目录内，不能指定路径")
-	}
 	if !IsBackupExt(name) {
 		return "", fmt.Errorf("不是可用的备份文件类型")
 	}
 
 	for _, dir := range candidateDirs() {
-		target := filepath.Join(dir, name)
-		rel, err := filepath.Rel(dir, target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
+		target, err := paths.ResolveUnder(dir, name)
+		if err != nil {
+			// 不是合法文件名 —— 所有候选目录都会被拒，不必继续试。
+			return "", fmt.Errorf("备份文件必须位于本应用的备份目录内，不能指定路径")
 		}
 		st, err := os.Stat(target)
 		if err != nil || st.IsDir() {

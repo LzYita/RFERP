@@ -2,56 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { api, ApiError, remember, type LoginResult } from '../lib/api'
 import { EyeIcon } from '../components/form'
-import mark from '../assets/rferp-mark.png'
-
-
-/**
-
- * MarkBox 只画标的线条：用 alpha 遮罩上色，**从不带底板**。
-
- *
-
- * 颜色由调用方给（`bg-white` 用于青底侧栏，`bg-[var(--color-primary)]` 用于浅色画布），
-
- * 因为 mask 只取 alpha，换色就是换一个 background-color。
-
- */
-
-function MarkBox({ className }: { className: string }) {
-
-  return (
-
-    <div
-
-      aria-hidden
-
-      className={className}
-
-      style={{
-
-        aspectRatio: '912 / 679',
-
-        maskImage: `url(${mark})`,
-
-        maskSize: 'contain',
-
-        maskRepeat: 'no-repeat',
-
-        maskPosition: 'center',
-
-        WebkitMaskImage: `url(${mark})`,
-
-        WebkitMaskSize: 'contain',
-
-        WebkitMaskRepeat: 'no-repeat',
-
-      }}
-
-    />
-
-  )
-
-}
+import { MarkBox } from '../components/MarkBox'
 
 
 

@@ -37,7 +37,7 @@ dataExtensions:
   - '*.model.yml'
 YAML
 cp .github/codeql/extensions/rferp-paths.model.yml "$work/models/"
-"$CODEQL_BIN" database create "$work/db" --language=go --build-mode=none --source-root="$src"
+(cd "$src" && "$CODEQL_BIN" database create "$work/db" --language=go --source-root="$src" --command='go build ./...')
 query='codeql/go-queries:Security/CWE-022/TaintedPath.ql'
 "$CODEQL_BIN" database analyze "$work/db" "$query" --format=sarif-latest --output="$work/baseline.sarif"
 "$CODEQL_BIN" database analyze "$work/db" "$query" --format=sarif-latest --output="$work/modeled.sarif" \

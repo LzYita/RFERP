@@ -1410,30 +1410,28 @@ func (s *Service) ExportAuditLogCSV(startDate, endDate time.Time, filePath strin
 }
 
 func (s *Service) ExportAllDataCSV(saveDir string) (map[string]string, string, error) {
+	return s.exportAllDataCSV(saveDir, time.Now())
+}
+
+func (s *Service) exportAllDataCSV(saveDir string, at time.Time) (map[string]string, string, error) {
 	if err := os.MkdirAll(saveDir, 0755); err != nil {
 		return nil, "", fmt.Errorf("create export parent: %w", err)
 	}
-	// 子目录用**可读的时间戳**，与旧版一致（ui/backup.go:596 → 导出\all_data\<时间戳>\）。
-	//
-	// 之前用 os.MkdirTemp(saveDir, "<时间戳>-")，于是路径变成
-	// `导出\20261013_160107-1666890059`：既丢了分组，又多一串随机数 ——
-	// 用户在自己的数据目录里看到这种名字，既不知道这是什么也不敢删。
-	//
-	// 但**不能**直接 MkdirAll 到已存在的时间戳目录：failExport 会 RemoveAll
-	// 那个目录，如果它是上一次导出留下的，就会把人家的数据删掉。
-	// 所以这里只在**目录不存在**时创建，并且记住是不是自己建的。
-	base := filepath.Join(saveDir, time.Now().Format("20060102_150405"))
+	// Keep readable names, but only clean up a directory this call created exclusively.
+	base := filepath.Join(saveDir, at.Format("20060102_150405"))
 	subDir := base
-	for i := 2; i < 100; i++ {
-		if _, err := os.Stat(subDir); os.IsNotExist(err) {
+	for i := 1; ; i++ {
+		err := os.Mkdir(subDir, 0o755)
+		if err == nil {
 			break
 		}
-		subDir = fmt.Sprintf("%s-%d", base, i)
-	}
-	if err := os.MkdirAll(subDir, 0o755); err != nil {
-		return nil, "", fmt.Errorf("create export dir: %w", err)
+		if !os.IsExist(err) || i >= 99 {
+			return nil, "", fmt.Errorf("create export dir: %w", err)
+		}
+		subDir = fmt.Sprintf("%s-%d", base, i+1)
 	}
 	files := make(map[string]string)
+	// shortcut: cleanup assumes no parent replacement; use rooted handles for hostile local writers.
 	failExport := func(err error) (map[string]string, string, error) {
 		if cleanupErr := os.RemoveAll(subDir); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("remove incomplete export directory: %w", cleanupErr))

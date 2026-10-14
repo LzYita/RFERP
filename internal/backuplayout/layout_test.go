@@ -342,8 +342,10 @@ func TestDirForPrefixes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", prefix, err)
 		}
-		if got != want {
-			t.Errorf("%s → %q，期望 %q", prefix, got, want)
+		gotInfo, gotErr := os.Stat(got)
+		wantInfo, wantErr := os.Stat(want)
+		if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+			t.Errorf("%s → %q，期望目录 %q（%v，%v）", prefix, got, want, gotErr, wantErr)
 		}
 		if st, err := os.Stat(got); err != nil || !st.IsDir() {
 			t.Errorf("%s 的目录没创建：%v", prefix, err)
@@ -416,8 +418,13 @@ func TestDirForAllowsLinkedBackupRoot(t *testing.T) {
 
 	got, err := DirFor(paths.PrefixAuto)
 	want := filepath.Join(physicalRoot, string(paths.CategoryAuto))
-	if err != nil || filepath.Clean(got) != filepath.Clean(want) {
+	if err != nil {
 		t.Fatalf("DirFor through linked backup root = %q, %v; want %q", got, err, want)
+	}
+	gotInfo, gotErr := os.Stat(got)
+	wantInfo, wantErr := os.Stat(want)
+	if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("DirFor returned a different directory: %q vs %q (%v, %v)", got, want, gotErr, wantErr)
 	}
 }
 

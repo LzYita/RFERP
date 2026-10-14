@@ -57,28 +57,43 @@ function run(cmd, args, opts = {}) {
 }
 
 /** Windows 上 kill() 不带子进程树；npm/vite 会再挂一层，必须按树杀。 */
-function killTree(p) {
-  if (!p?.pid) return
-  try {
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true }).unref()
-    } else {
-      p.kill()
-    }
-  } catch {
-    /* 已经退出 */
+async function killTree(p) {
+  if (!p?.pid || p.exitCode !== null || p.signalCode !== null) return
+  const closed = new Promise((resolve) => p.once('close', resolve))
+  if (process.platform === 'win32') {
+    await new Promise((resolve, reject) => {
+      const killer = spawn('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true })
+      killer.once('error', reject)
+      killer.once('close', (code) => {
+        if (code === 0 || p.exitCode !== null || p.signalCode !== null) resolve()
+        else reject(new Error(`taskkill ${p.pid} 退出码 ${code}`))
+      })
+    })
+  } else {
+    p.kill()
   }
+  await closed
 }
 
 async function cleanup() {
-  for (const p of kids) killTree(p)
-  await sleep(900)
+  let stopped = true
+  for (const p of kids) {
+    try { await killTree(p) }
+    catch (error) {
+      stopped = false
+      console.log(`  （子进程未确认退出：${error.message}）`)
+    }
+  }
+  if (!stopped) {
+    console.log(`  （临时目录保留：${RUN}）`)
+    return
+  }
   // Windows 上进程退出与文件句柄释放之间有延迟，rmSync 的重试正是为这个
   // 设计的（server.exe 与 -wal/-shm 常在第一次尝试时仍被占着）。
   try {
     fs.rmSync(RUN, { recursive: true, force: true, maxRetries: 24, retryDelay: 500 })
-  } catch {
-    console.log(`  （临时目录未清干净，下次启动会扫掉：${RUN}）`)
+  } catch (error) {
+    console.log(`  （临时目录保留：${RUN}；${error.code ?? 'unknown'} ${error.path ?? ''} ${error.message}）`)
   }
 }
 

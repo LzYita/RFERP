@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,32 +49,49 @@ func SnapshotSQLiteFile(dbPath, saveDir string) (string, error) {
 // （前缀_时间戳.db）。供「破坏性操作前的自动副本」区分用途：
 // pre_clear。产物仍是完整库文件，可直接用于另一次整库恢复。
 func SnapshotSQLiteFileTo(dbPath, saveDir, prefix string) (string, error) {
+	return snapshotSQLiteFileTo(dbPath, saveDir, prefix, time.Now())
+}
+
+func snapshotSQLiteFileTo(dbPath, saveDir, prefix string, at time.Time) (_ string, retErr error) {
 	if prefix == "" {
 		prefix = "backup"
 	}
 	if err := os.MkdirAll(saveDir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%s_%s.db", prefix, time.Now().Format("20060102_150405"))
+	name := fmt.Sprintf("%s_%s.db", prefix, at.Format("20060102_150405"))
 	out := filepath.Join(saveDir, name)
+	// VACUUM INTO accepts an empty file; reserve it so cleanup cannot delete an old backup.
+	reserved, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("reserve snapshot output: %w", err)
+	}
+	// shortcut: pathname cleanup assumes no replacement; use private staging for hostile local writers.
+	defer func() {
+		if retErr != nil {
+			if err := os.Remove(out); err != nil && !os.IsNotExist(err) {
+				retErr = errors.Join(retErr, fmt.Errorf("remove incomplete snapshot: %w", err))
+			}
+		}
+	}()
+	if err := reserved.Close(); err != nil {
+		return "", fmt.Errorf("close snapshot reservation: %w", err)
+	}
 	db, err := OpenSQLite(dbPath)
 	if err != nil {
 		return "", err
 	}
 	defer db.Close()
 	if err := VacuumInto(db, out); err != nil {
-		_ = os.Remove(out)
 		return "", err
 	}
 	// Re-open snapshot and verify independently of the source connection.
 	sdb, err := OpenSQLite(out)
 	if err != nil {
-		_ = os.Remove(out)
 		return "", err
 	}
 	defer sdb.Close()
 	if err := verifySQLiteDatabase(sdb); err != nil {
-		_ = os.Remove(out)
 		return "", err
 	}
 	return out, nil
@@ -123,6 +141,10 @@ func removeSQLiteSidecars(dbPath string) {
 //
 // Caller must close any live handles on dbPath first (Windows file locks).
 func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, err error) {
+	return restoreSQLiteFile(dbPath, snapshotPath, time.Now())
+}
+
+func restoreSQLiteFile(dbPath, snapshotPath string, at time.Time) (preRestoreBackup string, err error) {
 	if dbPath == "" || snapshotPath == "" {
 		return "", fmt.Errorf("db path and snapshot path are required")
 	}
@@ -133,16 +155,15 @@ func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, er
 
 	// 2. preserve current file
 	if _, statErr := os.Stat(dbPath); statErr == nil {
-		preRestoreBackup = fmt.Sprintf("%s.before-restore-%s", dbPath, time.Now().Format("20060102_150405"))
-		if err := copyFile(dbPath, preRestoreBackup); err != nil {
+		preRestoreBackup = fmt.Sprintf("%s.before-restore-%s", dbPath, at.Format("20060102_150405"))
+		if err := copyFile(dbPath, preRestoreBackup, os.O_EXCL); err != nil {
 			return "", fmt.Errorf("preserve current database: %w", err)
 		}
 	}
 
 	// 3. temp + rename replace, then drop sidecars from the old database
 	tmp := dbPath + ".restore-tmp"
-	if err := copyFile(snapshotPath, tmp); err != nil {
-		_ = os.Remove(tmp)
+	if err := copyFile(snapshotPath, tmp, os.O_EXCL); err != nil {
 		return preRestoreBackup, fmt.Errorf("stage snapshot: %w", err)
 	}
 	if err := os.Rename(tmp, dbPath); err != nil {
@@ -155,7 +176,7 @@ func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, er
 	rdb, err := OpenSQLite(dbPath)
 	if err != nil {
 		if preRestoreBackup != "" {
-			_ = copyFile(preRestoreBackup, dbPath)
+			_ = copyFile(preRestoreBackup, dbPath, os.O_TRUNC)
 		}
 		return preRestoreBackup, fmt.Errorf("open restored database: %w", err)
 	}
@@ -163,26 +184,29 @@ func RestoreSQLiteFile(dbPath, snapshotPath string) (preRestoreBackup string, er
 	rdb.Close()
 	if verr != nil {
 		if preRestoreBackup != "" {
-			_ = copyFile(preRestoreBackup, dbPath)
+			_ = copyFile(preRestoreBackup, dbPath, os.O_TRUNC)
 		}
 		return preRestoreBackup, fmt.Errorf("restored database verification failed: %w", verr)
 	}
 	return preRestoreBackup, nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, flag int) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|flag, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+	_, copyErr := io.Copy(out, in)
+	err = errors.Join(copyErr, out.Close())
+	if err != nil && flag&os.O_EXCL != 0 {
+		if removeErr := os.Remove(dst); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("remove incomplete copy: %w", removeErr))
+		}
 	}
-	return out.Close()
+	return err
 }

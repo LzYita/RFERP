@@ -26,6 +26,10 @@ func Backup(dsn, mysqldumpPath, saveDir string) (string, error) {
 // 供「破坏性操作前的自动副本」区分用途：pre_restore / pre_clear。
 // 产物仍是完整 dump，可直接作为另一次 BackupTo 的输入。
 func BackupTo(dsn, mysqldumpPath, saveDir, prefix string) (string, error) {
+	return backupTo(dsn, mysqldumpPath, saveDir, prefix, time.Now())
+}
+
+func backupTo(dsn, mysqldumpPath, saveDir, prefix string, at time.Time) (string, error) {
 	if prefix == "" {
 		prefix = "backup"
 	}
@@ -45,17 +49,18 @@ func BackupTo(dsn, mysqldumpPath, saveDir, prefix string) (string, error) {
 	}
 	defer os.Remove(cfgFile)
 
-	now := time.Now().Format("20060102_150405")
+	now := at.Format("20060102_150405")
 	filePath := filepath.Join(saveDir, fmt.Sprintf("%s_%s.sql", prefix, now))
 
 	cmd := exec.Command(mysqldumpPath, "--defaults-extra-file="+cfgFile, mc.DBName)
 	// mysqldump 是控制台子系统程序，而宿主是 GUI 程序（-H windowsgui）；
 	// 不加这个标志 Windows 会给它新分配一个控制台并弹出黑框。
 	noconsole.Hide(cmd)
-	outFile, err := os.Create(filePath)
+	outFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create backup file: %w", err)
 	}
+	// shortcut: pathname cleanup assumes no replacement; use private staging for hostile local writers.
 	cmd.Stdout = outFile
 	cmd.Stderr = os.Stderr
 	runErr := cmd.Run()

@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -144,11 +145,42 @@ func DirFor(prefix string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("未知的备份前缀 %q，无法确定存放目录", prefix)
 	}
+	return ensureCategoryDir(cat)
+}
+
+// ensureCategoryDir permits the user-selected backup root to be linked while
+// requiring each managed category to remain its own physical child.
+// shortcut: the path can change after resolution; use rooted handles for hostile concurrent writers.
+func ensureCategoryDir(cat paths.BackupCategory) (string, error) {
+	root := paths.BackupDir()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("创建备份根目录 %s: %w", root, err)
+	}
+	physicalRoot, err := paths.ResolveExistingUnder(paths.BackupDir(), paths.BackupDir())
+	if err != nil {
+		return "", fmt.Errorf("解析备份根目录 %s: %w", root, err)
+	}
 	dir := paths.BackupCategoryDir(cat)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
 		return "", fmt.Errorf("创建备份目录 %s: %w", dir, err)
 	}
-	return dir, nil
+	physicalDir, err := paths.ResolveExistingUnder(paths.BackupDir(), dir)
+	if err != nil {
+		return "", fmt.Errorf("解析备份分类目录 %s: %w", dir, err)
+	}
+	info, err := os.Stat(physicalDir)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("备份分类路径 %s 不是可用目录", dir)
+	}
+	want := filepath.Join(physicalRoot, string(cat))
+	got, expected := filepath.Clean(physicalDir), filepath.Clean(want)
+	if runtime.GOOS == "windows" {
+		got, expected = strings.ToLower(got), strings.ToLower(expected)
+	}
+	if got != expected {
+		return "", fmt.Errorf("备份分类目录 %s 必须是备份根目录下独立的 %s 目录", dir, cat)
+	}
+	return physicalDir, nil
 }
 
 func categoryForPrefix(prefix string) (paths.BackupCategory, bool) {

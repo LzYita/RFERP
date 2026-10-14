@@ -100,7 +100,12 @@ func (s *Server) handleBackupDatabase(w http.ResponseWriter, _ *http.Request) {
 	// 用户点「一键备份」= 手动备份，落 manual/ 目录。
 	// 它**永不自动删除**：用户主动留的东西不该被任何清理策略替用户决定。
 	// 自动备份由后台按周期生成，落 auto/ 并滚动保留，与手动严格分开。
-	path, err := s.apps.BackupDatabase(paths.ManualBackupDir())
+	dir, err := backuplayout.DirFor(paths.PrefixManual)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "备份失败，请检查数据目录是否可写")
+		return
+	}
+	path, err := s.apps.BackupDatabase(dir)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "备份失败，请检查数据目录是否可写")
 		return

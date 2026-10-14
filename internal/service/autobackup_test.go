@@ -3,7 +3,9 @@ package service
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -68,6 +70,67 @@ func autoFiles(t *testing.T) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+func makeServiceDirectoryLink(t *testing.T, link, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaybeAutoBackupRejectsLinkedCategoryBeforeWritingOrPruning(t *testing.T) {
+	svc := newAutoBackupService(t, 1)
+	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	for i := 0; i < paths.AutoBackupKeep+1; i++ {
+		name := fmt.Sprintf("auto_20260101_%06d.sql", i)
+		if err := os.WriteFile(filepath.Join(outside, name), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(paths.AutoBackupDir()); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	makeServiceDirectoryLink(t, paths.AutoBackupDir(), outside)
+
+	if ran, err := svc.MaybeAutoBackup(time.Now()); err == nil || ran {
+		t.Fatalf("MaybeAutoBackup = (%v, %v), want an error before writing", ran, err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != paths.AutoBackupKeep+1 {
+		t.Fatalf("outside auto files = %d, %v; want all %d preserved", len(entries), err, paths.AutoBackupKeep+1)
+	}
+}
+
+func TestPruneSafetyCopiesDoesNotFollowLinkedCategory(t *testing.T) {
+	paths.SetDataDir(t.TempDir())
+	t.Cleanup(func() { paths.SetDataDir("") })
+	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	for i := 0; i < paths.SafetyCopyKeep+1; i++ {
+		name := fmt.Sprintf("pre_restore_20260101_%06d.sql", i)
+		if err := os.WriteFile(filepath.Join(outside, name), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeServiceDirectoryLink(t, paths.SafetyBackupDir(), outside)
+
+	pruneSafetyCopies(prefixPreRestore)
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != paths.SafetyCopyKeep+1 {
+		t.Fatalf("outside safety files = %d, %v; want all %d preserved", len(entries), err, paths.SafetyCopyKeep+1)
+	}
 }
 
 func TestMaybeAutoBackupDisabledDoesNothing(t *testing.T) {

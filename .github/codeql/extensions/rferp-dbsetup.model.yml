@@ -1,0 +1,11 @@
+# QuoteDatabaseName returns a complete MySQL backtick-quoted identifier, doubling
+# embedded backticks. Unit tests and isolated MySQL tests verify that invariant.
+# This is only valid for direct use as an identifier, not as a string value.
+# Revisit this model if quoting changes, another SQL dialect is used, or callers
+# strip/modify the returned quotes. Raw inputs and the error return are not barriers.
+extensions:
+  - addsTo:
+      pack: codeql/go-all
+      extensible: barrierModel
+    data:
+      - ["app/internal/dbsetup", "", False, "QuoteDatabaseName", "", "", "ReturnValue[0]", "sql-injection", "manual"]

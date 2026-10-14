@@ -288,7 +288,9 @@ func (s *Service) safetyCopy(prefix string) (string, error) {
 func pruneSafetyCopies(prefix string) {
 	switch prefix {
 	case prefixPreRestore, prefixPreClear, paths.PrefixPreMigrate:
-		dbbackup.PruneSnapshots(paths.SafetyBackupDir(), prefix, paths.SafetyCopyKeep)
+		if dir, err := backuplayout.DirFor(prefix); err == nil {
+			dbbackup.PruneSnapshots(dir, prefix, paths.SafetyCopyKeep)
+		}
 	}
 }
 

@@ -625,15 +625,23 @@ func defaultDataDir(base *config.Config) string {
 }
 
 // ensureWritableDir 建目录并落一个探针文件，确认真的可写。
-func ensureWritableDir(dir string) error {
+func ensureWritableDir(dir string) (err error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("无法创建目录：%w", err)
 	}
-	probe := filepath.Join(dir, ".rferp-write-test")
-	if err := os.WriteFile(probe, []byte("ok"), 0600); err != nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return fmt.Errorf("无法打开目录：%w", err)
+	}
+	defer root.Close()
+	name := ".rferp-write-test-" + rand.Text()
+	probe, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
 		return fmt.Errorf("目录不可写：%w", err)
 	}
-	return os.Remove(probe)
+	defer func() { err = errors.Join(err, root.Remove(name)) }()
+	_, writeErr := probe.WriteString("ok")
+	return errors.Join(writeErr, probe.Close())
 }
 
 func randomToken() string {

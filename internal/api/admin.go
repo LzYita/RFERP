@@ -203,12 +203,6 @@ func explorerFolderOpener(dir string) error {
 	return exec.Command("explorer.exe", dir).Start()
 }
 
-// dirUnder 已移除：判据统一到 paths.Under。
-//
-// 这里曾有第二份"路径是否在根目录内"的实现（字符串前缀比较），而它被
-// `导出\..\outside` 绕过过一次 —— 前缀比确实以 `导出\` 开头，Clean 之后却在外面。
-// 同一件事写两遍，总有一遍是弱的；现在只有 paths.Under 一份。
-
 // handleOpenExportFolder 在资源管理器里打开导出目录。
 //
 // 本机操作：它启动的是**这台机器上**的程序。阶段 B/C 的远程客户端点了只会
@@ -224,11 +218,12 @@ func (s *Server) handleOpenExportFolder(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	dir := strings.TrimSpace(body.Dir)
-	// 只允许打开导出目录本身或其子目录。判据统一在 paths.Under 里 ——
-	// 这里曾经自己写了一遍（字符串前缀比较），被 `..` 绕过过一次；
-	// 同一件事写两遍，总有一遍是弱的。
-	if !paths.Under(paths.ExportDir(), dir) {
+	dir, err := paths.ResolveExistingUnder(paths.ExportDir(), strings.TrimSpace(body.Dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusNotFound, "导出目录不存在")
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "只能打开本应用的导出目录")
 		return
 	}

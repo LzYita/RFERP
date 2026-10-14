@@ -186,6 +186,10 @@ func Resolve(name string) (string, error) {
 			// 不是合法文件名 —— 所有候选目录都会被拒，不必继续试。
 			return "", fmt.Errorf("备份文件必须位于本应用的备份目录内，不能指定路径")
 		}
+		target, err = paths.ResolveExistingUnder(paths.BackupDir(), target)
+		if err != nil {
+			continue
+		}
 		st, err := os.Stat(target)
 		if err != nil || st.IsDir() {
 			continue

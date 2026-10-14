@@ -2,7 +2,9 @@ package backuplayout
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -287,6 +289,40 @@ func TestResolveMissingFile(t *testing.T) {
 	setup(t)
 	if _, err := Resolve("backup_20260101_000000.sql"); err == nil {
 		t.Error("不存在的文件应报错")
+	}
+}
+
+func TestResolveRejectsFileSymlinkOutsideBackupRoot(t *testing.T) {
+	setup(t)
+	outside := t.TempDir()
+	const name = "backup_20261003_120000.sql"
+	put(t, outside, name, 10)
+	if err := os.MkdirAll(paths.ManualBackupDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, name), filepath.Join(paths.ManualBackupDir(), name)); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+	if got, err := Resolve(name); err == nil || got != "" {
+		t.Fatalf("outside file link accepted: %q, %v", got, err)
+	}
+}
+
+func TestResolveRejectsCategoryLinkOutsideBackupRoot(t *testing.T) {
+	setup(t)
+	outside := t.TempDir()
+	const name = "backup_20261003_120000.sql"
+	put(t, outside, name, 10)
+	link := paths.ManualBackupDir()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+	} else if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Resolve(name); err == nil || got != "" {
+		t.Fatalf("outside category link accepted: %q, %v", got, err)
 	}
 }
 

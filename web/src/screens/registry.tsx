@@ -15,6 +15,7 @@ import { ProductsScreen } from './ProductsScreen'
 import { BOMScreen } from './BOMScreen'
 import { BatchScreen } from './BatchScreen'
 import { PlaceholderScreen } from './PlaceholderScreen'
+import { SettingsScreen } from './SettingsScreen'
 import { StatsScreen } from './StatsScreen'
 import { UsersScreen } from './UsersScreen'
 
@@ -55,7 +56,19 @@ export const REGISTRY: Record<ModuleKey, Factory> = {
   users: (ctx) => <UsersScreen meId={ctx.meId} />,
 }
 
+/**
+ * 「设置」不是业务模块，因此**不在** NAV / ModuleKey 里：它的入口在侧栏左下角
+ * （AppShell.tsx），不参与权限矩阵，也不按读权限过滤。这里显式处理它，
+ * 而不是往 REGISTRY 里塞一个 ModuleKey 之外的键——那会让「导航项即模块」
+ * 这条不变量失效，往后谁按 REGISTRY 遍历模块就会多出一个假的。
+ */
+export const SETTINGS_KEY = 'settings'
+
 export function renderScreen(key: string, ctx: ScreenContext): ReactNode {
+  if (key === SETTINGS_KEY) return <SettingsScreen />
   const factory = REGISTRY[key as ModuleKey]
-  return factory ? factory(ctx) : <PlaceholderScreen title="设置" />
+  // 兜底：导航项与注册表不一致时（新增模块忘了注册）明说，而不是白屏——
+  // 白屏会被当成加载失败或权限问题来排查。Round 7 之前这里返回的是「设置」，
+  // 现在设置已交付，兜底只剩这一种用途。
+  return factory ? factory(ctx) : <PlaceholderScreen title={key} />
 }

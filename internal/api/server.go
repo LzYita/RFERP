@@ -252,6 +252,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
 	// 当前用户的模块权限：前端导航据此显示，不在前端另抄一份权限矩阵。
 	mux.HandleFunc("GET /api/me/permissions", s.auth(s.handleMyPermissions, ""))
+	// 内置离线帮助（设置屏：使用指南 / 常见问题 / 更新说明）。
+	//
+	// 内容随二进制嵌入、不含任何业务数据，但仍然要求登录：它属于登录后的界面，
+	// 没有对匿名开放的理由。用空权限点而不是新加权限点——帮助对四个角色一视同仁，
+	// 为它引入一个模块档位只会让权限矩阵多出四格全「读」的噪声。
+	mux.HandleFunc("GET /api/help", s.auth(s.handleHelp, ""))
 
 	// 记住登录。注意这三个端点**不**挂 s.auth：它们在还没有用户会话时使用，
 	// 安全边界是启动 token 网关（同机其它程序拿不到 Cookie）。

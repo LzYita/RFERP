@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,6 +33,7 @@ type backupApps struct {
 
 	dataDir         string
 	setDataDirCalls int
+	backupCalls     int
 	restored        string
 	cleared         bool
 	restoreFn       func(string) (usecase.RestoreResult, error)
@@ -83,6 +86,7 @@ func TestSetDataDirRequiresHostAndAdmin(t *testing.T) {
 	}
 }
 func (a *backupApps) BackupDatabase(saveDir string) (string, error) {
+	a.backupCalls++
 	return filepath.Join(saveDir, "backup_20260925_101530.sql"), nil
 }
 func (a *backupApps) RestoreDatabase(file string) (usecase.RestoreResult, error) {
@@ -594,6 +598,36 @@ func TestBackupDownloadReturnsStreamNotServerPath(t *testing.T) {
 	// 响应里不得出现备份目录的绝对路径
 	if strings.Contains(w.Body.String(), dir) {
 		t.Error("响应里出现了服务器备份目录路径")
+	}
+}
+
+func TestBackupDownloadRejectsOutsideManualCategoryLink(t *testing.T) {
+	apps := &backupApps{}
+	s := newBackupServer(t, apps)
+	tok := issueAdmin(t, s)
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := paths.ManualBackupDir()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+	} else if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	w := doJSON(t, s, "POST", "/api/backup", tok, nil)
+	if w.Code != http.StatusInternalServerError || apps.backupCalls != 0 {
+		t.Fatalf("backup response = %d, calls=%d, body=%s; want reject before the app call", w.Code, apps.backupCalls, w.Body.String())
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+		t.Fatalf("outside sentinel changed: %q, %v", data, err)
 	}
 }
 

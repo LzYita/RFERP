@@ -8,7 +8,7 @@
         "build": "tsc -b && vite build",
         "lint": "oxlint",
         "preview": "vite preview",
-        "build:embed": "vite build && node scripts/embed.mjs",
+        "build:embed": "npm run build && node scripts/embed.mjs",
         "test": "vitest run",
         "test:watch": "vitest",
     "test:browser": "node scripts/browser-gate.mjs",

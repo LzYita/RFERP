@@ -36,6 +36,10 @@
           {
             "context": "Windows / Go verify",
             "integration_id": 15368
+          },
+          {
+            "context": "CodeQL / Go",
+            "integration_id": 15368
           }
         ]
       }

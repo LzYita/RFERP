@@ -42,7 +42,7 @@ cp .github/codeql/extensions/rferp-paths.model.yml "$work/models/"
 query='codeql/go-queries:Security/CWE-022/TaintedPath.ql'
 "$CODEQL_BIN" database analyze "$work/db" "$query" --format=sarif-latest --output="$work/baseline.sarif"
 "$CODEQL_BIN" database analyze "$work/db" "$query" --format=sarif-latest --output="$work/modeled.sarif" \
-  --additional-packs="$work/models" --model-packs=rferp/path-model-sentinels
+  --rerun --additional-packs="$work/models" --model-packs=rferp/path-model-sentinels
 python3 - "$work" <<'PY'
 import json, pathlib, sys
 work = pathlib.Path(sys.argv[1])

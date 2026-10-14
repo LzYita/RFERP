@@ -2,7 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +15,46 @@ import (
 	"testing"
 	"time"
 
+	"app/internal/api"
+	"app/internal/config"
 	"app/internal/dbsetup"
 	"github.com/go-sql-driver/mysql"
 )
+
+func TestSetupGateRejectsUnauthenticatedDirectorySelection(t *testing.T) {
+	const token = "test-startup-token"
+	for _, cookie := range []string{"", "wrong", token} {
+		t.Run(cookie, func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "selected")
+			body, err := json.Marshal(map[string]string{"dataDir": target, "storage": "sqlite"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := http.StatusForbidden
+			if cookie == token {
+				body = []byte("invalid json")
+				want = http.StatusBadRequest
+			}
+			applied := false
+			handler := api.StartupGate(token, newSetupHandler(&config.Config{}, func() { applied = true }))
+			req := httptest.NewRequest("POST", "/api/setup/apply", strings.NewReader(string(body)))
+			if cookie != "" {
+				req.AddCookie(&http.Cookie{Name: api.StartupCookieName, Value: cookie})
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != want {
+				t.Fatalf("status=%d want=%d", response.Code, want)
+			}
+			if applied {
+				t.Fatal("invalid request applied configuration")
+			}
+			if _, err := os.Stat(target); !os.IsNotExist(err) {
+				t.Fatalf("invalid request created directory: %v", err)
+			}
+		})
+	}
+}
 
 func TestPingMySQLCreatesExactDatabaseName(t *testing.T) {
 	dsn, dataDir := os.Getenv("RFERP_DBSETUP_TEST_DSN"), os.Getenv("RFERP_DBSETUP_TEST_DATADIR")

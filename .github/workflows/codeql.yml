@@ -52,6 +52,7 @@ jobs:
           go build ./...
 
       - name: Initialize CodeQL
+        id: codeql
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: go
@@ -63,6 +64,11 @@ jobs:
           # 临时：另存一份 SARIF 并上传，用于核对告警的污染路径。
           # 排查结束后移除这一节（保持默认行为即可）。
           output: codeql-results.sarif
+
+      - name: Verify path model sentinels
+        env:
+          CODEQL_BIN: ${{ steps.codeql.outputs.codeql-path }}
+        run: bash .github/codeql/verify-path-models.sh
 
       - name: Upload SARIF for triage
         if: always()

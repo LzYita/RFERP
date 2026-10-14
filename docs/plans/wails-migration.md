@@ -163,41 +163,55 @@ Wails 外壳(Go) --内嵌--> 服务(127.0.0.1:随机端口) --> service/usecase 
 
 ---
 
-## 3. 目标目录结构（对照现状）
+## 3. 目录结构（实际交付，2026-10-14 对齐）
+
+> 下表是**实际长成的样子**，不是最初的设计稿。三处偏离是有意的，且都已定型：
+>
+> - 前端**没有**引入 shadcn/ui、TanStack Table 与 RHF/Zod，改用一组自写的轻量原语
+>   （`components/ui.tsx`、`components/form.tsx`、各屏自带的 `<table>`），
+>   因此设计稿里的 `components/ui/`、`features/` 两个目录没有出现；
+>   取而代之的是 `components/` + `screens/` + `lib/` 的扁平结构。
+> - HTTP 客户端与各业务域的调用集中在 `lib/`（`api.ts` + 每域一个模块），
+>   没有单独开 `api/` 目录——一处 `request()` 已经承担了 baseURL、Bearer、401 广播。
+> - `i18n/` 按计划留到 Round 10，现在提前建目录只会是个空壳。
 
 ```
 RFERP/
 ├─ cmd/
-│  ├─ desktop/              # 保留：现有 Fyne 版（过渡期回退用）
-│  ├─ server/               # 已有：HTTP API（本地内嵌 / 远程独立部署）
-│  ├─ keygen/               # 已有：更新签名密钥生成
-│  ├─ signmanifest/         # 已有：更新清单签名
-│  └─ desktop-wails/        # 【新增】Wails 入口（main.go + wails.json）
-├─ internal/                # 不动：api / auth / config / dbbackup / dbsetup / logging /
-│                           #       migrate / model / mysqlfind / nativefiledialog / paths /
-│                           #       repository / secret / service / singleinstance / ui /
-│                           #       update / usecase / winappid / winmsg
-├─ web/                     # 【新增】前端工程（主体）
-│  ├─ package.json / vite.config.ts / tsconfig.json / tailwind.config.js
+│  ├─ desktop/              # Fyne 版：过渡期回退出口；Round 9 才移除其构建入口
+│  ├─ desktop-wails/        # Wails 入口（main.go / wails.json / setupwizard.go / dirpicker.go …）
+│  │  └─ frontend/          # 只是**转发 shim**：Wails v2 硬要求项目目录下存在 frontend/，
+│  │                        #   且不支持把命令指向别处，故它 cd ../../../web 再跑真前端
+│  ├─ server/               # HTTP API（本地内嵌 / 远程独立部署）
+│  ├─ keygen/  signmanifest/
+├─ internal/                # 27 个包；迁移期间新增：backuplayout / dbfile / help /
+│                           #   noconsole / webassets / windowsobj
+│  ├─ api/                  # 全部 HTTP 端点（Round 7 新增 help.go：设置屏的离线帮助）
+│  ├─ webassets/            # //go:embed all:dist —— 前端产物内嵌入口
+│  ├─ help/                 # guide.md / faq.md / changelog.json（go:embed）与解析函数
+│  └─ ui/                   # Fyne 各屏，保留到 Round 9
+├─ web/                     # 前端工程（主体）
+│  ├─ index.html / vite.config.ts / tsconfig*.json / .oxlintrc.json / package.json
+│  ├─ public/favicon.svg
+│  ├─ scripts/              # browser-gate.mjs（浏览器关口）、embed.mjs（dist → Go 内嵌）
+│  ├─ tests/                # 12 个 vitest 文件（逻辑 + 组件 + 文档渲染器）
 │  └─ src/
-│     ├─ main.tsx / App.tsx
-│     ├─ api/client.ts             # baseURL + Bearer + 401/错误统一处理
-│     ├─ api/types.ts              # Go model.* → TS 类型
-│     ├─ components/ui/            # shadcn/ui
-│     ├─ components/AppShell.tsx   # 侧栏 + 顶栏 + 内容区
-│     ├─ components/DataTable.tsx  # TanStack Table 通用表格
-│     ├─ components/FormDialog.tsx # RHF + Zod 通用表单弹窗
-│     ├─ features/                 # 一屏一目录，对应现有 ui/*.go
-│     │  ├─ dashboard/ stats/ products/ parts/ bom/ batches/
-│     │  └─ trace/ audit/ backup/ users/ runmode/ login/ setup/
-│     ├─ i18n/                     # zh-CN / en
-│     └─ lib/                      # 权限矩阵映射、工具
-├─ deploy/docker/           # 已有：可加前端静态托管 nginx 示例
-├─ docs/rulesets/           # 已有：**GitHub 仓库治理规则集的版本化存档**（main-flow / main-safety）。GitHub 不读取此目录，仅供评审与重建。迁移不应改变这些规则
-├─ lang/ChineseSimplified.isl  # 已有：Inno Setup 中文语言
-├─ setup.iss / release.bat / build-installer.bat  # 已有：打包链
-└─ .github/workflows/ci.yml # 已有：增加前端 job
+│     ├─ main.tsx / App.tsx / index.css
+│     ├─ components/        # AppShell / ui（原语）/ form（Modal、ComboInput…）/ Markdown
+│     ├─ lib/               # api、nav、permissions + 各业务域（backup / batch / catalog /
+│     │                     #   users / …）+ markdown、help、num
+│     ├─ screens/           # 18 个屏/表单，一屏一文件；registry.tsx 是屏幕注册表
+│     └─ （i18n/ 留到 Round 10）
+├─ deploy/docker/           # Dockerfile / docker-compose.yml / README / .env.example
+├─ docs/                    # decisions/、plans/、rulesets/（main-flow、main-safety 存档）、screenshot.png
+├─ lang/ChineseSimplified.isl
+├─ setup.iss / release.bat / build-installer.bat / build.bat  # 打包链（目前仍产出 Fyne 版）
+└─ .github/                 # workflows/ci.yml、workflows/codeql.yml、codeql/extensions/、模板
 ```
+
+> `docs/decisions/` 目前只有 **D-016、D-017** 两份成文记录；代码与文档里引用的
+> D-001–D-015 尚无对应文件，历史决策散落在本文档 §4.0 的表格里。补写成文是待办，
+> 但**不要**为了让编号连续而补造内容。
 
 ---
 
@@ -219,7 +233,7 @@ RFERP/
 | 6 | 用户管理 + 权限矩阵关口 | ✅ 已交付 | #57 |
 | 5 | 破坏性操作（备份 / 恢复 / 清空） | ✅ 已交付 | #58 |
 | 7 | 设置与更新 | 🟡 已交付，待升级演练关口 | #69 |
-| 8 | 交付与冻结 | ⬜ 未开始 | — |
+| 8 | 交付与冻结 | 🟡 未开工（7 项中 4 项已满足） | — |
 | 9 | 移除 Fyne 构建入口 | ⬜ 未开始 | — |
 | 10 | 国际化（i18n） | ⬜ 未开始 | — |
 
@@ -1027,13 +1041,24 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 ### Round 8 · 交付与冻结
 
-- [ ] CI 增加前端 job（可与 Go job 并行；**Action 仍固定到 commit SHA**）
+状态: **未开工**，但下面三项在早先几轮里已经顺带满足（2026-10-14 核实过），
+剩下的才是这一轮真正要做的。
+
+- [x] CI 覆盖前端（**Action 仍固定到 commit SHA**）：`npm run build:embed` + 前端测试
+      已经在 `verify` job 里顺序执行；**没有**拆成并行 job——拆不拆不影响结论，
+      现在这样只需一处 checkout 与一次依赖安装。
 - [ ] `wails build` 纳入发布脚本；`release.bat` 产出改为「Wails exe + 安装包」
-- [ ] 服务用 `embed` 托管前端 dist
+      （现状：`release.bat:72` 仍构建 `cmd/desktop/main.go`，产出的是 Fyne 版）
+- [x] 服务用 `embed` 托管前端 dist：Round 1 就已落地——
+      `internal/webassets/webassets.go` 的 `//go:embed all:dist` +
+      `api.WithStaticFS`，`cmd/desktop-wails` 的窗口与 `-serve` 两种形态共用
 - [ ] 部署文档：单实例 / 重启即全员登出 / 跨机需 VPN / 不暴露公网
+      （`docs/` 下目前没有部署文档；相关约定散在本文档 §2 与 decisions 里）
 - [ ] README 更新（构建者需 Node；**端用户无需 Node/Go 工具链**，但需 WebView2）
-- [ ] **保留 Fyne 版安装包（v1.3.0）**挂在 Release 页作为**用户可自行下载的降级通道**
-- [ ] 保留 `cmd/desktop` 与其构建脚本（代码不删，便于紧急修复时回退）
+      （现状：两份 README 都没有 Node / WebView2 字样）
+- [x] **保留 Fyne 版安装包（v1.3.0）**挂在 Release 页作为**用户可自行下载的降级通道**
+      （v1.3.0 的资产已含 `RFERP-1.3.0.zip` 与 `Setup-RFERP-1.3.0.exe`）
+- [x] 保留 `cmd/desktop` 与其构建脚本（代码不删，便于紧急修复时回退）
 
 **关口**：全新机器从零安装 + 旧版升级，两条路径均通过。
 

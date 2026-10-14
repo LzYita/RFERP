@@ -2,8 +2,10 @@ package backuplayout
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -64,7 +66,20 @@ func MigrateLegacy() (MigrationReport, error) {
 
 	var logLines []string
 	for _, e := range entries {
-		if e.IsDir() || !IsBackupExt(e.Name()) {
+		if !IsBackupExt(e.Name()) {
+			continue
+		}
+		src := filepath.Join(root, e.Name())
+		info, err := os.Lstat(src)
+		if err != nil {
+			rep.Skipped = append(rep.Skipped, fmt.Sprintf("%s（无法检查：%v）", e.Name(), err))
+			continue
+		}
+		if info.IsDir() {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			rep.Skipped = append(rep.Skipped, e.Name()+"（符号链接保留在原处）")
 			continue
 		}
 		cat, ok := paths.BackupCategoryOf(e.Name())
@@ -72,21 +87,21 @@ func MigrateLegacy() (MigrationReport, error) {
 			rep.Skipped = append(rep.Skipped, e.Name()+"（文件名无法归类，保留在原处）")
 			continue
 		}
-		dir := paths.BackupCategoryDir(cat)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		dir, err := ensureCategoryDir(cat)
+		if err != nil {
 			rep.DirsErr = err
 			rep.Skipped = append(rep.Skipped, fmt.Sprintf("%s（无法创建 %s：%v）", e.Name(), cat, err))
 			continue
 		}
 		dst := filepath.Join(dir, e.Name())
-		if _, err := os.Stat(dst); err == nil {
+		if _, err := os.Lstat(dst); err == nil {
 			rep.Skipped = append(rep.Skipped, e.Name()+"（分类目录里已有同名文件，未覆盖）")
 			continue
 		}
-		if err := os.Rename(filepath.Join(root, e.Name()), dst); err != nil {
+		if err := os.Rename(src, dst); err != nil {
 			// 跨卷会失败（备份目录与数据目录通常同卷，但用户可能改过）；
 			// 退回复制+删除，至少不会因为跨卷就整个迁移失败。
-			if cerr := copyFileThenRemove(filepath.Join(root, e.Name()), dst); cerr != nil {
+			if cerr := copyFileThenRemove(src, dst); cerr != nil {
 				rep.Skipped = append(rep.Skipped, fmt.Sprintf("%s（移动失败：%v）", e.Name(), err))
 				continue
 			}
@@ -110,8 +125,21 @@ func copyFileThenRemove(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, data, 0o600); err != nil {
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		return err
+	}
+	n, writeErr := f.Write(data)
+	if writeErr == nil && n != len(data) {
+		writeErr = io.ErrShortWrite
+	}
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(dst)
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
 	}
 	return os.Remove(src)
 }
@@ -121,7 +149,28 @@ func copyFileThenRemove(src, dst string) error {
 // 写不进去只记日志不报错：迁移本身已经成功了，日志写不进去不该让启动失败。
 // 这份日志唯一的用途是「万一降级，能照着搬回去」，所以宁缺毋滥也不硬塞。
 func writeMigrationLog(lines []string) {
-	p := filepath.Join(paths.BackupDir(), MigrationLogName)
+	root := paths.BackupDir()
+	p := filepath.Join(root, MigrationLogName)
+	if _, err := os.Lstat(p); err == nil {
+		physical, err := paths.ResolveExistingUnder(paths.BackupDir(), p)
+		if err != nil {
+			return
+		}
+		physicalRoot, err := paths.ResolveExistingUnder(paths.BackupDir(), paths.BackupDir())
+		if err != nil {
+			return
+		}
+		expected := filepath.Clean(filepath.Join(physicalRoot, MigrationLogName))
+		actual := filepath.Clean(physical)
+		if runtime.GOOS == "windows" {
+			actual, expected = strings.ToLower(actual), strings.ToLower(expected)
+		}
+		if actual != expected {
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		return
+	}
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

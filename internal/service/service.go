@@ -1351,16 +1351,24 @@ func finalizeCSVExclusive(tempPath, path string) error {
 
 	// Hard links can be unavailable on some filesystems. Fall back to an
 	// exclusive create and copy, still refusing to overwrite the target.
+	return finalizeCSVByCopyExclusive(tempPath, path)
+}
+
+// Close the source before removing it: Windows keeps open files locked for deletion.
+func finalizeCSVByCopyExclusive(tempPath, path string) (result error) {
+	defer func() {
+		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) && result == nil {
+			result = fmt.Errorf("finalize csv file: remove temporary file: %w", err)
+		}
+	}()
 	src, err := os.Open(tempPath)
 	if err != nil {
-		_ = os.Remove(tempPath)
 		return fmt.Errorf("finalize csv file: open temporary file: %w", err)
 	}
 	defer src.Close()
 
 	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		_ = os.Remove(tempPath)
 		if os.IsExist(err) {
 			return fmt.Errorf("finalize csv file: target already exists")
 		}
@@ -1369,16 +1377,11 @@ func finalizeCSVExclusive(tempPath, path string) error {
 	if _, err := io.Copy(dst, src); err != nil {
 		_ = dst.Close()
 		_ = os.Remove(path)
-		_ = os.Remove(tempPath)
 		return fmt.Errorf("finalize csv file: copy: %w", err)
 	}
 	if err := dst.Close(); err != nil {
 		_ = os.Remove(path)
-		_ = os.Remove(tempPath)
 		return fmt.Errorf("finalize csv file: close target: %w", err)
-	}
-	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("finalize csv file: remove temporary file: %w", err)
 	}
 	return nil
 }

@@ -27,7 +27,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const WEB = path.resolve(HERE, '..')
 const REPO = path.resolve(WEB, '..')
 const API_PORT = process.env.GATE_API_PORT ?? '19098'
-const VITE_URL = `http://127.0.0.1:${process.env.GATE_VITE_PORT ?? '5173'}/`
+const VITE_PORT = process.env.GATE_VITE_PORT ?? '5173'
+const VITE_URL = `http://127.0.0.1:${VITE_PORT}/`
 const ADMIN = { username: 'admin', password: 'admin12345' }
 const TYPES = ['电子', '五金', '塑料', '硅胶', '包装辅料', '其他']
 
@@ -236,12 +237,25 @@ async function startFrontend(desktopStyle) {
     if (!okPage) throw new Error(`产物没有提供可用的内嵌页面：${url}`)
     return url
   }
-  run(process.execPath, [path.join(WEB, 'node_modules', 'vite', 'bin', 'vite.js')], {
+  const vite = run(process.execPath, [
+    path.join(WEB, 'node_modules', 'vite', 'bin', 'vite.js'),
+    '--host', '127.0.0.1', '--port', VITE_PORT, '--strictPort',
+  ], {
     cwd: WEB,
     env: { ...process.env, RFERP_DEV_PORT: API_PORT },
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const up = await until(async () => (await fetch(VITE_URL)).ok)
-  if (!up) throw new Error('vite 未就绪')
+  let output = ''
+  const capture = (chunk) => { output = (output + chunk.toString()).slice(-4096) }
+  vite.stdout.on('data', capture)
+  vite.stderr.on('data', capture)
+  // An occupied port can answer HTTP before our Vite process reports listening.
+  const up = await until(async () => (
+    vite.exitCode === null && output.includes(VITE_URL) && (await fetch(VITE_URL)).ok
+  ))
+  if (!up || vite.exitCode !== null) {
+    throw new Error(`vite 未就绪（${VITE_URL}）：${output.trim().replace(/\s+/g, ' ') || '没有启动输出'}`)
+  }
   return VITE_URL
 }
 

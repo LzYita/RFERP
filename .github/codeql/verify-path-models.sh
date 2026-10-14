@@ -31,6 +31,7 @@ GO
 cat > "$work/models/qlpack.yml" <<'YAML'
 name: rferp/path-model-sentinels
 version: 0.0.0
+library: true
 extensionTargets:
   codeql/go-all: '*'
 dataExtensions:

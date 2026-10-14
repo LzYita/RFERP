@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { api, ApiError, remember, type LoginResult } from '../lib/api'
 import { EyeIcon } from '../components/form'
+import mark from '../assets/rferp-mark.png'
 
 
 
@@ -241,29 +242,49 @@ export function LoginScreen({
 
           宽度按比例给，不设上限——限死会让大屏上剩下大片空白，失衡比不分栏还明显。 */}
 
-      <aside className="hidden w-[42%] shrink-0 flex-col justify-between bg-[var(--color-primary)] p-10 text-white lg:flex xl:w-[38%]">
+      <aside className="hidden w-[42%] shrink-0 flex-col bg-[var(--color-primary)] p-10 text-white lg:flex xl:w-[38%]">
 
-        <div className="flex items-center gap-2.5 text-[15px] font-semibold">
+        {/* 标：只用白色线条，宽为侧栏的一半。w-1/2 量的是内容盒，故补回 p-10 的 2.5rem
 
-          <span className="grid h-7 w-7 place-items-center rounded-[6px] bg-white/20 text-[13px]">
+            才等于「侧栏的一半」；用 mask 上色，白色直接来自 bg-white，与侧栏文字同色。 */}
 
-            仁
+        <div
 
-          </span>
+          aria-hidden
 
-          RFERP
+          className="mx-auto mt-[26vh] w-[calc(50%+2.5rem)] bg-white"
 
-        </div>
+          style={{
+
+            aspectRatio: '912 / 679',
+
+            maskImage: `url(${mark})`,
+
+            maskSize: 'contain',
+
+            maskRepeat: 'no-repeat',
+
+            maskPosition: 'center',
+
+            WebkitMaskImage: `url(${mark})`,
+
+            WebkitMaskSize: 'contain',
+
+            WebkitMaskRepeat: 'no-repeat',
+
+          }}
+
+        />
 
 
 
-        <div className="max-w-[30ch]">
+        <div className="mx-auto mt-auto max-w-[30ch] text-center">
 
           <h1 className="mb-3 text-[26px] leading-snug font-bold">仁风仓库管理系统</h1>
 
-          <p className="text-[13px] leading-relaxed text-white/80">
+          <p className="text-[15px] leading-relaxed text-white/80">
 
-            零件、BOM、批次与库存追溯，全部数据留在你自己的机器上。
+            库存清楚，批次可追，交接不乱
 
           </p>
 
@@ -271,7 +292,9 @@ export function LoginScreen({
 
 
 
-        <div className="text-[12px] text-white/60">
+        <div className="mt-auto text-[12px] text-white/60">
+
+          <p className="mb-1 text-[15px] font-semibold text-white">RFERP</p>
 
           <p>版本 {version}</p>
 

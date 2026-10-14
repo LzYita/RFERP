@@ -15,7 +15,7 @@ func TestStaticAssetsServedFromEmbeddedFS(t *testing.T) {
 	fsys := fstest.MapFS{
 		"dist/index.html":     {Data: []byte(`<!doctype html><html><body><div id="root"></div><script src="/assets/app.js"></script></body></html>`)},
 		"dist/assets/app.js":  {Data: []byte(`console.log("app")`)},
-		"dist/favicon.svg":    {Data: []byte(`<svg/>`)},
+		"dist/favicon.ico":    {Data: []byte(`ico`)},
 		"dist/.gitkeep":       {Data: []byte(``)},
 		"dist/nested/deep.js": {Data: []byte(`// nested`)},
 	}

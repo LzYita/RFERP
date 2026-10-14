@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { api, ApiError, remember, type LoginResult } from '../lib/api'
 import { EyeIcon } from '../components/form'
+import { MarkBox } from '../components/MarkBox'
 
 
 
@@ -241,29 +242,23 @@ export function LoginScreen({
 
           宽度按比例给，不设上限——限死会让大屏上剩下大片空白，失衡比不分栏还明显。 */}
 
-      <aside className="hidden w-[42%] shrink-0 flex-col justify-between bg-[var(--color-primary)] p-10 text-white lg:flex xl:w-[38%]">
+      <aside className="hidden w-[42%] shrink-0 flex-col bg-[var(--color-primary)] p-10 text-white lg:flex xl:w-[38%]">
 
-        <div className="flex items-center gap-2.5 text-[15px] font-semibold">
+        {/* 标：只用白色线条，宽为侧栏的一半。w-1/2 量的是内容盒，故补回 p-10 的 2.5rem
 
-          <span className="grid h-7 w-7 place-items-center rounded-[6px] bg-white/20 text-[13px]">
+            才等于「侧栏的一半」；用 mask 上色，白色直接来自 bg-white，与侧栏文字同色。 */}
 
-            仁
-
-          </span>
-
-          RFERP
-
-        </div>
+        <MarkBox className="mx-auto mt-[26vh] w-[calc(50%+2.5rem)] bg-white" />
 
 
 
-        <div className="max-w-[30ch]">
+        <div className="mx-auto mt-auto max-w-[30ch] text-center">
 
           <h1 className="mb-3 text-[26px] leading-snug font-bold">仁风仓库管理系统</h1>
 
-          <p className="text-[13px] leading-relaxed text-white/80">
+          <p className="text-[15px] leading-relaxed text-white/80">
 
-            零件、BOM、批次与库存追溯，全部数据留在你自己的机器上。
+            库存清楚，批次可追，交接不乱
 
           </p>
 
@@ -271,7 +266,9 @@ export function LoginScreen({
 
 
 
-        <div className="text-[12px] text-white/60">
+        <div className="mt-auto text-[12px] text-white/60">
+
+          <p className="mb-1 text-[15px] font-semibold text-white">RFERP</p>
 
           <p>版本 {version}</p>
 
@@ -283,7 +280,23 @@ export function LoginScreen({
 
 
 
-      <main className="flex min-w-0 flex-1 items-center justify-center bg-[var(--color-canvas)] p-6">
+      <main className="flex min-w-0 flex-1 flex-col items-center justify-center gap-4 bg-[var(--color-canvas)] p-6">
+
+        {/* 窄屏没有左栏：logo 用原色、同样无底板，放在登录框上方 */}
+
+        <MarkBox className="mb-6 w-[120px] bg-[var(--color-primary)] lg:hidden" />
+
+
+
+        {/* 只在宽屏出现（窄屏没有这一行）；字号与左栏标题「仁风仓库管理系统」一致 */}
+
+        <p className="mb-6 hidden text-center text-[26px] font-bold text-[var(--color-fg)] lg:block">
+
+          今天有什么订单计划？
+
+        </p>
+
+
 
         <form
 
@@ -293,27 +306,11 @@ export function LoginScreen({
 
         >
 
-          {/* 窄屏没有左栏，标题得在这里出现 */}
+          {/* 窄屏没有左栏，标题在这里出现：居中，不再放「仁」方块 */}
 
-          <div className="mb-6 lg:hidden">
+          <div className="mb-6 text-center text-[17px] font-bold lg:hidden">
 
-            <div className="mb-1 flex items-center gap-2 text-[15px] font-bold">
-
-              <span className="grid h-6 w-6 place-items-center rounded-[6px] bg-[var(--color-primary)] text-[11px] text-white">
-
-                仁
-
-              </span>
-
-              RFERP 仁风仓库
-
-            </div>
-
-            <div className="text-[12px] text-[var(--color-fg-muted)]">
-
-              请登录以继续 · v{version}
-
-            </div>
+            RFERP{'\u00A0\u00A0'}仁风仓库管理系统
 
           </div>
 
@@ -520,6 +517,24 @@ export function LoginScreen({
           </button>
 
         </form>
+
+
+
+        {/* 窄屏：slogan 与版本在登录框下方居中（版本不能因为左栏隐藏就丢掉） */}
+
+        <p className="text-center text-[13px] text-[var(--color-fg-muted)] lg:hidden">
+
+          库存清楚，批次可追，交接不乱
+
+        </p>
+
+
+
+        <p className="text-center text-[11px] text-[var(--color-fg-subtle)] lg:hidden">
+
+          v{version}
+
+        </p>
 
       </main>
 

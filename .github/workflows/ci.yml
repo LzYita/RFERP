@@ -129,6 +129,14 @@ jobs:
           } else {
             $event = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
             $base = $event.before
+            # A force-push (and the very first push, where before is the zero SHA)
+            # names a base this clone does not contain, and `git diff --check` then
+            # dies with "bad object" instead of checking anything. Fall back to the
+            # first parent so the pushed range is still checked.
+            git cat-file -e "$base^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              $base = 'HEAD^1'
+            }
           }
           git diff --check $base HEAD
           if ($LASTEXITCODE -ne 0) {

@@ -1,49 +1,19 @@
-# 声明 paths.DataDir() 的返回值是**信任边界**。
+# DataDir is the root selected by the local operator, including authenticated
+# host-only POST /api/datadir, startup-token-protected setup, config and environment.
+# This trusts the root, not a request-supplied child name. The scanner sentinels
+# require raw paths and raw child names under DataDir to remain reportable.
+# Revisit if a remote deployment enables host operations, permissions/gateway are
+# removed, or root selection becomes available to an untrusted operator.
 #
-# 背景：CodeQL 的 go/path-injection 报了 30 条告警，全部指向
-# `filepath.Join(paths.DataDir(), ...)` 这类表达式。逐条追过（阶段 0）：
-# **30 条里 0 个真实漏洞** —— 路径里的"文件名"部分要么是常量、要么来自
-# os.ReadDir 的基名、要么已被校验。工具报的是"用户可配置的值进了路径表达式"。
-#
-# 为什么不能靠改代码让工具闭嘴（这轮实测过，不是推测）：
-#
-#   - `backuplayout.Resolve` 与 api 的目录校验**本来就做了** filepath.Rel 包含性
-#     检查，告警照旧 —— 说明 Rel 形式的校验对该查询不是 barrier
-#   - 把判据收进 `paths.ResolveUnder` 并加 `filepath.IsLocal`（Go 官方推荐的
-#     path-injection 写法）之后**仍然是 30 条** —— 实测说明 IsLocal 也不被认
-#
-# 所以「把各处收敛到一个 helper」这条路走不通：工具不认识这个 helper。
-# 剩下的机制是把信任边界**声明**出来，也就是本文件。
-#
-# 依据的威胁模型（`docs/plans/wails-migration.md` 明记）：
-# **操作者就是这台机器的主人**。数据目录是这台机器的主人在首启向导里自己选的
-# （或写在 config.json / MES_DATA_DIR 里）。让"用户能指定数据目录"这件事本身
-# 就是设计 —— 不是注入漏洞。CodeQL 的 taint 规则把环境变量与配置文件一律当作
-# 不可信输入，没有建这个前提。
-#
-# ⚠️ 这与"压制告警"的区别，值得写清楚：
-#   - 压制（dismiss / nosec）是让**具体告警**消失，没有说明适用范围
-#   - 这里是声明一个**全局前提**：DataDir 的返回值不可污。它同样会掩盖
-#     "DataDir 被当作不可信输入"这一类**新**告警 —— 但那正是我们想要的效果，
-#     因为这个前提是本应用的设计。
-#   - 代价是真实的：若将来"数据目录"变成**远程可指定**（如服务器形态下由
-#     客户端传目录），本声明就会变成一句错的谎话，必须同步撤销。
-#     所以下面留了撤销条件。
-#
-# 撤销条件（满足任一条就应删除本文件并重新审这 30 处）：
-#   1. DataDir 的值可以来自远程请求（跨机形态下客户端指定数据目录）
-#   2. 出现"数据目录之外的路径"参与备份/日志/导出落盘
-#   3. ResolveUnder 被绕过或被移除（它是"文件名"这一半的唯一出口）
-#
-# 与代码的分工（两半合起来才完整）：
-#   - 根目录可信      → 由本文件声明
-#   - 拼进去的名字可信 → 由 internal/paths 的 ResolveUnder / Under 在**代码里**保证
-#     （单一元素 + filepath.IsLocal），且有专门测试（internal/paths/paths_test.go）
+# ResolveExistingUnder returns the canonical existing target only after physical
+# containment under its root. Current callers supply trusted BackupDir/ExportDir.
+# Revisit its model if a caller supplies an untrusted root, containment changes,
+# or modifies the checked path. This snapshot check does not prevent filesystem
+# replacement races; hostile local filesystems require rooted handles.
 extensions:
   - addsTo:
       pack: codeql/go-all
       extensible: barrierModel
     data:
-      # 字段顺序与 go/ql/lib/ext/mime.multipart.model.yml 的既有用法一致：
-      # [包, 类型, 是否指针, 名称, "", "", 输出, 污点种类, 来源]
       - ["app/internal/paths", "", False, "DataDir", "", "", "ReturnValue", "path-injection", "manual"]
+      - ["app/internal/paths", "", False, "ResolveExistingUnder", "", "", "ReturnValue[0]", "path-injection", "manual"]

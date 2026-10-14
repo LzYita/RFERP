@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"app/internal/auth"
 	"app/internal/paths"
 	"app/internal/usecase"
 )
@@ -28,17 +29,58 @@ import (
 type backupApps struct {
 	usecase.Applications
 
-	dataDir   string
-	restored  string
-	cleared   bool
-	restoreFn func(string) (usecase.RestoreResult, error)
-	clearFn   func() (usecase.ClearResult, error)
+	dataDir         string
+	setDataDirCalls int
+	restored        string
+	cleared         bool
+	restoreFn       func(string) (usecase.RestoreResult, error)
+	clearFn         func() (usecase.ClearResult, error)
 }
 
 func (a *backupApps) DataDir() string { return a.dataDir }
 func (a *backupApps) SetDataDir(dir string) error {
+	a.setDataDirCalls++
 	a.dataDir = dir
 	return nil
+}
+
+func TestSetDataDirRequiresHostAndAdmin(t *testing.T) {
+	for _, host := range []bool{false, true} {
+		for _, role := range []auth.Role{"", auth.RoleAdmin, auth.RoleWarehouse, auth.RoleProduction, auth.RoleViewer} {
+			t.Run(string(role)+map[bool]string{false: "/remote", true: "/host"}[host], func(t *testing.T) {
+				apps := &backupApps{}
+				var options []Option
+				if host {
+					options = append(options, WithHostOperations())
+				}
+				s := newBackupServer(t, apps, options...)
+				before := apps.dataDir
+				target := filepath.Join(t.TempDir(), "selected")
+				var token string
+				if role != "" {
+					token = issue(t, s, user(1, "operator", role))
+				}
+				response := doJSON(t, s, "POST", "/api/datadir", token, map[string]string{"dir": target})
+				want := http.StatusForbidden
+				if role == "" {
+					want = http.StatusUnauthorized
+				}
+				if host && role == auth.RoleAdmin {
+					want = http.StatusOK
+				}
+				if response.Code != want {
+					t.Fatalf("status=%d want=%d body=%s", response.Code, want, response.Body.String())
+				}
+				if want == http.StatusOK {
+					if apps.setDataDirCalls != 1 || apps.dataDir != target {
+						t.Fatalf("authorized selection not applied exactly once: calls=%d dir=%q", apps.setDataDirCalls, apps.dataDir)
+					}
+				} else if apps.setDataDirCalls != 0 || apps.dataDir != before {
+					t.Fatalf("rejected request changed data directory: calls=%d dir=%q", apps.setDataDirCalls, apps.dataDir)
+				}
+			})
+		}
+	}
 }
 func (a *backupApps) BackupDatabase(saveDir string) (string, error) {
 	return filepath.Join(saveDir, "backup_20260925_101530.sql"), nil

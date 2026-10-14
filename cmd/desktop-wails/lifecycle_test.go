@@ -6,6 +6,42 @@ import (
 	"testing"
 )
 
+func TestListenLoopbackRejectsNonLoopback(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", ":0", "[::]:0", "192.0.2.1:0", "[2001:db8::1]:0", "example.invalid:0", "invalid"} {
+		t.Run(addr, func(t *testing.T) {
+			ln, err := listenLoopback(addr)
+			if ln != nil {
+				ln.Close()
+				t.Fatal("non-loopback listener opened")
+			}
+			if err == nil || !strings.Contains(err.Error(), "只允许回环地址") {
+				t.Fatalf("expected explicit loopback rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestListenLoopbackAcceptsLocalAddresses(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:0", "localhost:0", "[::1]:0", "[::ffff:127.0.0.1]:0"} {
+		t.Run(addr, func(t *testing.T) {
+			ln, err := listenLoopback(addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ln.Close()
+			bound := ln.Addr().(*net.TCPAddr)
+			if !bound.IP.IsLoopback() || bound.Port == 0 {
+				t.Fatalf("expected bound loopback address, got %s", bound)
+			}
+			conn, err := net.Dial("tcp", ln.Addr().String())
+			if err != nil {
+				t.Fatalf("loopback listener unreachable: %v", err)
+			}
+			conn.Close()
+		})
+	}
+}
+
 // 端口占用必须给出可操作的提示，而不是只丢一句 address already in use。
 //
 // 撞端口只可能发生在 -serve 模式（固定端口）；窗口模式用 :0 让内核分配，

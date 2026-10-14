@@ -43,7 +43,11 @@ const bad = (n, why) => {
   console.log(`  \u2717 ${n}  ->  ${why}`)
   fails.push(n)
 }
-const check = (n, cond, why) => (cond ? ok(n) : bad(n, why))
+let checks = 0
+const check = (n, cond, why) => {
+  checks++
+  return cond ? ok(n) : bad(n, why)
+}
 
 function run(cmd, args, opts = {}) {
   const p = spawn(cmd, args, { stdio: 'ignore', windowsHide: true, ...opts })
@@ -782,6 +786,64 @@ async function backupGate(page) {
     // 不真的点下去：会毁数据
   }
 }
+/**
+ * 设置屏（Round 7）：入口在主内容区而不是弹窗，三页签各有内容，
+ * 版本号取自**运行中的服务**。
+ *
+ * 版本号这条是这一屏最容易悄悄坏掉的地方：前端一度把版本写死在 App.tsx 的
+ * 常量里，那样发出去的 exe 升级后界面还在报旧号，而源码构建与产物构建各自
+ * 看都"对"。这里拿服务自报的版本去比，写死就必然对不上。
+ *
+ * 刻意**不点**「查询最新更新」：未配置 updateUrl 时服务端会回落到内置的
+ * GitHub 加速地址，一点就是一次真实外网请求——关口的结论会随网络变化。
+ * 那一条由 vitest 用桩覆盖（settings.test.tsx），这里只确认入口在。
+ */
+async function settingsGate(page) {
+  await page.locator('aside button', { hasText: '设置' }).first().click()
+  await sleep(900)
+
+  // 「不弹窗」：设置占用主内容区，不该冒出对话框
+  check('设置不弹窗（在主内容区显示）', (await page.locator('[role="dialog"]').count()) === 0,
+    '设置弹出了一个对话框')
+
+  const shown = () => page.locator('main').innerText().then((t) => t.replace(/\s+/g, ' ').slice(0, 240))
+  for (const t of ['使用指南', '常见问题', '更新说明']) {
+    check(`设置屏有页签「${t}」`, (await page.getByRole('tab', { name: t }).count()) > 0,
+      `缺少页签；主区显示：${await shown()}`)
+  }
+
+  check(`设置屏的版本是服务自报的 v${served}`,
+    (await page.locator(`text=当前版本 v${served}`).count()) > 0,
+    `没找到「当前版本 v${served}」；主区显示：${await shown()}`)
+  check('使用指南正文已渲染（离线可读）',
+    (await page.locator('text=首次启动').count()) > 0,
+    `指南没渲染出来；主区显示：${await shown()}`)
+
+  await page.getByRole('tab', { name: '常见问题' }).click()
+  await sleep(400)
+  check('常见问题页签有内容', (await page.locator('text=忘记密码').count()) > 0,
+    `常见问题为空；主区显示：${await shown()}`)
+
+  await page.getByRole('tab', { name: '更新说明' }).click()
+  await sleep(500)
+  const list = page.getByRole('list', { name: '版本列表' })
+  const versions = (await list.count()) > 0 ? await list.innerText() : ''
+  check('更新说明列出历史版本', /v\d+\.\d+\.\d+/.test(versions),
+    `版本列表：${versions.replace(/\s+/g, ' ').slice(0, 120)}`)
+  // 点第二条版本，右侧必须跟着换（更新说明是分版本查阅的）
+  const items = list.locator('button')
+  if ((await items.count()) > 1) {
+    const second = (await items.nth(1).innerText()).trim()
+    await items.nth(1).click()
+    await sleep(400)
+    check(`点版本 ${second} 后右侧切到该版本`,
+      (await page.locator(`main h2:has-text("${second}")`).count()) > 0,
+      `右侧没有切到 ${second}；主区显示：${await shown()}`)
+  } else {
+    check('更新说明有多个版本可切换', false, `只有 ${await items.count()} 条`)
+  }
+}
+
 // ---------------------------------------------------------------- 主流程
 
 let browser
@@ -853,6 +915,9 @@ try {
   // 备份屏：四道门与能力门控（不执行破坏性操作）
   await backupGate(page)
 
+  // 设置屏：三页签、版本取自服务端、离线帮助内容
+  await settingsGate(page)
+
   // 接口回读放最后：重新登录会作废浏览器会话
   await verifyPersisted()
 } catch (e) {
@@ -866,6 +931,12 @@ try {
   await cleanup()
 }
 
-console.log(fails.length === 0 ? '\n  浏览器关口全部通过' : `\n  失败 ${fails.length} 项：${fails.join('、')}`)
+// 断言总数一并打出来：只说「全部通过」时，谁也不知道到底跑了几条，
+// 于是「断言被删掉」和「断言全过」在输出上长得一样。
+console.log(
+  fails.length === 0
+    ? `\n  浏览器关口全部通过（${checks} 项）`
+    : `\n  失败 ${fails.length}/${checks} 项：${fails.join('、')}`,
+)
 console.log(`  被验证的服务版本：${served}`)
 process.exit(fails.length === 0 ? 0 : 1)

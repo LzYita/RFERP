@@ -34,6 +34,7 @@ const serverSrc = "server.go"
 var routesWithoutOpPoint = map[string]string{
 	"GET /api/me":                     "读自己的身份，任何登录用户都有权知道",
 	"GET /api/me/permissions":         "读自己的权限档位，同上",
+	"GET /api/help":                   "内置离线帮助文档，四个角色一视同仁，不需要模块权限",
 	"DELETE /api/session":             "登出，任何登录用户都能退出自己",
 	"POST /api/users/change-password": "改**自己**的密码；handler 内强制 in.ID == 会话用户 ID（admin.go:107）",
 }

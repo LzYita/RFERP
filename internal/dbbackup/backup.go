@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"app/internal/noconsole"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -52,6 +53,9 @@ func backupTo(dsn, mysqldumpPath, saveDir, prefix string, at time.Time) (string,
 	filePath := filepath.Join(saveDir, fmt.Sprintf("%s_%s.sql", prefix, now))
 
 	cmd := exec.Command(mysqldumpPath, "--defaults-extra-file="+cfgFile, mc.DBName)
+	// mysqldump 是控制台子系统程序，而宿主是 GUI 程序（-H windowsgui）；
+	// 不加这个标志 Windows 会给它新分配一个控制台并弹出黑框。
+	noconsole.Hide(cmd)
 	outFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create backup file: %w", err)

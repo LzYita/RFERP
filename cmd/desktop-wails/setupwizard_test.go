@@ -1,12 +1,84 @@
 package main
 
 import (
+	"database/sql"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"app/internal/dbsetup"
+	"github.com/go-sql-driver/mysql"
 )
+
+func TestPingMySQLCreatesExactDatabaseName(t *testing.T) {
+	dsn, dataDir := os.Getenv("RFERP_DBSETUP_TEST_DSN"), os.Getenv("RFERP_DBSETUP_TEST_DATADIR")
+	if dsn == "" || dataDir == "" {
+		t.Skip("requires an explicitly isolated MySQL instance")
+	}
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, portText, err := net.SplitHostPort(cfg.Addr)
+	port, portErr := strconv.Atoi(portText)
+	if err != nil || portErr != nil || cfg.Net != "tcp" || host != "127.0.0.1" || port == 3306 || cfg.DBName != "" {
+		t.Fatal("test DSN must select an isolated loopback port without a database")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var actualDir string
+	if err := db.QueryRow("SELECT @@datadir").Scan(&actualDir); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(filepath.Clean(actualDir), filepath.Clean(dataDir)) {
+		t.Fatal("server data directory does not match the explicitly isolated directory")
+	}
+	prefix := "wizard_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	for _, suffix := range []string{"-中文", "`库", "`; select 1; --"} {
+		t.Run(suffix, func(t *testing.T) {
+			name := prefix + suffix
+			if err := pingMySQL(mysqlInput{Host: host, Port: port, User: cfg.User, Password: cfg.Passwd, DBName: name}); err != nil {
+				t.Fatal(err)
+			}
+			quoted, err := dbsetup.QuoteDatabaseName(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if _, err := db.Exec("DROP DATABASE IF EXISTS " + quoted); err != nil {
+					t.Error(err)
+				}
+			})
+			var actual string
+			if err := db.QueryRow("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", name).Scan(&actual); err != nil || actual != name {
+				t.Fatalf("wizard created a different database: %q, %v", actual, err)
+			}
+			if strings.Contains(name, "`") {
+				var changedCount int
+				if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", strings.ReplaceAll(name, "`", "")).Scan(&changedCount); err != nil || changedCount != 0 {
+					t.Fatalf("wizard also created the backtick-stripped name: %d, %v", changedCount, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPingMySQLRejectsInvalidDatabaseNameBeforeConnecting(t *testing.T) {
+	for _, name := range []string{"", "a\x00b", "a ", "😀", strings.Repeat("库", 65)} {
+		if err := pingMySQL(mysqlInput{Host: "invalid.invalid", Port: 3306, DBName: name}); err == nil || err.Error() != "数据库名不合法" {
+			t.Errorf("name %q reached connection instead of validation: %v", name, err)
+		}
+	}
+}
 
 func TestEnsureWritableDirPreservesExistingProbe(t *testing.T) {
 	dir := t.TempDir()

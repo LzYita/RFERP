@@ -384,6 +384,10 @@ func createDedicatedUser(in mysqlInput) (string, string, error) {
 
 // pingMySQL 尝试建库并连一次。
 func pingMySQL(mi mysqlInput) error {
+	name, err := dbsetup.QuoteDatabaseName(mi.DBName)
+	if err != nil {
+		return err
+	}
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=5s&charset=utf8mb4",
 		mi.User, mi.Password, mi.Host, mi.Port)
 	db, err := sql.Open("mysql", dsn)
@@ -395,8 +399,7 @@ func pingMySQL(mi mysqlInput) error {
 		return err
 	}
 	// 库名可能不存在：建出来，否则后面的装配会以更隐晦的方式失败。
-	if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS `" +
-		strings.ReplaceAll(mi.DBName, "`", "") + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+	if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS " + name + " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
 		// 权限不足时不该判连接失败——服务器是通的，只是这个账号不能建库。
 		log.Printf("setup wizard: create database %q skipped: %v", mi.DBName, err)
 	}

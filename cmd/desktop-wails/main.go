@@ -181,6 +181,9 @@ func main() {
 		Title:  "RFERP-仁风仓库管理系统 v" + version,
 		Width:  winW,
 		Height: winH,
+		// 最小窗口：再小就会把登录页的元素挤出可视区（卡片 340 + 两侧留白 + 窄屏 logo/slogan）。
+		MinWidth:  480,
+		MinHeight: 640,
 		// Assets 留空：全部请求都交给 Handler（反向代理）。
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},

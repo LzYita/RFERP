@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { NAV } from '../lib/nav'
 import { canRead, canWrite, type ModulePermissions } from '../lib/permissions'
 import type { Me } from '../lib/api'
+import { MarkBox } from './MarkBox'
 
 /**
  * 应用外壳：深色侧栏 + 顶栏 + 内容区。
@@ -35,9 +36,12 @@ export function AppShell({
   return (
     <div className="flex h-full">
       <aside className="flex w-[var(--spacing-sidebar)] shrink-0 flex-col border-r border-[var(--color-sidebar-border)] bg-[var(--color-sidebar)] py-3 pr-2 pl-2 text-[var(--color-sidebar-fg)]">
-        <div className="mb-2.5 flex items-center gap-2 px-2 pb-2.5 text-[13px] font-bold whitespace-nowrap">
-          <span className="h-5 w-5 shrink-0 rounded-[6px] bg-[var(--color-primary)]" />
-          <span>仁风仓库</span>
+        {/* 品牌区：原来的「仁」方块与「仁风仓库」换成新标（原色、无底板），标宽为侧栏的
+            一半。`w-1/2` 量的是内容盒（侧栏两侧各 8px 内边距），故补回 0.5rem 才是「侧栏
+            的一半」；下方的 RFERP 居中、颜色与标一致。 */}
+        <div className="mb-3 flex flex-col items-center gap-2.5 pb-3">
+          <MarkBox className="w-[calc(50%+0.5rem)] bg-[var(--color-sidebar-brand)]" />
+          <span className="text-[13px] font-bold text-[var(--color-sidebar-brand)]">RFERP</span>
         </div>
 
         <nav className="flex flex-col gap-0.5">

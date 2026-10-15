@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 
@@ -78,6 +79,12 @@ type Server struct {
 	// 更要紧的是可注入：真实实现会**替换正在运行的测试进程并启动它**。
 	// 测试绝不能走真实路径。
 	applyUpdate func(zipPath string) error
+
+	// exitProcess 是 apply 成功之后退出旧进程的动作，默认 exitProcessNow。
+	//
+	// 可注入的理由同上，且更直白：真实实现会把**跑测试的进程**直接杀掉。
+	// WithProcessExit 只供测试使用。
+	exitProcess func()
 
 	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。
 	//
@@ -221,6 +228,20 @@ func WithUpdatePromptRunner(f func(url, current string)) Option {
 	return func(s *Server) { s.runPrompt = f }
 }
 
+// WithProcessExit 替换「apply 成功之后退出旧进程」的动作。**仅供测试**：
+// 默认实现是 os.Exit，会把跑测试的进程直接杀掉。
+func WithProcessExit(f func()) Option {
+	return func(s *Server) { s.exitProcess = f }
+}
+
+// exitProcessNow 是 apply 成功之后结束旧进程的默认实现。
+//
+// 退出码 0 —— 这是"正常重启"不是"出错退出"，Fyne 版同一位置也是 os.Exit(0)。
+//
+// 写成具名函数而不是在 New 里包一层闭包：闭包的函数名是 New.func1，测试无法区分
+// "默认实现"和"注入的假实现"，而这条默认值一旦被漏掉，缺陷⑥会静默复现。
+func exitProcessNow() { os.Exit(0) }
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -239,6 +260,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	if s.runPrompt == nil {
 		s.runPrompt = runUpdatePrompt
+	}
+	if s.exitProcess == nil {
+		s.exitProcess = exitProcessNow
 	}
 	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
 	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。

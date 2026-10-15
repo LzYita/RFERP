@@ -25,6 +25,11 @@ import (
 // ⚠️ 测试**必须**注入假的 applier：真实实现会替换正在运行的测试二进制并启动它。
 
 // newUpdateServer 建服务器，并注入只记录不执行的 applier。
+//
+// **同时注入一个什么都不做的 exitProcess**：apply 成功之后真实实现会 os.Exit(0)，
+// 而这里只关心"applier 被调用了几次、待办文件怎么变"。不注入的话，
+// 这些用例会走到真实的退出动作，把整个测试二进制杀掉——go test 表现为中途无声结束。
+// 退出行为本身由 update_exit_test.go 单独验证（那里才注入会打信号的假实现）。
 func newUpdateServer(t *testing.T) (*Server, *[]string) {
 	t.Helper()
 	var applied []string
@@ -32,7 +37,8 @@ func newUpdateServer(t *testing.T) (*Server, *[]string) {
 		WithUpdateApplier(func(p string) error {
 			applied = append(applied, p)
 			return nil
-		}))
+		}),
+		WithProcessExit(func() {}))
 	return s, &applied
 }
 

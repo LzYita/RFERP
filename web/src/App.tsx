@@ -14,6 +14,7 @@ import {
   usePermissions,
   type Me,
 } from './lib/api'
+import { useUpdateCheckOnLogin } from './lib/useUpdateCheck'
 
 const VERSION = '1.3.0'
 
@@ -41,6 +42,10 @@ export default function App() {
   // 每次 +1 就让当前屏重挂载，实现「刷新」
   const [refreshToken, setRefreshToken] = useState(0)
   const { modules, reload } = usePermissions()
+
+  // 登录态成立后查一次更新（手动登录与「记住登录」自动恢复两条路都覆盖到）——
+  // 时机与 Fyne 1.3.0 一致，都是登录之后。
+  useUpdateCheckOnLogin(me)
 
   // 会话 token 只在内存里，进程启动时必然为空 —— 登录页一定会出现。
   // 这里只处理「页面在已登录状态下被重载」的情况（例如 WebView 自身刷新）。
@@ -76,14 +81,17 @@ export default function App() {
       .finally(() => setReady(true))
   }, [])
 
-  const onLoggedIn = useCallback((token: string, user: Me) => {
-    setToken(token)
-    setMe(user)
-    setNeedsSetup(false)
-    setSessionNotice('')
-    setScreen({ kind: 'shell', key: 'dashboard' })
-    reload()
-  }, [reload])
+  const onLoggedIn = useCallback(
+    (token: string, user: Me) => {
+      setToken(token)
+      setMe(user)
+      setNeedsSetup(false)
+      setSessionNotice('')
+      setScreen({ kind: 'shell', key: 'dashboard' })
+      reload()
+    },
+    [reload],
+  )
 
   const onSetupDone = useCallback(
     (token: string, user: Me) => {

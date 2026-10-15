@@ -177,14 +177,6 @@ func main() {
 	log.Printf("RFERP %s embedded server on http://%s (storage=%s)", version, emb.addr, res.Kind)
 
 	winW, winH := fitWindow(1360, 860)
-
-	// 启动更新检查：对齐 Fyne 版（cmd/desktop/main.go:308 同样的门与时机）。
-	//
-	// updateURL 为空就是"关掉了"——AutoUpdate 为 false 时上面已把它清空，
-	// 所以用户在首启向导里关掉自动检查之后就再也不会被打扰。
-	// 只在窗口形态做：无头 -serve 不传 WithUpdate，本来就没有更新端点。
-	api.StartUpdateCheck(updateURL, version)
-
 	if err := wails.Run(&options.App{
 		Title:  "RFERP-仁风仓库管理系统 v" + version,
 		Width:  winW,

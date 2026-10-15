@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,16 +33,30 @@ type SQLiteTx struct {
 	q queryer
 }
 
-// OpenSQLite opens (creating if needed) a SQLite database with product PRAGMAs.
-func OpenSQLite(path string) (*sqlx.DB, error) {
-	if path == "" {
-		return nil, fmt.Errorf("sqlite path is required")
-	}
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
-	}
+// SQLite 主码（extended code 的低 8 位），见 SQLite 的 result code 表。
+const (
+	sqliteBusy   = 5  // SQLITE_BUSY
+	sqliteLocked = 6  // SQLITE_LOCKED
+	sqliteIO     = 10 // SQLITE_IOERR（含 READ/SHMOPEN 等扩展码）
+)
+
+// 开库重试：次数与退避。合计约 6 秒。
+//
+// 为什么需要：软件更新是"**先启动新进程、再由老进程退出**"
+// （internal/update.ApplyAndRestart），新进程只等单实例锁——而单实例锁比文件句柄
+// 先释放，于是新进程会在老进程还在拆 WAL/SHM 句柄的时候去开库，驱动报
+// `disk I/O error (1546)`（主码 10），用户看到的是"RFERP 无法启动"，再手动点一次
+// 就好了。2026-10-15 的实机演练复现过，见 docs/plans/wails-migration.md。
+//
+// DSN 里的 busy_timeout(5000) 救不了这个：它只处理 BUSY/LOCKED，不处理硬 I/O 错误。
+//
+// 只能在新版本这边修：1.3.0 已经发布，它的 ApplyAndRestart 改不了了。
+var sqliteOpenAttempts = []time.Duration{0, 200 * time.Millisecond, 400 * time.Millisecond,
+	800 * time.Millisecond, 1600 * time.Millisecond, 3 * time.Second}
+
+// openSQLiteOnce 是真正开一次库的那一步，单独抽出来是为了测试能替换它：
+// 触发一次真实的 IOERR 需要两个进程在正确的时刻抢同一个文件，测试里做不到。
+var openSQLiteOnce = func(path string) (*sqlx.DB, error) {
 	dsn := "file:" + filepath.ToSlash(path) +
 		"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sqlx.Open("sqlite", dsn)
@@ -55,6 +70,60 @@ func OpenSQLite(path string) (*sqlx.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// transientSQLiteError 判断一个开库错误是否值得重试。
+//
+// 用接口而不是具体类型：驱动是 modernc.org/sqlite（纯 Go），它的 *Error 带 Code() int；
+// 万一换驱动（例如 mattn/go-sqlite3），只要也提供 Code() int 就能继续工作。
+//
+// 只重试 BUSY / LOCKED / IO 三类：
+//   - BUSY、LOCKED 是并发写/锁竞争，busy_timeout 有时也会漏出来；
+//   - IO 多半是"别的进程正在拆这个文件"或杀软/索引器正在扫，属瞬时；
+//   - **不重试 CANTOPEN(14)**：路径错、目录不存在、没权限这些是配置问题，重试只会
+//     把一个明确的报错拖成几秒后才报出来。
+func transientSQLiteError(err error) bool {
+	var coder interface{ Code() int }
+	if !errors.As(err, &coder) {
+		return false
+	}
+	switch coder.Code() & 0xFF {
+	case sqliteBusy, sqliteLocked, sqliteIO:
+		return true
+	}
+	return false
+}
+
+// OpenSQLite opens (creating if needed) a SQLite database with product PRAGMAs.
+//
+// 瞬时错误（见 transientSQLiteError）会按 sqliteOpenAttempts 的退避重试，
+// 每次重试都写一行日志——不写的话用户只会看到"启动失败"，不知道程序等了几秒。
+func OpenSQLite(path string) (*sqlx.DB, error) {
+	if path == "" {
+		return nil, fmt.Errorf("sqlite path is required")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	var lastErr error
+	for attempt, wait := range sqliteOpenAttempts {
+		if attempt > 0 {
+			log.Printf("sqlite open retry %d/%d after %s: %v", attempt, len(sqliteOpenAttempts)-1,
+				wait, lastErr)
+			time.Sleep(wait)
+		}
+		db, err := openSQLiteOnce(path)
+		if err == nil {
+			return db, nil
+		}
+		lastErr = err
+		if !transientSQLiteError(err) {
+			return nil, err
+		}
+	}
+	return nil, lastErr
 }
 
 // NewSQLite wraps an opened SQLite *sqlx.DB (tests may pass temp files).

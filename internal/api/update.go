@@ -257,32 +257,16 @@ func (g *updatePromptGate) inProgress() bool {
 	return g.busy
 }
 
-// StartUpdateCheck 在启动后异步查一次，有新版就用原生对话框提示。
-//
-// 与 Fyne 版逐条对齐（internal/ui/update.go:StartUpdateCheck，2026-10-15 接上）：
-// 延时 3 秒再查（不与首屏和数据库初始化抢资源）；查不到、没配置更新源、用户不点
-// 确认——都安静退出，不打扰；有新版则把版本与说明摆出来问一句"是否立即更新"。
-//
-// 门在调用方：AutoUpdate 关掉时调用方应传空 url，本函数第一行就返回。
-func StartUpdateCheck(url, current string) {
-	if url == "" {
-		return
-	}
-	go func() {
-		time.Sleep(3 * time.Second)
-		if !promptGate.acquire() {
-			log.Printf("update check skipped: another update flow is in progress")
-			return
-		}
-		runUpdatePrompt(url, current)
-	}()
-}
-
 // runUpdatePrompt 是**唯一**一条"弹框 → 下载 → 替换重启"的实现，调用方必须已经
 // 持有 promptGate。
 //
-// 启动检查与设置屏的手动「查询最新更新」都走它：两条入口必须表现一致，否则就会
-// 出现"启动时能装、手动查完却只能看"这种用户一定会问的差异。
+// 两个调用方都走它，行为因此必然一致：
+//   - 设置屏「查询最新更新」查到新版后（handlePromptUpdate）；
+//   - 登录成功后的自动检查（前端在登录后调同一个端点，见下）。
+//
+// **时机也按 Fyne 版**：1.3.0 的检查在 launchMain 里，也就是**登录之后**
+// （cmd/desktop/main.go:291-309）。Wails 版曾经放在启动后 3 秒（登录之前），
+// 那样会在用户刚坐下、可能正在录入数据时弹框，点「是」就立刻重启——已改回。
 //
 // 查不到 / 没配置 / 用户不点确认 → 安静退出（只写日志）。
 func runUpdatePrompt(url, current string) {

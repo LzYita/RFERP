@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 
@@ -79,11 +80,39 @@ type Server struct {
 	// 测试绝不能走真实路径。
 	applyUpdate func(zipPath string) error
 
+	// exitProcess 是 apply 成功之后退出旧进程的动作，默认 exitProcessNow。
+	//
+	// 可注入的理由同上，且更直白：真实实现会把**跑测试的进程**直接杀掉。
+	// WithProcessExit 只供测试使用。
+	exitProcess func()
+
+	// jobs 是"异步下载"的任务表，给界面显示进度用（见 update.go 的说明）。
+	// 生命周期极短：一次下载，外加完成后 5 分钟的容错窗口。
+	jobs   map[string]*downloadJob
+	jobsMu sync.Mutex
+	jobSeq int
+	// jobSeqMu 只护 jobSeq（id 要单调递增，避免同毫秒内两次请求撞 id）。
+	jobSeqMu sync.Mutex
+
+	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。	//
+	// 可注入的理由同上，而且更硬：真实实现会**弹一个模态框等人点**，在 Windows 上
+	// 等于把测试进程挂住；它还会去连清单地址，连不上时退到真实的 GitHub 发布页，
+	// 那里可能真有更高的正式版本——于是测试机上会真的弹出一个更新提示。
+	runPrompt func(url, current string)
+
+	// newChecker 是「构造更新检查器」的方式，默认 update.NewChecker。
+	//
+	// 可注入的原因：真实实现给检查器安了**线上 GitHub** 作回退地址，于是"配置源失败"
+	// 的测试会去打外网（本机不通 → 卡 60 秒；CI 通 → 结果又和本地不同）。注入后
+	// 两条源都能指向本地，确定且离线。仅测试使用（WithUpdateChecker）。
+	newChecker func(url, current string) (*update.Checker, error)
+
 	// pendingUpdate 保存**下载步骤刚产生并通过校验**的更新包。
 	//
 	// apply 只认这一个 —— 客户端不能再指认任意路径。此前 apply 直接接受请求体里的
-	// path 且不做校验，等于给了任何持有 System.ApplyUpdate 的会话一个
-	// 「任意路径 → 取出 exe → 覆盖程序并运行」的原语。
+	// path 且不做校验，等于给了任何已登录会话一个「任意路径 → 取出 exe → 覆盖程序
+	// 并运行」的原语（当时这条路由挂在 System.ApplyUpdate 上，2026-10-15 按产品决定
+	// 对所有登录角色开放写入，于是这条"路径不可指认"的约束更重要了）。
 	//
 	// 存 sha 是为了在 apply 之前**再核对一次**：下载校验的是那个临时文件，
 	// 而下载与 apply 之间隔着一次 HTTP 往返和一次客户端决策，中间文件可能被换掉。
@@ -205,6 +234,37 @@ func WithUpdateApplier(f func(zipPath string) error) Option {
 	return func(s *Server) { s.applyUpdate = f }
 }
 
+// WithUpdatePromptRunner 替换「弹更新确认框并安装」的实际动作。**仅供测试**：
+// 真实实现会弹一个模态框等人点，Windows 上跑测试会挂住测试进程；
+// 而且它会去连清单地址（连不上时还会退到 DefaultFallbackURL，也就是真实的
+// GitHub 发布页——那里可能真的有更高的正式版本，于是测试机上会真的弹框）。
+func WithUpdatePromptRunner(f func(url, current string)) Option {
+	return func(s *Server) { s.runPrompt = f }
+}
+
+// WithProcessExit 替换「apply 成功之后退出旧进程」的动作。**仅供测试**：
+// 默认实现是 os.Exit，会把跑测试的进程直接杀掉。
+func WithProcessExit(f func()) Option {
+	return func(s *Server) { s.exitProcess = f }
+}
+
+// WithUpdateChecker 替换「构造更新检查器」的方式。**仅供测试**：
+// 真实实现（update.NewChecker）会把内置回退地址设为**线上 GitHub**，
+// 于是任何"配置源失败"的用例都会去打外网 —— 本机 github.com 不通，一卡就是 60 秒；
+// CI 上通了，也会因公钥对不上而得到与本地不同的结果。注入后两条源都能指向本地，
+// 结果确定、不依赖网络。
+func WithUpdateChecker(f func(url, current string) (*update.Checker, error)) Option {
+	return func(s *Server) { s.newChecker = f }
+}
+
+// exitProcessNow 是 apply 成功之后结束旧进程的默认实现。
+//
+// 退出码 0 —— 这是"正常重启"不是"出错退出"，Fyne 版同一位置也是 os.Exit(0)。
+//
+// 写成具名函数而不是在 New 里包一层闭包：闭包的函数名是 New.func1，测试无法区分
+// "默认实现"和"注入的假实现"，而这条默认值一旦被漏掉，缺陷⑥会静默复现。
+func exitProcessNow() { os.Exit(0) }
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -213,6 +273,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
 	s.remember.file = s.rememberFile
+	if s.jobs == nil {
+		s.jobs = make(map[string]*downloadJob)
+	}
 	// 同理：打开文件夹的实现必须在 opts 之后兜底，否则漏传就会 nil panic，
 	// 而"漏传"在这里等价于"一点就崩"。
 	if s.openFolder == nil {
@@ -220,6 +283,12 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	if s.applyUpdate == nil {
 		s.applyUpdate = update.ApplyAndRestart
+	}
+	if s.runPrompt == nil {
+		s.runPrompt = runUpdatePrompt
+	}
+	if s.exitProcess == nil {
+		s.exitProcess = exitProcessNow
 	}
 	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
 	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。
@@ -240,10 +309,28 @@ func (s *Server) Handler() http.Handler {
 	// 「应用」会替换正在运行的 exe，必须带 confirm；不配置更新源时这三个端点
 	// 仍可调用，但一律返回 enabled:false / 400，不发任何网络请求。
 	mux.HandleFunc("GET /api/update/check", s.handleCheckUpdate)
-	// download/apply 必须带权限点：之前这里是空字符串，而 auth() 对空权限点
-	// 直接放行 —— 任何登录用户（含只读 viewer）都能替换正在运行的程序。
-	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, "System.DownloadUpdate"))
-	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, "System.ApplyUpdate"))
+	// download/apply 只要求**已登录**，不按角色区分（2026-10-15，产品决定：
+	// 对齐 Fyne 旧版——旧版的启动检查对任何登录用户都会弹框）。
+	//
+	// 为什么这不是权限绕过：能不能换掉程序，不由角色决定，而由三道与角色无关的
+	// 硬闸门决定——
+	//  1. 更新包必须带**生产私钥**的 ed25519 签名，且文件哈希与清单一致
+	//     （下载时核一次，apply 之前再核一次）；
+	//  2. apply 只认"本次下载刚校验通过"的那个临时文件，请求体里的 path 一律忽略；
+	//  3. apply 必须带 confirm:true。
+	//
+	// 换句话说：任何登录角色能触发的只是"去装一个**只有生产私钥签得出**的包"，
+	// 不能让他装任意代码。剩下的取舍是可用性取舍（任何人都可能在他录入数据时
+	// 发起一次更新并重启程序），这正是本次产品决定接受的那一份。
+	// 进度查询（给界面显示"正在下载 x%"）：`POST /api/update/download?async=1`
+	// 立刻回 202 与 job id，下载在后台跑，`GET /api/update/progress?job=<id>` 轮询。
+	// 不带 `async=1` 时仍是同步模式（下载完才响应），给脚本与测试用。
+	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
+	mux.HandleFunc("GET /api/update/progress", s.auth(s.handleUpdateProgress, ""))
+	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
+	// 手动「查询最新更新」查到新版后弹原生确认框（设置屏调用）。
+	// 与 download/apply 同一个口径：登录即可，不按角色区分。
+	mux.HandleFunc("POST /api/update/prompt", s.auth(s.handlePromptUpdate, ""))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

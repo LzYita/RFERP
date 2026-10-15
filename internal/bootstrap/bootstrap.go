@@ -252,7 +252,11 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 		// 分开前缀与目录之后，各自的保留策略才落得下去。
 		BackupDir: paths.SafetyBackupDir(),
 		Backup: func(dsn, mysqldumpPath, saveDir string) (string, error) {
-			return dbbackup.BackupTo(dsn, mysqldumpPath, saveDir, paths.PrefixPreMigrate)
+			dir, err := backuplayout.DirFor(paths.PrefixPreMigrate)
+			if err != nil {
+				return "", err
+			}
+			return dbbackup.BackupTo(dsn, mysqldumpPath, dir, paths.PrefixPreMigrate)
 		},
 	})
 	if err != nil {
@@ -266,7 +270,9 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 	// 升级前副本同样滚动保留。放迁移成功之后：迁移失败时那份副本正是排查的线索，
 	// 那时删掉旧的就等于把唯一的参照物清了。
 	if res.BackupPath != "" {
-		dbbackup.PruneSnapshots(paths.SafetyBackupDir(), paths.PrefixPreMigrate, paths.SafetyCopyKeep)
+		if dir, err := backuplayout.DirFor(paths.PrefixPreMigrate); err == nil {
+			dbbackup.PruneSnapshots(dir, paths.PrefixPreMigrate, paths.SafetyCopyKeep)
+		}
 	}
 
 	store := repository.New(db)

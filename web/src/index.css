@@ -30,6 +30,9 @@
   --color-sidebar-fg-muted: #94a3b8;
   --color-sidebar-active: #334155;
   --color-sidebar-border: #334155;
+  /* 侧栏上的品牌色：主色 #0f766e 在这里只有 2.64:1 对比度（低于图形元素建议的
+     3:1），深色底上改用亮一档的青，对 --color-sidebar 约 7.8:1。 */
+  --color-sidebar-brand: #2dd4bf;
 
   /* 页面底色与表面 */
   --color-canvas: #f1f5f4;

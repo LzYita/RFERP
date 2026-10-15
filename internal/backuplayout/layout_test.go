@@ -342,8 +342,10 @@ func TestDirForPrefixes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", prefix, err)
 		}
-		if got != want {
-			t.Errorf("%s → %q，期望 %q", prefix, got, want)
+		gotInfo, gotErr := os.Stat(got)
+		wantInfo, wantErr := os.Stat(want)
+		if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+			t.Errorf("%s → %q，期望目录 %q（%v，%v）", prefix, got, want, gotErr, wantErr)
 		}
 		if st, err := os.Stat(got); err != nil || !st.IsDir() {
 			t.Errorf("%s 的目录没创建：%v", prefix, err)
@@ -351,6 +353,238 @@ func TestDirForPrefixes(t *testing.T) {
 	}
 	if _, err := DirFor("something_else"); err == nil {
 		t.Error("未知前缀应报错，而不是猜一个目录")
+	}
+}
+
+func makeCategoryLink(t *testing.T, link, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v: %s", err, out)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDirForRejectsCategoryLinksOutsideBackupRoot(t *testing.T) {
+	setup(t)
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeCategoryLink(t, paths.ManualBackupDir(), outside)
+
+	if got, err := DirFor(paths.PrefixManual); err == nil || got != "" {
+		t.Fatalf("outside category link accepted: %q, %v", got, err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+		t.Fatalf("outside sentinel changed: %q, %v", data, err)
+	}
+}
+
+func TestDirForRejectsCategoryAliasToAnotherCategory(t *testing.T) {
+	setup(t)
+	manual := paths.ManualBackupDir()
+	if err := os.MkdirAll(manual, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(manual, "backup_20261001_120000.sql")
+	if err := os.WriteFile(sentinel, []byte("manual"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeCategoryLink(t, paths.AutoBackupDir(), manual)
+
+	if got, err := DirFor(paths.PrefixAuto); err == nil || got != "" {
+		t.Fatalf("auto alias to manual accepted: %q, %v", got, err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "manual" {
+		t.Fatalf("manual sentinel changed: %q, %v", data, err)
+	}
+}
+
+func TestDirForAllowsLinkedBackupRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	physicalRoot := filepath.Join(t.TempDir(), "backup-root")
+	if err := os.MkdirAll(physicalRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths.SetDataDir(dataDir)
+	t.Cleanup(func() { paths.SetDataDir("") })
+	makeCategoryLink(t, paths.BackupDir(), physicalRoot)
+
+	got, err := DirFor(paths.PrefixAuto)
+	want := filepath.Join(physicalRoot, string(paths.CategoryAuto))
+	if err != nil {
+		t.Fatalf("DirFor through linked backup root = %q, %v; want %q", got, err, want)
+	}
+	gotInfo, gotErr := os.Stat(got)
+	wantInfo, wantErr := os.Stat(want)
+	if gotErr != nil || wantErr != nil || !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("DirFor returned a different directory: %q vs %q (%v, %v)", got, want, gotErr, wantErr)
+	}
+}
+
+func TestDirForRejectsFileAtCategoryPath(t *testing.T) {
+	root := setup(t)
+	if err := os.WriteFile(paths.ManualBackupDir(), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := DirFor(paths.PrefixManual); err == nil || got != "" {
+		t.Fatalf("file accepted as manual backup directory: %q, %v", got, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "备份", "manual"))
+	if err != nil || string(data) != "keep" {
+		t.Fatalf("file at category path changed: %q, %v", data, err)
+	}
+}
+
+func TestMigrateLegacyWorksWithLinkedBackupRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	physicalRoot := filepath.Join(t.TempDir(), "backup-root")
+	if err := os.MkdirAll(physicalRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(physicalRoot, "backup_20261001_120000.sql"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths.SetDataDir(dataDir)
+	t.Cleanup(func() { paths.SetDataDir("") })
+	makeCategoryLink(t, paths.BackupDir(), physicalRoot)
+
+	rep, err := MigrateLegacy()
+	if err != nil || len(rep.Moved) != 1 {
+		t.Fatalf("MigrateLegacy through linked backup root = %+v, %v", rep, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(physicalRoot, "manual", "backup_20261001_120000.sql")); err != nil || string(data) != "legacy" {
+		t.Fatalf("migrated file = %q, %v", data, err)
+	}
+}
+
+func TestMigrateLegacyLeavesFileWhenCategoryLinkEscapes(t *testing.T) {
+	root := setup(t)
+	const name = "backup_20261001_120000.sql"
+	put(t, root, filepath.Join("备份", name), 7)
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeCategoryLink(t, paths.ManualBackupDir(), outside)
+
+	rep, err := MigrateLegacy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Moved) != 0 || len(rep.Skipped) != 1 {
+		t.Fatalf("migration report = %+v; expected the legacy file to be skipped", rep)
+	}
+	if _, err := os.Stat(filepath.Join(paths.BackupDir(), name)); err != nil {
+		t.Fatalf("legacy file was not preserved: %v", err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "preserve" {
+		t.Fatalf("outside sentinel changed: %q, %v", data, err)
+	}
+}
+
+func TestMigrateLegacyDoesNotWriteThroughMigrationLogLink(t *testing.T) {
+	root := setup(t)
+	put(t, root, filepath.Join("备份", "backup_20261001_120000.sql"), 7)
+	outside := filepath.Join(t.TempDir(), MigrationLogName)
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(paths.BackupDir(), MigrationLogName)
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+	if _, err := MigrateLegacy(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
+		t.Fatalf("outside migration log changed: %q, %v", data, err)
+	}
+}
+
+func TestMigrateLegacyLeavesFileSymlinkInLegacyRoot(t *testing.T) {
+	root := setup(t)
+	const name = "backup_20261001_120000.sql"
+	outside := filepath.Join(t.TempDir(), "outside.sql")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(paths.BackupDir(), name)
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+
+	rep, err := MigrateLegacy()
+	if err != nil || len(rep.Moved) != 0 || len(rep.Skipped) != 1 {
+		t.Fatalf("MigrateLegacy report = %+v, %v; expected the link to be skipped", rep, err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("legacy source link changed: %v, %v", st, err)
+	}
+	if data, err := os.ReadFile(outside); err != nil || string(data) != "keep" {
+		t.Fatalf("symlink target changed: %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "备份", "manual", name)); !os.IsNotExist(err) {
+		t.Fatalf("symlink was moved into manual/: %v", err)
+	}
+}
+
+func TestMigrateLegacyPreservesDanglingDestinationLink(t *testing.T) {
+	root := setup(t)
+	const name = "backup_20261001_120000.sql"
+	put(t, root, filepath.Join("备份", name), 7)
+	if err := os.MkdirAll(paths.ManualBackupDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(paths.ManualBackupDir(), name)
+	target := filepath.Join(t.TempDir(), "missing.sql")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+
+	rep, err := MigrateLegacy()
+	if err != nil || len(rep.Moved) != 0 || len(rep.Skipped) != 1 {
+		t.Fatalf("MigrateLegacy report = %+v, %v; expected collision to be skipped", rep, err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("dangling destination link changed: %v, %v", st, err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("dangling link target was created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.BackupDir(), name)); err != nil {
+		t.Fatalf("legacy source was removed: %v", err)
+	}
+}
+
+func TestCopyFileThenRemovePreservesExistingDestination(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "source.sql")
+	dst := filepath.Join(root, "manual", "backup_20261001_120000.sql")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFileThenRemove(src, dst); err == nil {
+		t.Fatal("copyFileThenRemove overwrote an existing destination")
+	}
+	for path, want := range map[string]string{src: "source", dst: "existing"} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", path, got, err, want)
+		}
 	}
 }
 

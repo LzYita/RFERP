@@ -18,6 +18,7 @@
 //     同一个共享库（曾因此撞唯一键，也曾差点误连正式库）。
 //   - 绝不读写用户配置/正式数据库：本轮配置只指向本轮临时目录里的 SQLite。
 import { spawn } from 'node:child_process'
+import { stripVTControlCharacters } from 'node:util'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -27,7 +28,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const WEB = path.resolve(HERE, '..')
 const REPO = path.resolve(WEB, '..')
 const API_PORT = process.env.GATE_API_PORT ?? '19098'
-const VITE_URL = `http://127.0.0.1:${process.env.GATE_VITE_PORT ?? '5173'}/`
+const VITE_PORT = process.env.GATE_VITE_PORT ?? '5173'
+const VITE_URL = `http://127.0.0.1:${VITE_PORT}/`
 const ADMIN = { username: 'admin', password: 'admin12345' }
 const TYPES = ['电子', '五金', '塑料', '硅胶', '包装辅料', '其他']
 
@@ -56,28 +58,43 @@ function run(cmd, args, opts = {}) {
 }
 
 /** Windows 上 kill() 不带子进程树；npm/vite 会再挂一层，必须按树杀。 */
-function killTree(p) {
-  if (!p?.pid) return
-  try {
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true }).unref()
-    } else {
-      p.kill()
-    }
-  } catch {
-    /* 已经退出 */
+async function killTree(p) {
+  if (!p?.pid || p.exitCode !== null || p.signalCode !== null) return
+  const closed = new Promise((resolve) => p.once('close', resolve))
+  if (process.platform === 'win32') {
+    await new Promise((resolve, reject) => {
+      const killer = spawn('taskkill', ['/F', '/T', '/PID', String(p.pid)], { stdio: 'ignore', windowsHide: true })
+      killer.once('error', reject)
+      killer.once('close', (code) => {
+        if (code === 0 || p.exitCode !== null || p.signalCode !== null) resolve()
+        else reject(new Error(`taskkill ${p.pid} 退出码 ${code}`))
+      })
+    })
+  } else {
+    p.kill()
   }
+  await closed
 }
 
 async function cleanup() {
-  for (const p of kids) killTree(p)
-  await sleep(900)
+  let stopped = true
+  for (const p of kids) {
+    try { await killTree(p) }
+    catch (error) {
+      stopped = false
+      console.log(`  （子进程未确认退出：${error.message}）`)
+    }
+  }
+  if (!stopped) {
+    console.log(`  （临时目录保留：${RUN}）`)
+    return
+  }
   // Windows 上进程退出与文件句柄释放之间有延迟，rmSync 的重试正是为这个
   // 设计的（server.exe 与 -wal/-shm 常在第一次尝试时仍被占着）。
   try {
     fs.rmSync(RUN, { recursive: true, force: true, maxRetries: 24, retryDelay: 500 })
-  } catch {
-    console.log(`  （临时目录未清干净，下次启动会扫掉：${RUN}）`)
+  } catch (error) {
+    console.log(`  （临时目录保留：${RUN}；${error.code ?? 'unknown'} ${error.path ?? ''} ${error.message}）`)
   }
 }
 
@@ -221,12 +238,27 @@ async function startFrontend(desktopStyle) {
     if (!okPage) throw new Error(`产物没有提供可用的内嵌页面：${url}`)
     return url
   }
-  run(process.execPath, [path.join(WEB, 'node_modules', 'vite', 'bin', 'vite.js')], {
+  const vite = run(process.execPath, [
+    path.join(WEB, 'node_modules', 'vite', 'bin', 'vite.js'),
+    '--host', '127.0.0.1', '--port', VITE_PORT, '--strictPort',
+  ], {
     cwd: WEB,
     env: { ...process.env, RFERP_DEV_PORT: API_PORT },
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-  const up = await until(async () => (await fetch(VITE_URL)).ok)
-  if (!up) throw new Error('vite 未就绪')
+  let output = ''
+  const capture = (chunk) => { output = (output + chunk.toString()).slice(-4096) }
+  // Strip after accumulation: escape sequences can span output chunks.
+  const plain = () => stripVTControlCharacters(output)
+  vite.stdout.on('data', capture)
+  vite.stderr.on('data', capture)
+  // An occupied port can answer HTTP before our Vite process reports listening.
+  const up = await until(async () => (
+    vite.exitCode !== null || (plain().includes(VITE_URL) && (await fetch(VITE_URL)).ok)
+  ))
+  if (!up || vite.exitCode !== null) {
+    throw new Error(`vite 未就绪（${VITE_URL}）：${plain().trim().replace(/\s+/g, ' ') || '没有启动输出'}`)
+  }
   return VITE_URL
 }
 

@@ -1049,9 +1049,11 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > `update available` 并弹确认框。→ 切成新 UI 后**只能查、不能装**，已列为 Round 8 第一先决项。
 >
 > **已修（2026-10-15）**：`startUpdateCheck` 导出为 `api.StartUpdateCheck` 并由
-> `cmd/desktop-wails/main.go` 在窗口形态启动前调用，门与 Fyne 版一致；同一天按产品决定
-> **取消角色门**（`System.DownloadUpdate` / `System.ApplyUpdate` 与 `ModuleSystem` 一并删除），
-> 更新对所有登录角色开放。人工确认环节仍待实测。
+> `cmd/desktop-wails/main.go` 在窗口形态启动前调用，门与 Fyne 版一致；手动「查询最新更新」
+> 查到新版后调 `POST /api/update/prompt`，**服务端弹同一个原生框**（共用 `runUpdatePrompt`），
+> 点「是」即安装。同一天按产品决定**取消角色门**（`System.DownloadUpdate` /
+> `System.ApplyUpdate` 与 `ModuleSystem` 一并删除），更新对所有登录角色开放。
+> 人工确认环节仍待实测。
 
 **关口（2026-10-14 实机通过）**：**1.3.0（Fyne 旧 UI）→ 2.0.0（Wails 新 UI）升级演练**，
 含升级前备份、迁移、验签门、哈希门、失败中止与回滚材料。全程用隔离库 + 临时数据目录，
@@ -1087,7 +1089,18 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       前各核一次）、apply 只认本次下载刚校验过的文件且必须 `confirm:true`。
       与 Fyne 版的唯一差别：没有进度条（原生 MessageBox 画不出来），进度写日志 +
       一条"正在下载更新，请勿关闭程序…"提示。
-      **未实测**：真实「出厂 1.3.0 → 新版」的人工确认环节仍待跑（Round 7 演练只验到"能查"）。
+      手动入口同批接上：设置屏「查询最新更新」查到新版本后调 `POST /api/update/prompt`，
+      **服务端弹出与启动时完全同一个原生框**（两条入口共用 `runUpdatePrompt`），
+      用户点「是」即下载安装。端点立即返回 202（对话框要等人点、下载可能几分钟，
+      不能把 HTTP 请求挂在上面）；同一时刻只允许一条更新流程（`promptGate`），重复
+      触发返回 409。**未实测**：真实「出厂 1.3.0 → 新版」的人工确认环节仍待跑
+      （Round 7 演练只验到"能查"）。
+- [ ] **⑥ `POST /api/update/apply` 回完响应后没有人退出旧进程**（2026-10-15 实施①时
+      查出）。`server.go` 的 `applyUpdate` 默认就是 `update.ApplyAndRestart`，而它**只启动
+      新进程、不退出自己**；handler 随后回 200 就结束了。旧进程继续持单实例锁，新进程带着
+      `RFERP_UPDATE_RESTART=1` 等满 20 秒后弹"已在运行"并自己退出——**用户在界面上点了
+      安装，程序却没换掉**。原生弹框那条路已在①里补上 `os.Exit(0)`，HTTP 这条还没有。
+      修法：回完响应后延迟 `os.Exit(0)`，且必须可注入（否则测试进程会被换掉）。**未实测**。
 - [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。`POST /api/backup`、`/api/export/all`、
       `/api/export/audit` 三个写端点没有本机闸门；`GET /api/datadir`、`POST /api/export/all`、
       `POST /api/export/audit` 回传服务器绝对路径。二选一并在文字上定案：补

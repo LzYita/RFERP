@@ -5,6 +5,7 @@ import {
   helpContent,
   releaseDate,
   updateCheck,
+  updatePrompt,
   type HelpPayload,
   type HelpVersion,
 } from '../lib/help'
@@ -111,13 +112,27 @@ function GuideTab({ data }: { data: HelpPayload }) {
       const r = await updateCheck.run()
       if (!r.enabled) {
         setStatus('未配置更新地址，无法在线查询。')
-      } else if (r.hasUpdate) {
-        setStatus(
-          `发现新版本 v${r.version}（当前 v${data.currentVersion}）。` +
-            '可在启动提示中安装；更新包带数字签名，签名不通过会被拒绝。',
-        )
-      } else {
+        return
+      }
+      if (!r.hasUpdate) {
         setStatus(`当前 v${data.currentVersion} 已是最新版本。`)
+        return
+      }
+      // 查到新版就**顺手弹框**：旧版的更新入口是启动时那个原生对话框，
+      // 用户主动来查却只能看到一句"可在启动提示中安装"，等于让他自己去找一个
+      // 未必还在的入口。这里把同一个框叫出来（服务端弹，与启动时同一份实现）。
+      setStatus(`发现新版本 v${r.version}（当前 v${data.currentVersion}），正在弹出更新提示框…`)
+      try {
+        await updatePrompt.request()
+        setStatus(
+          `已弹出更新提示框：在对话框中点「是」即可下载并安装 v${r.version}` +
+            '（更新包带数字签名，签名不通过会被拒绝）。',
+        )
+      } catch (e) {
+        setStatus(
+          `发现新版本 v${r.version}，但弹出更新提示失败：${(e as Error).message}` +
+            '　可在下次启动时安装。',
+        )
       }
     } catch (e) {
       setStatus(`查询失败：${(e as Error).message}`)

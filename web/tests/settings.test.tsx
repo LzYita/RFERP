@@ -35,13 +35,23 @@ const HELP = {
 
 /** 按 URL 分派响应；未匹配到的一律 500，避免"没想清楚"的请求静默通过。 */
 function stubApi(update: unknown = { enabled: true, hasUpdate: false }) {
+  const calls: string[] = []
   vi.stubGlobal('fetch', async (url: string) => {
-    const payload = String(url).includes('/api/update/check') ? update : HELP
+    const u = String(url)
+    calls.push(u)
+    if (u.includes('/api/update/prompt')) {
+      return new Response(JSON.stringify({ status: 'prompted' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    const payload = u.includes('/api/update/check') ? update : HELP
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     })
   })
+  return calls
 }
 
 async function renderSettings() {
@@ -95,29 +105,62 @@ describe('设置屏', () => {
 
   describe('查询最新更新', () => {
     it('已是最新时说明当前版本已是最新', async () => {
-      stubApi({ enabled: true, hasUpdate: false })
+      const calls = stubApi({ enabled: true, hasUpdate: false })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
       await waitFor(() => expect(screen.getByRole('status').textContent).toBe('当前 v2.0.0 已是最新版本。'))
+      // 没有新版就不该去弹框
+      expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
     })
 
-    it('有新版本时给出新版本号', async () => {
-      stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+    it('查到新版本就弹更新提示框（与启动时同一个框），并说清怎么装', async () => {
+      const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
-      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('发现新版本 v2.0.1'))
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('已弹出更新提示框'))
+      // 必须真的调了弹框端点，而不是只改文案
+      expect(calls.filter((u) => u.includes('/api/update/prompt')).length).toBe(1)
+      expect(screen.getByRole('status').textContent).toContain('v2.0.1')
+    })
+
+    it('弹框请求失败时把原因带出来，并说明还能下次启动再装', async () => {
+      stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+      await renderSettings()
+      vi.stubGlobal('fetch', async (url: string) => {
+        const u = String(url)
+        if (u.includes('/api/update/prompt')) {
+          return new Response(JSON.stringify({ error: '已有一个更新流程在进行中，请先完成或取消' }), {
+            status: 409,
+          })
+        }
+        if (u.includes('/api/update/check')) {
+          return new Response(JSON.stringify({ enabled: true, hasUpdate: true, version: '2.0.1' }), {
+            status: 200,
+          })
+        }
+        return new Response(JSON.stringify(HELP), { status: 200 })
+      })
+
+      await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() =>
+        expect(screen.getByRole('status').textContent).toContain(
+          '弹出更新提示失败：已有一个更新流程在进行中',
+        ),
+      )
+      expect(screen.getByRole('status').textContent).toContain('下次启动')
     })
 
     it('未配置更新地址时说清楚是没配置，而不是报成故障', async () => {
-      stubApi({ enabled: false })
+      const calls = stubApi({ enabled: false })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
       await waitFor(() =>
         expect(screen.getByRole('status').textContent).toBe('未配置更新地址，无法在线查询。'),
       )
+      expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
     })
 
     it('查询失败时把原因带出来（不静默）', async () => {

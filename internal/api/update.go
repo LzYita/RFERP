@@ -219,15 +219,49 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }
 
+// promptGate 保证同一时刻只有一条更新流程（一个对话框 + 一次下载）。
+//
+// 为什么需要：启动检查在 3 秒后弹框，而设置屏的「查询最新更新」随时可能也弹一次。
+// 两个框叠在一起、或者两次下载各写各的待应用文件，用户点哪个"是"都不清楚，
+// 而 pendingUpdate 只认最后一次下载的结果。
+//
+// 包级变量：一个进程一个服务实例（窗口形态一个内嵌服务、无头形态根本不注册
+// 更新端点），所以这里不需要按实例存。
+var promptGate updatePromptGate
+
+type updatePromptGate struct {
+	mu   sync.Mutex
+	busy bool
+}
+
+// acquire 抢占执行权；已被占用时返回 false（不排队、不叠加）。
+func (g *updatePromptGate) acquire() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.busy {
+		return false
+	}
+	g.busy = true
+	return true
+}
+
+func (g *updatePromptGate) release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.busy = false
+}
+
+func (g *updatePromptGate) inProgress() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.busy
+}
+
 // StartUpdateCheck 在启动后异步查一次，有新版就用原生对话框提示。
 //
 // 与 Fyne 版逐条对齐（internal/ui/update.go:StartUpdateCheck，2026-10-15 接上）：
 // 延时 3 秒再查（不与首屏和数据库初始化抢资源）；查不到、没配置更新源、用户不点
 // 确认——都安静退出，不打扰；有新版则把版本与说明摆出来问一句"是否立即更新"。
-//
-// 与旧版唯一的差别：**没有进度条**。Fyne 版能在自己的窗口里画进度，本函数在
-// Wails 形态下只有系统 MessageBox，因此进度写日志，另用一条"正在下载更新"的提示
-// 顶上（Fyne 版那句"请勿关闭程序"的话也一并沿用）。
 //
 // 门在调用方：AutoUpdate 关掉时调用方应传空 url，本函数第一行就返回。
 func StartUpdateCheck(url, current string) {
@@ -236,47 +270,91 @@ func StartUpdateCheck(url, current string) {
 	}
 	go func() {
 		time.Sleep(3 * time.Second)
-		checker, err := update.NewChecker(url, current)
-		if err != nil {
-			log.Printf("update check disabled: %v", err)
+		if !promptGate.acquire() {
+			log.Printf("update check skipped: another update flow is in progress")
 			return
 		}
-		m, err := checker.Check()
-		if err != nil {
-			log.Printf("update check failed: %v", err)
-			return
-		}
-		if m == nil {
-			return
-		}
-		log.Printf("update available: %s (current %s)", m.Version, current)
-		msg := "发现新版本 " + m.Version + "（当前 " + current + "）"
-		if m.Notes != "" {
-			msg += "\n\n" + m.Notes
-		}
-		msg += "\n\n是否立即更新？"
-		if !winmsg.Confirm("软件更新", msg) {
-			return
-		}
-		// 顶替 Fyne 版那个带进度条的模态框：MessageBox 画不了进度条，
-		// 至少要让用户知道"程序没卡死，正在下载"。
-		winmsg.Info("软件更新", "正在下载更新，请勿关闭程序...")
-		start := time.Now()
-		zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
-			logUpdateProgress(start, done, total)
-		})
-		if err != nil {
-			winmsg.Error("软件更新失败", err.Error())
-			return
-		}
-		if err := update.ApplyAndRestart(zipPath); err != nil {
-			winmsg.Error("软件更新失败", err.Error())
-			return
-		}
-		// ApplyAndRestart 只负责启动新进程，**不退出自己**（见其文档）。
-		// 不在这里退出会出事：新进程带着 RFERP_UPDATE_RESTART=1 去抢单实例锁，
-		// 等 20 秒拿不到就弹"已在运行"然后自己退出——于是用户点了"是"，
-		// 程序却没换掉。Fyne 版在同一位置也是 os.Exit(0)。
-		os.Exit(0)
+		runUpdatePrompt(url, current)
 	}()
+}
+
+// runUpdatePrompt 是**唯一**一条"弹框 → 下载 → 替换重启"的实现，调用方必须已经
+// 持有 promptGate。
+//
+// 启动检查与设置屏的手动「查询最新更新」都走它：两条入口必须表现一致，否则就会
+// 出现"启动时能装、手动查完却只能看"这种用户一定会问的差异。
+//
+// 查不到 / 没配置 / 用户不点确认 → 安静退出（只写日志）。
+func runUpdatePrompt(url, current string) {
+	defer promptGate.release()
+
+	checker, err := update.NewChecker(url, current)
+	if err != nil {
+		log.Printf("update check disabled: %v", err)
+		return
+	}
+	m, err := checker.Check()
+	if err != nil {
+		log.Printf("update check failed: %v", err)
+		return
+	}
+	if m == nil {
+		return
+	}
+	log.Printf("update available: %s (current %s)", m.Version, current)
+	msg := "发现新版本 " + m.Version + "（当前 " + current + "）"
+	if m.Notes != "" {
+		msg += "\n\n" + m.Notes
+	}
+	msg += "\n\n是否立即更新？"
+	if !winmsg.Confirm("软件更新", msg) {
+		return
+	}
+	// 顶替 Fyne 版那个带进度条的模态框：MessageBox 画不了进度条，
+	// 至少要让用户知道"程序没卡死，正在下载"。
+	winmsg.Info("软件更新", "正在下载更新，请勿关闭程序...")
+	start := time.Now()
+	zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
+		logUpdateProgress(start, done, total)
+	})
+	if err != nil {
+		winmsg.Error("软件更新失败", err.Error())
+		return
+	}
+	if err := update.ApplyAndRestart(zipPath); err != nil {
+		winmsg.Error("软件更新失败", err.Error())
+		return
+	}
+	// ApplyAndRestart 只负责启动新进程，**不退出自己**（见其文档）。
+	// 不在这里退出会出事：新进程带着 RFERP_UPDATE_RESTART=1 去抢单实例锁，
+	// 等 20 秒拿不到就弹"已在运行"然后自己退出——于是用户点了"是"，
+	// 程序却没换掉。Fyne 版在同一位置也是 os.Exit(0)。
+	os.Exit(0)
+}
+
+// handlePromptUpdate 弹更新确认框，供设置屏「查询最新更新」在查到新版后调用。
+//
+// 为什么不让前端自己 download + apply：那两步走的是 HTTP 端点，而端点那条链回完
+// 响应后**没有人退出旧进程**（见 server.go 的 applyUpdate 默认实现），新进程会
+// 等满 20 秒单实例锁然后自己退出。这里复用与启动时完全相同的原生弹框与下载流程，
+// 既避开了那个坑，也保证两条入口的行为一致。
+//
+// 立即返回 202：对话框要等人点，下载可能几分钟，HTTP 请求不能挂在那里。
+func (s *Server) handlePromptUpdate(w http.ResponseWriter, r *http.Request) {
+	url := s.updater.url
+	if url == "" {
+		writeErr(w, http.StatusBadRequest, "未配置更新地址")
+		return
+	}
+	if promptGate.inProgress() {
+		writeErr(w, http.StatusConflict, "已有一个更新流程在进行中，请先完成或取消")
+		return
+	}
+	if !promptGate.acquire() {
+		// inProgress 与 acquire 之间被启动检查插了一手：同一句话，同样处理。
+		writeErr(w, http.StatusConflict, "已有一个更新流程在进行中，请先完成或取消")
+		return
+	}
+	go s.runPrompt(url, s.updater.cur)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "prompted"})
 }

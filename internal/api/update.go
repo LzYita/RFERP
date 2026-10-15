@@ -16,9 +16,9 @@ import (
 // ---- 软件更新 ----
 //
 // 后端能力全在 internal/update（ed25519 签名校验、版本比较、下载、解压、
-// 替换、重启），这里只把它接成端点，供设置屏（Round 7）与启动检查使用。
+// 替换、重启），这里只把它接成端点，供设置屏与启动检查使用。
 //
-// 两点不能含糊：
+// 三点不能含糊：
 //
 //  1. **未配置清单地址就完全关闭**。cfg.UpdateURL 为空是默认状态（本地部署
 //     不需要联网检查），此时不能发任何网络请求，也不能弹任何提示。
@@ -26,6 +26,10 @@ import (
 //  2. **更新必须用户确认后才会下载并替换 exe**。静默自动更新会直接覆盖
 //     用户正在运行的程序——Fyne 版是 dialog.ShowConfirm 交互式的，这里沿用
 //     同样的语义：端点只负责"查"和"下载"，"应用"要单独一步且带显式确认。
+//
+//  3. **不按角色区分**（2026-10-15）：三个端点对所有登录角色开放，check 甚至
+//     允许未登录（登录页要能提示）。这不是疏忽，见 server.go 里接线处的注释：
+//     边界是"包必须由生产私钥签名"这道与角色无关的闸门，而不是"谁能点按钮"。
 
 type updateChecker struct {
 	once sync.Once
@@ -36,6 +40,25 @@ type updateChecker struct {
 }
 
 func (s *Server) updateURL() string { return s.updater.url }
+
+// logUpdateProgress 每收到约 5% 就记一行下载进度。
+//
+// 步长从**实际拿到的 total** 算，而不是清单里的 Size：清单缺 size 时 Size==0，
+// 而 `done % (0/20+1)` 恒为 0，于是每个 32KB 分片都打一行日志——几十兆的包能刷出
+// 上千行，把真正有用的启动日志淹掉。
+func logUpdateProgress(start time.Time, done, total int64) {
+	step := int64(0)
+	if total > 0 {
+		step = total / 20
+		if step <= 0 {
+			step = 1
+		}
+	}
+	if step <= 0 || done%step != 0 {
+		return
+	}
+	log.Printf("update download: %d/%d bytes (%s)", done, total, time.Since(start).Round(time.Second))
+}
 
 func (s *Server) checkerFor(url string) (*update.Checker, error) {
 	s.updater.once.Do(func() {
@@ -96,9 +119,7 @@ func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 	zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
 		// 进度只写日志：HTTP 长轮询进度条要求客户端保持连接，
 		// 与「下载完再 apply」的两步式模型不合。
-		if total > 0 && done%(m.Size/20+1) == 0 {
-			log.Printf("update download: %d/%d bytes", done, total)
-		}
+		logUpdateProgress(time.Now(), done, total)
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "下载失败: "+err.Error())
@@ -139,14 +160,20 @@ func (s *Server) clearPendingUpdate() {
 //
 // 这一条是 2026-10-13 审计后改的。此前它直接拿请求体的 path 交给
 // update.ApplyAndRestart，而那条链是「从该路径的 zip 里取出任意 .exe →
-// 覆盖程序自身 → 启动它」，且 apply 阶段不验签。于是任何持有 System.ApplyUpdate
-// 的会话，只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
-// 攻击者的程序（随之可读 config.json、连数据库、读写全部备份）。
+// 覆盖程序自身 → 启动它」，且 apply 阶段不验签。于是一个已登录会话只要目标机器上
+// 存在一个 zip 且知道路径，就能让 ERP 以自己身份运行攻击者的程序（随之可读
+// config.json、连数据库、读写全部备份）。当时这条路由还挂着 System.ApplyUpdate
+// 权限点，非管理员碰不到；该权限点已于 2026-10-15 随「更新对齐旧版」删除，
+// 因此下面这条"路径不可指认"成了唯一的路径约束。
 //
 // 原设计里「下载时验过 SHA-256」是对的，但**验证绑在下载产生的临时文件上，
 // 与 apply 传进来的路径毫无关联** —— 等于把校验和"将执行的文件"割开了。
 // 现在两者是同一个对象：路径由服务端记住，apply 前再核一次哈希，
 // 连"下载与 apply 之间被换文件"这个窗口也一并关掉。
+//
+// 2026-10-15 起这条端点对所有登录角色开放（见 server.go 接线处的注释），
+// 所以"路径不可由客户端指认"从"多一层保险"变成了**唯一的路径约束**：权限矩阵
+// 不再能拦住任意路径的 zip，只有这里能。
 func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		// Path 保留仅为线协议兼容，**不再使用**。前端仍会回传下载得到的路径，
@@ -192,11 +219,18 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }
 
-// startUpdateCheck 在启动后异步查一次，有新版就用原生对话框提示。
+// StartUpdateCheck 在启动后异步查一次，有新版就用原生对话框提示。
 //
-// 与 Fyne 版一致：延时几秒再查，避免和首屏/数据库初始化抢资源。
-// 查不到、没配置、用户不点确认——都安静退出，不打扰。
-func startUpdateCheck(url, current string) {
+// 与 Fyne 版逐条对齐（internal/ui/update.go:StartUpdateCheck，2026-10-15 接上）：
+// 延时 3 秒再查（不与首屏和数据库初始化抢资源）；查不到、没配置更新源、用户不点
+// 确认——都安静退出，不打扰；有新版则把版本与说明摆出来问一句"是否立即更新"。
+//
+// 与旧版唯一的差别：**没有进度条**。Fyne 版能在自己的窗口里画进度，本函数在
+// Wails 形态下只有系统 MessageBox，因此进度写日志，另用一条"正在下载更新"的提示
+// 顶上（Fyne 版那句"请勿关闭程序"的话也一并沿用）。
+//
+// 门在调用方：AutoUpdate 关掉时调用方应传空 url，本函数第一行就返回。
+func StartUpdateCheck(url, current string) {
 	if url == "" {
 		return
 	}
@@ -224,13 +258,25 @@ func startUpdateCheck(url, current string) {
 		if !winmsg.Confirm("软件更新", msg) {
 			return
 		}
-		zipPath, err := checker.Download(m, os.TempDir(), nil)
+		// 顶替 Fyne 版那个带进度条的模态框：MessageBox 画不了进度条，
+		// 至少要让用户知道"程序没卡死，正在下载"。
+		winmsg.Info("软件更新", "正在下载更新，请勿关闭程序...")
+		start := time.Now()
+		zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
+			logUpdateProgress(start, done, total)
+		})
 		if err != nil {
 			winmsg.Error("软件更新失败", err.Error())
 			return
 		}
 		if err := update.ApplyAndRestart(zipPath); err != nil {
 			winmsg.Error("软件更新失败", err.Error())
+			return
 		}
+		// ApplyAndRestart 只负责启动新进程，**不退出自己**（见其文档）。
+		// 不在这里退出会出事：新进程带着 RFERP_UPDATE_RESTART=1 去抢单实例锁，
+		// 等 20 秒拿不到就弹"已在运行"然后自己退出——于是用户点了"是"，
+		// 程序却没换掉。Fyne 版在同一位置也是 os.Exit(0)。
+		os.Exit(0)
 	}()
 }

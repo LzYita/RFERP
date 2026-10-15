@@ -82,8 +82,9 @@ type Server struct {
 	// pendingUpdate 保存**下载步骤刚产生并通过校验**的更新包。
 	//
 	// apply 只认这一个 —— 客户端不能再指认任意路径。此前 apply 直接接受请求体里的
-	// path 且不做校验，等于给了任何持有 System.ApplyUpdate 的会话一个
-	// 「任意路径 → 取出 exe → 覆盖程序并运行」的原语。
+	// path 且不做校验，等于给了任何已登录会话一个「任意路径 → 取出 exe → 覆盖程序
+	// 并运行」的原语（当时这条路由挂在 System.ApplyUpdate 上，2026-10-15 按产品决定
+	// 对所有登录角色开放写入，于是这条"路径不可指认"的约束更重要了）。
 	//
 	// 存 sha 是为了在 apply 之前**再核对一次**：下载校验的是那个临时文件，
 	// 而下载与 apply 之间隔着一次 HTTP 往返和一次客户端决策，中间文件可能被换掉。
@@ -240,10 +241,21 @@ func (s *Server) Handler() http.Handler {
 	// 「应用」会替换正在运行的 exe，必须带 confirm；不配置更新源时这三个端点
 	// 仍可调用，但一律返回 enabled:false / 400，不发任何网络请求。
 	mux.HandleFunc("GET /api/update/check", s.handleCheckUpdate)
-	// download/apply 必须带权限点：之前这里是空字符串，而 auth() 对空权限点
-	// 直接放行 —— 任何登录用户（含只读 viewer）都能替换正在运行的程序。
-	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, "System.DownloadUpdate"))
-	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, "System.ApplyUpdate"))
+	// download/apply 只要求**已登录**，不按角色区分（2026-10-15，产品决定：
+	// 对齐 Fyne 旧版——旧版的启动检查对任何登录用户都会弹框）。
+	//
+	// 为什么这不是权限绕过：能不能换掉程序，不由角色决定，而由三道与角色无关的
+	// 硬闸门决定——
+	//  1. 更新包必须带**生产私钥**的 ed25519 签名，且文件哈希与清单一致
+	//     （下载时核一次，apply 之前再核一次）；
+	//  2. apply 只认"本次下载刚校验通过"的那个临时文件，请求体里的 path 一律忽略；
+	//  3. apply 必须带 confirm:true。
+	//
+	// 换句话说：任何登录角色能触发的只是"去装一个**只有生产私钥签得出**的包"，
+	// 不能让他装任意代码。剩下的取舍是可用性取舍（任何人都可能在他录入数据时
+	// 发起一次更新并重启程序），这正是本次产品决定接受的那一份。
+	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
+	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

@@ -12,12 +12,14 @@ import (
 
 // 路由 ↔ 权限点的契约。
 //
-// 这就是当初出事故的地方：`POST /api/update/download` 与 `/apply` 用的是
-// `s.auth(h, "")`，而 auth() 对空权限点直接放行——**任何登录用户（含只读）
-// 都能让服务端下载并替换正在运行的可执行文件**。
+// 这个文件当初是为了盯住 `POST /api/update/download` 与 `/apply` 那两条路由：
+// 它们当时是 `s.auth(h, "")`，而 auth() 对空权限点直接放行——**任何登录用户
+// （含只读）都能让服务端下载并替换正在运行的可执行文件**。update_authz_test.go
+// 挡住了那两个具体端点，但挡不住"下次新增路由时又忘了挂权限点"。
 //
-// update_authz_test.go 挡住了那两个具体端点，但挡不住"下次新增路由时又忘了挂
-// 权限点"。这个文件把整张路由表与权限点表对起来断言，让同类事故在评审前就失败：
+// 2026-10-15：产品决定把更新对齐 Fyne 旧版，于是那两条路由**仍然是空权限点**
+// （登录即可），安全边界改由签名/哈希/confirm 三道闸门承担（见 server.go）。
+// 这个文件的价值没变——它仍然要求"每条空权限点的路由都要显式登记理由"：
 //
 //  1. 凡挂了 s.auth 却给空权限点的路由，必须在下面的白名单里显式列出——
 //     新增一条会立刻失败，逼作者回答"这条为什么不需要权限点"。
@@ -37,6 +39,12 @@ var routesWithoutOpPoint = map[string]string{
 	"GET /api/help":                   "内置离线帮助文档，四个角色一视同仁，不需要模块权限",
 	"DELETE /api/session":             "登出，任何登录用户都能退出自己",
 	"POST /api/users/change-password": "改**自己**的密码；handler 内强制 in.ID == 会话用户 ID（admin.go:107）",
+	// 更新：对齐 Fyne 旧版，任何登录角色都能更新（2026-10-15）。
+	// 边界不是角色而是签名与哈希：包必须由生产私钥签名、哈希与清单一致、
+	// apply 只认本次下载刚校验过的文件且必须带 confirm。守住"未登录不行"
+	// 的是 update_authz_test.go 的 TestUpdateWriteEndpointsRejectAnonymous。
+	"POST /api/update/download": "登录即可装**只有生产私钥签得出**的更新包；见 server.go 接线处的注释",
+	"POST /api/update/apply":    "同上，且必须 confirm:true；路径由服务端记住，不接受客户端指认",
 }
 
 // 完全不挂 s.auth 的路由。同样每条都要有理由。
@@ -61,7 +69,6 @@ var routesWithoutAuth = map[string]string{
 // DataDir、POST /api/datadir → SetDataDir、POST /api/restore → RestoreDatabase、
 // POST /api/clear → ClearDatabase。
 var opPointsWithoutRoute = map[string]string{
-	"System.CheckUpdate":      "端点公开（登录页要能查），此权限点仅作登记；见 update_authz_test.go",
 	"Identity.UserCount":      "端点公开（首启判断），此权限点仅作登记",
 	"Identity.ChangePassword": "路由用空权限点（改自己密码不限角色），此权限点仅作登记",
 }

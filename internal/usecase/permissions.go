@@ -60,17 +60,18 @@ var permissions = []UseCasePermission{
 	// Stats / dashboard 只读
 	{Name: "Stats.GetStockStats", Module: auth.ModuleStats, Access: auth.AccessRead},
 
-	// 应用自身维护。download/apply 只给 ModuleSystem.AccessWrite（= admin）；
-	// 它们会替换正在运行的可执行文件，手工不点确认也换不来权限。
+	// 原先这里有三条 System.*（CheckUpdate / DownloadUpdate / ApplyUpdate），
+	// 挂在 ModuleSystem 下、写权限只给管理员。2026-10-15 全部删除：软件更新
+	// 对齐 Fyne 旧版，**任何登录角色都能更新**，权限表里不该再留一个只对管理员
+	// 开放、却与产品行为矛盾的登记项。三个端点现在的接线是：
 	//
-	// CheckUpdate 是**登记性质**的：它列在这里是为了让权限表完整，但
-	// `GET /api/update/check` 实际不挂鉴权——登录页要在用户登录前提示可更新，
-	// 挂了 auth 就永远 401（update_authz_test.go 的 TestUpdateCheckStaysOpen
-	// 明确守着"不要顺手给它加上鉴权"）。所以：**不要**为了让路由与这一行对齐
-	// 而给 check 加 auth。internal/api 里有一条契约测试会检查这个对应关系。
-	{Name: "System.CheckUpdate", Module: auth.ModuleSystem, Access: auth.AccessRead},
-	{Name: "System.DownloadUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
-	{Name: "System.ApplyUpdate", Module: auth.ModuleSystem, Access: auth.AccessWrite},
+	//   GET  /api/update/check    不挂 auth —— 登录页要在登录前提示可更新
+	//   POST /api/update/download 挂 s.auth(h, "") —— 登录即可
+	//   POST /api/update/apply    挂 s.auth(h, "") —— 登录即可，且必须 confirm:true
+	//
+	// 空权限点的两条要在 internal/api/routes_permissions_test.go 的
+	// routesWithoutOpPoint 里登记理由；check 不挂 auth 的理由登记在
+	// routesWithoutAuth。安全边界靠签名与哈希，不靠角色，见 internal/api/update.go。
 
 	// Backup / export / clear
 	{Name: "Backup.DataDir", Module: auth.ModuleBackup, Access: auth.AccessRead},

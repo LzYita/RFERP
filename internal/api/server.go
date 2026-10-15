@@ -86,6 +86,14 @@ type Server struct {
 	// WithProcessExit 只供测试使用。
 	exitProcess func()
 
+	// jobs 是"异步下载"的任务表，给界面显示进度用（见 update.go 的说明）。
+	// 生命周期极短：一次下载，外加完成后 5 分钟的容错窗口。
+	jobs   map[string]*downloadJob
+	jobsMu sync.Mutex
+	jobSeq int
+	// jobSeqMu 只护 jobSeq（id 要单调递增，避免同毫秒内两次请求撞 id）。
+	jobSeqMu sync.Mutex
+
 	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。
 	//
 	// 可注入的理由同上，而且更硬：真实实现会**弹一个模态框等人点**，在 Windows 上
@@ -250,6 +258,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
 	s.remember.file = s.rememberFile
+	if s.jobs == nil {
+		s.jobs = make(map[string]*downloadJob)
+	}
 	// 同理：打开文件夹的实现必须在 opts 之后兜底，否则漏传就会 nil panic，
 	// 而"漏传"在这里等价于"一点就崩"。
 	if s.openFolder == nil {
@@ -296,7 +307,11 @@ func (s *Server) Handler() http.Handler {
 	// 换句话说：任何登录角色能触发的只是"去装一个**只有生产私钥签得出**的包"，
 	// 不能让他装任意代码。剩下的取舍是可用性取舍（任何人都可能在他录入数据时
 	// 发起一次更新并重启程序），这正是本次产品决定接受的那一份。
+	// 进度查询（给界面显示"正在下载 x%"）：`POST /api/update/download?async=1`
+	// 立刻回 202 与 job id，下载在后台跑，`GET /api/update/progress?job=<id>` 轮询。
+	// 不带 `async=1` 时仍是同步模式（下载完才响应），给脚本与测试用。
 	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
+	mux.HandleFunc("GET /api/update/progress", s.auth(s.handleUpdateProgress, ""))
 	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
 	// 手动「查询最新更新」查到新版后弹原生确认框（设置屏调用）。
 	// 与 download/apply 同一个口径：登录即可，不按角色区分。

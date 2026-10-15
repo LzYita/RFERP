@@ -45,7 +45,9 @@ var routesWithoutOpPoint = map[string]string{
 	// 的是 update_authz_test.go 的 TestUpdateWriteEndpointsRejectAnonymous。
 	"POST /api/update/download": "登录即可装**只有生产私钥签得出**的更新包；见 server.go 接线处的注释",
 	"POST /api/update/apply":    "同上，且必须 confirm:true；路径由服务端记住，不接受客户端指认",
-	"POST /api/update/prompt":   "弹更新确认框（设置屏手动查询用），走与启动检查同一条流程；同样只要求登录",
+	// 进度查询与下载同一条链路，仅要求登录即可。
+	"GET /api/update/progress": "登录即可查下载进度；见 server.go 接线处的注释",
+	"POST /api/update/prompt":  "登录即可弹更新确认框（设置屏手动查询用），见 server.go 接线处的注释",
 }
 
 // 完全不挂 s.auth 的路由。同样每条都要有理由。

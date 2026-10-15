@@ -1121,14 +1121,25 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       （缺 `confirm` / 尚未下载 / 哈希不符）一律**不退出**：程序还好好跑着，用户可以直接重试。
       反向验证：临时去掉 `exitAfterRestart()` 后 `TestApplySchedulesProcessExit` 与
       `TestApplyExitIsDeferredNotImmediate` 立刻失败。
-      **验证范围的准确说法（2026-10-15 复核后改写）**：本条**只有单元测试覆盖**，
-      **不能做端到端实机验证 —— 因为当前没有调用者**。`POST /api/update/download` 与
-      `/apply` 在 `web/src` 里零命中（界面走的是 `POST /api/update/prompt` 原生弹框那条），
-      而 `-serve` 无头形态不注册更新端点（`cmd/desktop-wails/main.go` 的 `runHeadless`
-      没有 `WithUpdate`），窗口形态又绑随机端口 + 启动 token 网关，外部无法注入请求。
-      换句话说：**在界面真正走 HTTP 路径之前，这条端到端链无法被触发**。
-      要端到端验，需要先有一个界面去调它（例如设置屏里做"下载并安装"按钮，以便显示
-      进度与失败重试）；那时这条修复也才真正有用户可感的分量。
+      **2026-10-15 补齐调用者（同批做完整）**：复核时发现这条链**当时没有调用者**——
+      `POST /api/update/download` 与 `/apply` 在 `web/src` 里零命中，界面走的是
+      `POST /api/update/prompt` 原生弹框那条；`-serve` 无头形态不注册更新端点
+      （`runHeadless` 没有 `WithUpdate`），窗口形态绑随机端口 + 启动 token 网关，
+      外部也注入不了。**没有调用者就没有端到端验证的入口**。
+      于是设置屏「使用指南」页签补上**「下载并安装」**：查到新版本后出现该按钮 →
+      确认框列出"会自动重启、未保存输入会丢失" → 确认后走
+      `POST /api/update/download?async=1`（立即回 202 + job id）→
+      `GET /api/update/progress?job=<id>` 轮询显示"正在下载 x%（已下载/总量 MB）"→
+      完成后 `POST /api/update/apply`（必须 `confirm:true`）。
+      由此新增：异步下载 + 进度端点（`downloadJob` / `jobState`，job 表上限 `maxJobs`
+      并保留 `jobKeepDuration` 容错窗口），以及"**下载失败绝不留下可 apply 的槽位**"
+      这条断言（否则界面上重试会 apply 一个下了一半的包）。
+      设置屏同时保留「查询最新更新」原生弹框那条路 —— 两条路各有用处：原生弹框与
+      Fyne 版行为一致且不需要界面参与，HTTP 那条能在界面里显示进度与失败原因。
+      **同批实机端到端验证通过**（沙箱隔离、驱动真实 HTTP 链、无需人工点击：
+      异步下载 202 + jobId → 进度 100%（7434172 / 7434172）→ apply 200 →
+      **旧进程退出码 0** → 新版本自报 2.0.3 + WebView2 就绪 → 安装目录 exe = 更新包指纹）。
+      这一轮同时抓到并修掉 ⑧（新进程被 Job Object 连带杀掉）—— 见下条。
 - [x] **⑧ 更新后新进程被连带杀掉（Job Object 继承）**（2026-10-15 端到端演练查出并已修）。
       现象：apply 之后新进程起来了、日志写了 `[WebView2] Environment created successfully`，
       然后**无声消失** —— 没有关机日志、进程表里也查不到。不是自己退出，是被内核终止。

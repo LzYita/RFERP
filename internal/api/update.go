@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -99,7 +101,168 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleDownloadUpdate 下载（不应用）。前端拿到进度后再单独请求 apply。
+// handleDownloadUpdate 下载（不应用）。
+//
+// 两种模式：
+//   - **同步**（默认，不带 ?async=1）：下载完才回响应。给脚本、测试、以及不需要
+//     进度条的调用方用；
+//   - **异步**（?async=1）：立刻回 202 与一个 job id，下载在后台跑，前端用
+//     GET /api/update/progress 轮询进度。
+//
+// 为什么需要异步：同步模式下整个下载期间 HTTP 连接一直被占着，前端既拿不到中间
+// 进度（只能看到转圈），也不能中途取消；而 UI 上"正在下载 x%"是用户判断该不该
+// 等着的唯一依据（一个 30MB 的包在慢网络上要好几分钟）。
+// 代价是多一个端点和一个 job 的生命周期——所以只在明确要进度时才走异步。
+// ---- 异步下载任务 ----
+//
+// 只为一个目的存在：让界面能显示"正在下载 x%"。同步模式下 HTTP 连接被占住，
+// 前端既看不到进度也不能取消，而一个几十 MB 的包在慢网络上要等好几分钟，
+// 用户只能盯着一个转圈图标猜它是不是卡住了。
+
+// jobKeepDuration 是下载完成后任务记录在内存里多留多久。
+//
+// 多留这一会儿是为了容错：前端轮询可能刚好在完成的那一刻断线/超时，重连后
+// 还能拿到"已完成"而不是"任务不存在"——否则用户会看到刚要成功就变成报错。
+// 过期记录由下一次查询顺手清掉，不起定时器（一个进程里的更新任务，
+// 不值得为它养一个 goroutine）。
+const jobKeepDuration = 5 * time.Minute
+
+// maxJobs 是内存里最多保留几个任务记录。单个用户同一时刻只会有一个下载，
+// 留 4 个足够覆盖"刚完成又发起下一次"这类情况；超过就丢最旧的。
+const maxJobs = 4
+
+var (
+	errSuperseded = errors.New("下载任务被新的下载取代")
+)
+
+type downloadResult struct {
+	path    string
+	version string
+	err     error
+}
+
+// downloadJob 是一次后台下载。
+//
+// done 是一次性通道：finish 关掉它，于是每个等它的进度请求都能立刻醒过来
+// （否则它们要各自轮询 finished 标志，白白多一轮延迟）。
+type downloadJob struct {
+	id      string
+	version string
+
+	mu        sync.Mutex
+	doneBytes int64
+	total     int64
+	finished  bool
+	res       downloadResult
+	at        time.Time
+
+	done chan struct{}
+}
+
+func newDownloadJob(id, version string, total int64) *downloadJob {
+	return &downloadJob{
+		id:      id,
+		version: version,
+		total:   total,
+		done:    make(chan struct{}),
+		at:      time.Now(),
+	}
+}
+
+func (j *downloadJob) finish(res downloadResult) {
+	j.mu.Lock()
+	if j.finished {
+		j.mu.Unlock()
+		return
+	}
+	j.finished = true
+	j.res = res
+	if res.path != "" {
+		j.doneBytes = j.total
+	}
+	j.mu.Unlock()
+	close(j.done)
+}
+
+// jobState 是一次快照：进度数字 + 是否已完成 + 完成后的结果。
+//
+// **所有**从 job 读出来的字段都必须经它取出（在锁内拷贝），不能在 handler 里直接
+// 读 job 的字段：进度回调在后台 goroutine 里持续写这些字段，直接读会被 -race 抓到。
+// 上一版就是 `"total": job.total` 这么直接读的，本地跑没带 -race 所以没暴露，
+// CI 一跑就红。
+type jobState struct {
+	doneBytes int64
+	total     int64
+	finished  bool
+	res       downloadResult
+}
+
+func (j *downloadJob) snapshot() jobState {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return jobState{
+		doneBytes: j.doneBytes,
+		total:     j.total,
+		finished:  j.finished,
+		res:       j.res,
+	}
+}
+
+func (j *downloadJob) expired(now time.Time) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.finished && now.Sub(j.at) > jobKeepDuration
+}
+
+// setJob 登记一个新任务，返回被顶掉的旧任务（可能为 nil）。
+// 同一时刻只保留一个"正在跑"的下载。
+//
+// 先插入再剪枝，保证 job 表永不超过 maxJobs 个。
+func (s *Server) setJob(job *downloadJob) *downloadJob {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	prev := s.jobs[job.id]
+	s.jobs[job.id] = job
+	s.pruneJobsLocked(time.Now())
+	return prev
+}
+
+func (s *Server) job(id string) *downloadJob {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	s.pruneJobsLocked(time.Now())
+	return s.jobs[id]
+}
+
+// pruneJobsLocked 丢掉已过期与超额的记录。调用方必须持 jobsMu。
+func (s *Server) pruneJobsLocked(now time.Time) {
+	for id, j := range s.jobs {
+		if j.expired(now) {
+			delete(s.jobs, id)
+		}
+	}
+	for len(s.jobs) > maxJobs {
+		oldest, oldestID := time.Time{}, ""
+		for id, j := range s.jobs {
+			if oldestID == "" || j.at.Before(oldest) {
+				oldest, oldestID = j.at, id
+			}
+		}
+		delete(s.jobs, oldestID)
+	}
+}
+
+// newDownloadJobID 生成一个短的 job id。
+//
+// 用时间戳+计数而不是随机数：它是进程内唯一标识，不对外暴露也不需要密码学强度
+// （能猜到别人的 job id 也只能看自己的下载进度——apply 要的是 pendingUpdate 那一个）。
+func (s *Server) newDownloadJobID() string {
+	s.jobSeqMu.Lock()
+	defer s.jobSeqMu.Unlock()
+	s.jobSeq++
+	return fmt.Sprintf("%d-%d", time.Now().UnixMilli(), s.jobSeq)
+}
+
 func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 	url := s.updater.url
 	if url == "" {
@@ -116,9 +279,14 @@ func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "没有可下载的新版本")
 		return
 	}
+
+	if r.URL.Query().Get("async") == "1" {
+		s.startAsyncDownload(w, checker, m)
+		return
+	}
+
 	zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
-		// 进度只写日志：HTTP 长轮询进度条要求客户端保持连接，
-		// 与「下载完再 apply」的两步式模型不合。
+		// 同步模式：进度只写日志（前端拿不到，见上面的说明）。
 		logUpdateProgress(time.Now(), done, total)
 	})
 	if err != nil {
@@ -129,6 +297,78 @@ func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 	// sha 用清单里的值：downloadOnce 已经核对过文件与它一致。
 	s.setPendingUpdate(zipPath, m.SHA256)
 	writeJSON(w, http.StatusOK, map[string]any{"path": zipPath, "version": m.Version})
+}
+
+// startAsyncDownload 后台跑下载，立刻回 202 与 job id。
+func (s *Server) startAsyncDownload(w http.ResponseWriter, checker *update.Checker, m *update.Manifest) {
+	job := newDownloadJob(s.newDownloadJobID(), m.Version, m.Size)
+	if prev := s.setJob(job); prev != nil {
+		// 上一个 job 还在跑：不是错误，但必须让它收敛，否则它的 done 永远不关闭。
+		prev.finish(downloadResult{err: errSuperseded})
+	}
+
+	go func() {
+		start := time.Now()
+		zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
+			job.mu.Lock()
+			job.doneBytes = done
+			if total > 0 {
+				job.total = total
+			}
+			job.mu.Unlock()
+			logUpdateProgress(start, done, total)
+		})
+		if err != nil {
+			job.finish(downloadResult{err: err})
+			return
+		}
+		// 只有校验通过的文件才登记为"待应用"：下载失败绝不能留下一个能被 apply 的槽位。
+		s.setPendingUpdate(zipPath, m.SHA256)
+		job.finish(downloadResult{path: zipPath, version: m.Version})
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"jobId":   job.id,
+		"version": m.Version,
+		"total":   m.Size,
+	})
+}
+
+// handleUpdateProgress 查询异步下载的进度。
+//
+// 返回三种状态：running（有 done/total）、done（path 可 apply）、error（原因）。
+// 任务记录在下载完成后再留一会儿，让刚好在前端重连的进度请求还能拿到结果；
+// 过期由 pruneJobs 顺手清掉，不做定时器。
+func (s *Server) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("job")
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "缺少 job 参数")
+		return
+	}
+	job := s.job(id)
+	if job == nil {
+		writeErr(w, http.StatusNotFound, "下载任务不存在或已过期")
+		return
+	}
+	res := job.snapshot()
+	out := map[string]any{
+		"jobId":   job.id,
+		"version": job.version,
+		"done":    res.doneBytes,
+		"total":   res.total,
+		"state":   "running",
+	}
+	if res.finished {
+		switch {
+		case res.res.err != nil:
+			out["state"] = "error"
+			out["error"] = res.res.err.Error()
+		default:
+			out["state"] = "done"
+			out["path"] = res.res.path
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // setPendingUpdate 记录待应用的更新包。

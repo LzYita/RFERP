@@ -39,9 +39,22 @@ function stubApi(update: unknown = { enabled: true, hasUpdate: false }) {
   vi.stubGlobal('fetch', async (url: string) => {
     const u = String(url)
     calls.push(u)
-    if (u.includes('/api/update/prompt')) {
-      return new Response(JSON.stringify({ status: 'prompted' }), {
+    if (u.includes('/api/update/download')) {
+      return new Response(JSON.stringify({ jobId: 'job-1', version: '2.0.1', total: 1024 }), {
         status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (u.includes('/api/update/progress')) {
+      // 一次就报完成，测试不必等轮询
+      return new Response(JSON.stringify({ jobId: 'job-1', done: 1024, total: 1024, state: 'done' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    if (u.includes('/api/update/apply')) {
+      return new Response(JSON.stringify({ status: 'restarting' }), {
+        status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
     }
@@ -114,42 +127,94 @@ describe('设置屏', () => {
       expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
     })
 
-    it('查到新版本就弹更新提示框（与启动时同一个框），并说清怎么装', async () => {
+    it('查到新版本就给出「下载并安装」入口，并说清新版本号', async () => {
+      stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+      await renderSettings()
+
+      await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('v2.0.1'))
+      // 查到新版后才出现安装入口（没有新版时不出现）
+      expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy()
+    })
+
+    it('没有新版本时不出现「下载并安装」入口', async () => {
+      stubApi({ enabled: true, hasUpdate: false })
+      await renderSettings()
+
+      await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() =>
+        expect(screen.getByRole('status').textContent).toBe('当前 v2.0.0 已是最新版本。'),
+      )
+      expect(screen.queryByRole('button', { name: '下载并安装' })).toBeNull()
+    })
+
+    it('点「下载并安装」先弹确认框，确认后才下载并应用', async () => {
       const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
-      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('已弹出更新提示框'))
-      // 必须真的调了弹框端点，而不是只改文案
-      expect(calls.filter((u) => u.includes('/api/update/prompt')).length).toBe(1)
-      expect(screen.getByRole('status').textContent).toContain('v2.0.1')
+      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
+
+      // 确认框没确认之前，绝不该开始下载
+      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+      expect(screen.getByText(/安装完成后程序会/)).toBeTruthy()
+      expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
+
+      await userEvent.click(screen.getByRole('button', { name: '下载 v2.0.1' }))
+      await waitFor(() =>
+        expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(true),
+      )
+      // 走的是 HTTP 那条链：download → progress → apply
+      expect(calls.some((u) => u.includes('/api/update/download?async=1'))).toBe(true)
+      expect(calls.some((u) => u.includes('/api/update/progress'))).toBe(true)
     })
 
-    it('弹框请求失败时把原因带出来，并说明还能下次启动再装', async () => {
-      stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+    it('取消确认框就什么都不做', async () => {
+      const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+      await renderSettings()
+
+      await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
+      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+
+      await userEvent.click(screen.getByRole('button', { name: '取消' }))
+      expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
+      expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(false)
+    })
+
+    it('下载失败时把原因带出来，且不去应用', async () => {
+      const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
       await renderSettings()
       vi.stubGlobal('fetch', async (url: string) => {
         const u = String(url)
-        if (u.includes('/api/update/prompt')) {
-          return new Response(JSON.stringify({ error: '已有一个更新流程在进行中，请先完成或取消' }), {
-            status: 409,
+        calls.push(u)
+        if (u.includes('/api/update/download')) {
+          return new Response(JSON.stringify({ jobId: 'job-1', version: '2.0.1', total: 1024 }), {
+            status: 202,
           })
         }
+        if (u.includes('/api/update/progress')) {
+          return new Response(
+            JSON.stringify({ jobId: 'job-1', done: 0, total: 1024, state: 'error', error: '网络中断' }),
+            { status: 200 },
+          )
+        }
         if (u.includes('/api/update/check')) {
-          return new Response(JSON.stringify({ enabled: true, hasUpdate: true, version: '2.0.1' }), {
-            status: 200,
-          })
+          return new Response(JSON.stringify({ enabled: true, hasUpdate: true, version: '2.0.1' }))
         }
         return new Response(JSON.stringify(HELP), { status: 200 })
       })
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
+      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+      await userEvent.click(screen.getByRole('button', { name: '下载 v2.0.1' }))
+
       await waitFor(() =>
-        expect(screen.getByRole('status').textContent).toContain(
-          '弹出更新提示失败：已有一个更新流程在进行中',
-        ),
+        expect(screen.getByRole('status').textContent).toContain('更新失败：网络中断'),
       )
-      expect(screen.getByRole('status').textContent).toContain('下次启动')
+      // 下载失败绝不能去 apply —— 那会把一个不完整的包推给替换程序
+      expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(false)
     })
 
     it('未配置更新地址时说清楚是没配置，而不是报成故障', async () => {

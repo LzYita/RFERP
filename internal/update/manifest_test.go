@@ -76,13 +76,14 @@ func TestCheckAndDownload(t *testing.T) {
 	defer srv.Close()
 
 	c := &Checker{ManifestURL: srv.URL + "/releases.json", CurrentVersion: "1.0.0", PublicKey: pub, Client: srv.Client()}
-	m, err := c.Check()
+	res, err := c.Check()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m == nil {
+	if res.Manifest == nil {
 		t.Fatal("expected an update to be available")
 	}
+	m := res.Manifest
 	path, err := c.Download(m, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -96,12 +97,16 @@ func TestCheckAndDownload(t *testing.T) {
 	}
 
 	c2 := &Checker{ManifestURL: srv.URL + "/releases.json", CurrentVersion: "2.0.0", PublicKey: pub, Client: srv.Client()}
-	m2, err := c2.Check()
+	res2, err := c2.Check()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m2 != nil {
+	if res2.Manifest != nil {
 		t.Fatal("expected no update for a newer current version")
+	}
+	// 没有异常时不该产生警告：否则界面会把正常的"已是最新"也写成告警
+	if w := res2.Warning(); w != "" {
+		t.Fatalf("正常路径不该有 warning，得到: %s", w)
 	}
 }
 

@@ -43,13 +43,24 @@ func readNavKeys(t *testing.T) []string {
 	return out
 }
 
+// nonNavModules 是「有权限模块、但侧栏里没有对应项」的模块白名单。
+//
+// 2026-10-15 删掉 system（应用维护：检查/下载/替换 exe，曾仅管理员可写）之后
+// 它是空的——更新流程对齐 Fyne 旧版之后，那三项能力不再是一个需要权限档位的
+// 独立模块，于是也不需要"占侧栏一项但不进导航"的例外。
+//
+// 将来若再引入只在别处出现（例如仅在「设置」页签里）的模块，必须在这里显式登记
+// 并写明理由：TestNonNavModulesAreDeliberate 要求实际集合与本白名单完全一致，
+// 多一个少一个都失败。
+func nonNavModules() map[string]bool {
+	return map[string]bool{}
+}
+
 // 导航必须是权限模块清单去掉「非导航模块」后的样子。
 //
 // 反过来也成立：后端新增模块而前端没加导航 → 这里失败。
 func TestNavMatchesPermissionModules(t *testing.T) {
-	// system 不是导航屏：它是应用自身维护（更新），入口在「设置」里，
-	// 不占侧栏一项。除此之外的每个权限模块都必须有导航入口。
-	nonNav := map[string]bool{ModuleSystem: true}
+	nonNav := nonNavModules()
 
 	var want []string
 	for _, m := range AllModules() {
@@ -87,8 +98,10 @@ func TestNavMatchesPermissionModules(t *testing.T) {
 	}
 }
 
-// 「非导航模块」集合不能悄悄长胖：每加一个都要问一次"用户真的不需要入口吗"。
-// 目前只有 system，理由见上。
+// 「非导航模块」集合必须与 TestNavMatchesPermissionModules 里的白名单**完全一致**：
+// 多一个（悄悄长胖）或少一个（白名单里留了个不存在的模块）都失败。
+//
+// 目前白名单是空的——2026-10-15 删掉 system 之后，每个权限模块都有侧栏入口。
 func TestNonNavModulesAreDeliberate(t *testing.T) {
 	all := map[string]bool{}
 	for _, m := range AllModules() {
@@ -105,8 +118,18 @@ func TestNonNavModulesAreDeliberate(t *testing.T) {
 		}
 	}
 	sort.Strings(missing)
-	if len(missing) != 1 || missing[0] != ModuleSystem {
-		t.Errorf("非导航模块 = %v，目前只应有一个：%s。新增需要在此显式承认。", missing, ModuleSystem)
+
+	want := keysOf(nonNavModules())
+	sort.Strings(want)
+	if len(missing) != len(want) {
+		t.Errorf("非导航模块 = %v，白名单 = %v。新增非导航模块需要在本文件的 nonNav 白名单里显式承认。", missing, want)
+		return
+	}
+	for i := range want {
+		if missing[i] != want[i] {
+			t.Errorf("非导航模块 = %v，白名单 = %v（不一致）", missing, want)
+			return
+		}
 	}
 }
 

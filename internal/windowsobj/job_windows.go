@@ -49,7 +49,20 @@ func Guard() error {
 
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+			// KILL_ON_JOB_CLOSE：作业关闭时连带结束树里的进程（本包存在的理由）。
+			//
+			// BREAKAWAY_OK：**允许**子进程显式脱离本作业。更新的"换 exe 重启"必须
+			// 用它——软件更新是"老进程启动新进程、老进程随后退出"，而子进程默认继承
+			// 父进程的作业，于是老进程一退出，作业关闭就把**刚起来的新版本一起杀掉**。
+			// 2026-10-15 实机演练抓到：新进程日志停在 `[WebView2] Environment created
+			// successfully`，随后无声消失（无任何关机日志），进程表里也查不到。
+			// 受控实验确认：本作业里 spawn 的子进程会随父进程退出被连带终止。
+			//
+			// 注意 BREAKAWAY_OK 只是"允许"：普通子进程（WebView2 那棵树）仍然留在作业里，
+			// 原有的"无人值守时不留孤儿"依然成立；只有更新明确要求脱离
+			// （internal/update 里带 CREATE_BREAKAWAY_FROM_JOB 启动新 exe）。
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
+				windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK,
 		},
 	}
 	if _, err := windows.SetInformationJobObject(

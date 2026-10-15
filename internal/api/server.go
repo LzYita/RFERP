@@ -79,11 +79,19 @@ type Server struct {
 	// 测试绝不能走真实路径。
 	applyUpdate func(zipPath string) error
 
+	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。
+	//
+	// 可注入的理由同上，而且更硬：真实实现会**弹一个模态框等人点**，在 Windows 上
+	// 等于把测试进程挂住；它还会去连清单地址，连不上时退到真实的 GitHub 发布页，
+	// 那里可能真有更高的正式版本——于是测试机上会真的弹出一个更新提示。
+	runPrompt func(url, current string)
+
 	// pendingUpdate 保存**下载步骤刚产生并通过校验**的更新包。
 	//
 	// apply 只认这一个 —— 客户端不能再指认任意路径。此前 apply 直接接受请求体里的
-	// path 且不做校验，等于给了任何持有 System.ApplyUpdate 的会话一个
-	// 「任意路径 → 取出 exe → 覆盖程序并运行」的原语。
+	// path 且不做校验，等于给了任何已登录会话一个「任意路径 → 取出 exe → 覆盖程序
+	// 并运行」的原语（当时这条路由挂在 System.ApplyUpdate 上，2026-10-15 按产品决定
+	// 对所有登录角色开放写入，于是这条"路径不可指认"的约束更重要了）。
 	//
 	// 存 sha 是为了在 apply 之前**再核对一次**：下载校验的是那个临时文件，
 	// 而下载与 apply 之间隔着一次 HTTP 往返和一次客户端决策，中间文件可能被换掉。
@@ -205,6 +213,14 @@ func WithUpdateApplier(f func(zipPath string) error) Option {
 	return func(s *Server) { s.applyUpdate = f }
 }
 
+// WithUpdatePromptRunner 替换「弹更新确认框并安装」的实际动作。**仅供测试**：
+// 真实实现会弹一个模态框等人点，Windows 上跑测试会挂住测试进程；
+// 而且它会去连清单地址（连不上时还会退到 DefaultFallbackURL，也就是真实的
+// GitHub 发布页——那里可能真的有更高的正式版本，于是测试机上会真的弹框）。
+func WithUpdatePromptRunner(f func(url, current string)) Option {
+	return func(s *Server) { s.runPrompt = f }
+}
+
 // New 用给定用例实现构造 API。
 func New(apps usecase.Applications, opts ...Option) *Server {
 	s := &Server{apps: apps, desc: apps, sessions: make(map[string]*session), remember: newRememberStore("")}
@@ -220,6 +236,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	}
 	if s.applyUpdate == nil {
 		s.applyUpdate = update.ApplyAndRestart
+	}
+	if s.runPrompt == nil {
+		s.runPrompt = runUpdatePrompt
 	}
 	// 把磁盘上的记住凭证登记回内存表，否则「记住登录」跨启动必然失效。
 	// 必须在 opts 之后：开不开、存哪，都由 WithRemember 决定。
@@ -240,10 +259,24 @@ func (s *Server) Handler() http.Handler {
 	// 「应用」会替换正在运行的 exe，必须带 confirm；不配置更新源时这三个端点
 	// 仍可调用，但一律返回 enabled:false / 400，不发任何网络请求。
 	mux.HandleFunc("GET /api/update/check", s.handleCheckUpdate)
-	// download/apply 必须带权限点：之前这里是空字符串，而 auth() 对空权限点
-	// 直接放行 —— 任何登录用户（含只读 viewer）都能替换正在运行的程序。
-	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, "System.DownloadUpdate"))
-	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, "System.ApplyUpdate"))
+	// download/apply 只要求**已登录**，不按角色区分（2026-10-15，产品决定：
+	// 对齐 Fyne 旧版——旧版的启动检查对任何登录用户都会弹框）。
+	//
+	// 为什么这不是权限绕过：能不能换掉程序，不由角色决定，而由三道与角色无关的
+	// 硬闸门决定——
+	//  1. 更新包必须带**生产私钥**的 ed25519 签名，且文件哈希与清单一致
+	//     （下载时核一次，apply 之前再核一次）；
+	//  2. apply 只认"本次下载刚校验通过"的那个临时文件，请求体里的 path 一律忽略；
+	//  3. apply 必须带 confirm:true。
+	//
+	// 换句话说：任何登录角色能触发的只是"去装一个**只有生产私钥签得出**的包"，
+	// 不能让他装任意代码。剩下的取舍是可用性取舍（任何人都可能在他录入数据时
+	// 发起一次更新并重启程序），这正是本次产品决定接受的那一份。
+	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
+	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
+	// 手动「查询最新更新」查到新版后弹原生确认框（设置屏调用）。
+	// 与 download/apply 同一个口径：登录即可，不按角色区分。
+	mux.HandleFunc("POST /api/update/prompt", s.auth(s.handlePromptUpdate, ""))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

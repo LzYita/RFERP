@@ -929,7 +929,7 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > |---|---|---|
 > | `AllModules()` 漏了 `ModuleSystem` | **真 bug**：`/api/me/permissions` 少返回一个模块，前端永远看不到它 | 已修：模块清单改为从权限表派生（见下） |
 > | e2e 断言 `len(admin.modules) == 9` | **把 bug 锁住了**：这个数字反成了"漏掉也是对的"的证明 | 已改为断言"权限表里的每个模块都在" |
-> | `System.CheckUpdate`/`Identity.UserCount`/`Identity.ChangePassword` 三个权限点未接线 | 有意为之（登录页更新提示、首启判断、自助改密），但权限表没写明，容易被"顺手修回去" | 已在这三行加注说明"为什么不能照它去收紧路由" |
+> | `System.CheckUpdate`/`Identity.UserCount`/`Identity.ChangePassword` 三个权限点未接线 | 有意为之（登录页更新提示、首启判断、自助改密），但权限表没写明，容易被"顺手修回去" | 当时已在这三行加注说明；**2026-10-15 更新改为登录即可后，三个 `System.*` 权限点已整条删除**（连同 `ModuleSystem`），另两个保留 |
 >
 > 根因是**同一信息有两处声明**：`moduleAccess`（map）与 `AllModules()`（另写的
 > 字面量列表）。注释当时还写着"从一处派生才不会漂移"，而实现正是漂移的来源。
@@ -948,7 +948,11 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > | audit 操作记录 | 🔵 | 🔵 | 🔵 | ⚪ |
 > | backup 备份导出 | 🟢 | 🔵 | ⚪ | ⚪ |
 > | users 用户管理 | 🟢 | ⚪ | ⚪ | ⚪ |
-> | system 应用维护 | 🟢 | ⚪ | ⚪ | ⚪ |
+>
+> **2026-10-15 更新**：`system 应用维护` 这一行连同 `ModuleSystem` 模块与
+> `System.*` 三个权限点已删除——产品决定软件更新对齐 Fyne 旧版，任何登录角色都能更新，
+> 不再需要"仅管理员"的模块。上表其余各行不变；`internal/auth/matrix_test.go` 的
+> `TestNoSystemModule` 守着它不再回来，`nav_contract_test.go` 的非导航模块白名单随之变空。
 >
 > 前端侧核对：9 个导航项全部用正确的模块键做 `canRead` 门控；各屏写操作全部用
 > `canWrite(modules, '<本模块>')`；**前端无任何硬编码角色判断**；`backup` 屏仍是
@@ -958,7 +962,7 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 >
 > | 测试 | 挡住什么 |
 > |---|---|
-> | `internal/auth/matrix_test.go` | 模块漏列 / 某模块漏写某个角色的档位 / 已决策档位被无声改动。反向验证：去掉 `ModuleSystem` → 失败 |
+> | `internal/auth/matrix_test.go` | 模块漏列 / 某模块漏写某个角色的档位 / 已决策档位被无声改动。反向验证：去掉一个模块 → 失败 |
 > | `internal/auth/nav_contract_test.go` | **后端加了模块、前端 `nav.ts` 没加导航**——TS 编译不会报错，表现为"功能加了但没有入口"。反向验证：加一个假模块 `reports` → 失败 |
 > | `internal/api/routes_permissions_test.go` | **路由漏挂权限点**（`s.auth(h, "")` 等于放行所有登录用户，就是当初 update/download 那个事故）；权限点名拼错（表现为"所有人 403"）；定义了权限点却没接线。反向验证：把 `/api/parts` 改成空权限点 → 失败 |
 >
@@ -1035,16 +1039,21 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > ② apply 会**再核对一次哈希**，所以下载与 apply 之间不要移动或修改那个临时文件，
 > 否则会被拒并提示重新下载（这是有意的）。
 
-> 本轮设置屏只做到「查询」，**没有**在界面里放下载 / 应用按钮：安装仍走启动时的
-> 原生提示（`startUpdateCheck`），与 Fyne 版一致。在界面里做安装要考虑进度、
-> 失败重试与「哪些角色能替换 exe」（`System.DownloadUpdate` / `System.ApplyUpdate`
-> 仅管理员），不是这一轮的范围。
-
+> 本轮设置屏只做到「查询」，**没有**在界面里放下载 / 应用按钮：安装走启动时的
+> 原生提示（`api.StartUpdateCheck`），与 Fyne 版一致。
+>
 > **更正（2026-10-14 实机演练后）**：上句「安装仍走启动时的原生提示」在 **Wails 版并不成立**——
 > `internal/api/update.go` 的 `startUpdateCheck` 全仓库无调用点，`cmd/desktop-wails/main.go`
 > 只调 `update.CleanupOld()`，前端也只调 `/api/update/check`。实测：把清单指向更高版本
 > （2.1.0）重启 Wails 版，日志无任何 update 行、exe 不变；而同一份配置下 Fyne 版会记
 > `update available` 并弹确认框。→ 切成新 UI 后**只能查、不能装**，已列为 Round 8 第一先决项。
+>
+> **已修（2026-10-15）**：`startUpdateCheck` 导出为 `api.StartUpdateCheck` 并由
+> `cmd/desktop-wails/main.go` 在窗口形态启动前调用，门与 Fyne 版一致；手动「查询最新更新」
+> 查到新版后调 `POST /api/update/prompt`，**服务端弹同一个原生框**（共用 `runUpdatePrompt`），
+> 点「是」即安装。同一天按产品决定**取消角色门**（`System.DownloadUpdate` /
+> `System.ApplyUpdate` 与 `ModuleSystem` 一并删除），更新对所有登录角色开放。
+> 人工确认环节仍待实测。
 
 **关口（2026-10-14 实机通过）**：**1.3.0（Fyne 旧 UI）→ 2.0.0（Wails 新 UI）升级演练**，
 含升级前备份、迁移、验签门、哈希门、失败中止与回滚材料。全程用隔离库 + 临时数据目录，
@@ -1068,13 +1077,30 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 #### 先决项（按此顺序；冻结前每一条都要落地或明确定案）
 
-- [ ] **① 给 Wails 版接上更新入口**（第一优先）。现状：`startUpdateCheck`
-      （`internal/api/update.go:199`）全仓库无调用点，`cmd/desktop-wails/main.go` 只调
-      `update.CleanupOld()`，前端也只调 `/api/update/check` → 切成新 UI 后用户**只能查、不能装**。
-      做法二选一（实现时定）：启动时复用 `ui.StartUpdateCheck` 的检查逻辑（原生提示），
-      或在设置屏给管理员加「下载并安装」（`System.DownloadUpdate` / `System.ApplyUpdate` 仅管理员），
-      注意进度、失败重试，并遵守 §4.5 T2 的两条约定（apply 忽略请求体 `path`、apply 再验哈希）。
-      验收：同一份配置与更新源下，Wails 版与 Fyne 版行为一致——发现更高版本时必须出现提示/入口。
+- [x] **① 给 Wails 版接上更新入口**（第一优先）。**2026-10-15 已落地**：`api.StartUpdateCheck`
+      （`internal/api/update.go`）从 `cmd/desktop-wails/main.go` 启动前调用，门与 Fyne 版一致
+      （`cfg.AutoUpdate` 为 false 时 `updateURL` 已被清空 → 不查不弹）。行为逐条对齐
+      `internal/ui/update.go`：延时 3 秒静默查 → 有新版弹原生确认框（含版本与说明）→
+      下载 → 替换 exe 并重启；查不到/没配置/不点确认一律安静退出。
+      同时按产品决定**取消角色门**：`POST /api/update/download` 与 `/apply` 改为登录即可
+      （`s.auth(h, "")`），`System.CheckUpdate/DownloadUpdate/ApplyUpdate` 三个权限点与
+      `ModuleSystem` 模块一并删除——旧版的启动检查本就对任何登录用户弹框。安全边界改为与
+      角色无关的三道闸门：包必须由**生产私钥** ed25519 签名、哈希与清单一致（下载与 apply
+      前各核一次）、apply 只认本次下载刚校验过的文件且必须 `confirm:true`。
+      与 Fyne 版的唯一差别：没有进度条（原生 MessageBox 画不出来），进度写日志 +
+      一条"正在下载更新，请勿关闭程序…"提示。
+      手动入口同批接上：设置屏「查询最新更新」查到新版本后调 `POST /api/update/prompt`，
+      **服务端弹出与启动时完全同一个原生框**（两条入口共用 `runUpdatePrompt`），
+      用户点「是」即下载安装。端点立即返回 202（对话框要等人点、下载可能几分钟，
+      不能把 HTTP 请求挂在上面）；同一时刻只允许一条更新流程（`promptGate`），重复
+      触发返回 409。**未实测**：真实「出厂 1.3.0 → 新版」的人工确认环节仍待跑
+      （Round 7 演练只验到"能查"）。
+- [ ] **⑥ `POST /api/update/apply` 回完响应后没有人退出旧进程**（2026-10-15 实施①时
+      查出）。`server.go` 的 `applyUpdate` 默认就是 `update.ApplyAndRestart`，而它**只启动
+      新进程、不退出自己**；handler 随后回 200 就结束了。旧进程继续持单实例锁，新进程带着
+      `RFERP_UPDATE_RESTART=1` 等满 20 秒后弹"已在运行"并自己退出——**用户在界面上点了
+      安装，程序却没换掉**。原生弹框那条路已在①里补上 `os.Exit(0)`，HTTP 这条还没有。
+      修法：回完响应后延迟 `os.Exit(0)`，且必须可注入（否则测试进程会被换掉）。**未实测**。
 - [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。`POST /api/backup`、`/api/export/all`、
       `/api/export/audit` 三个写端点没有本机闸门；`GET /api/datadir`、`POST /api/export/all`、
       `POST /api/export/audit` 回传服务器绝对路径。二选一并在文字上定案：补
@@ -1224,8 +1250,10 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 且 apply 阶段**不验签**。下载阶段确实验了 SHA-256 与 ed25519 清单，但
 **验证绑在下载产生的临时文件上，与 apply 传进来的路径毫无关联** ——
-「校验过的文件」与「即将执行的文件」被割开了。于是任何持有 `System.ApplyUpdate`
-的会话，只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
+「校验过的文件」与「即将执行的文件」被割开了。于是任何已登录会话
+（当时该路由要求 `System.ApplyUpdate`，即仅管理员；该权限点已于 2026-10-15 随
+「更新对齐旧版」删除，改为登录即可，见 Round 8 先决项 ①），
+只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
 攻击者的程序；随之可读 `config.json`（含数据库凭证、当前用户 DPAPI 可解）、
 连库、读写全部备份与导出。
 

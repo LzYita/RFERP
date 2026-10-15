@@ -161,8 +161,9 @@ func TestPermissionsEndpointReflectsAuthMatrix(t *testing.T) {
 	// 管理员：全部模块可见，audit 为 read。
 	//
 	// 这里**不能**断言固定的模块个数。曾经写的是 `len(am) != 9`，把当时的
-	// 模块数钉死了——而 AllModules() 手写列表漏掉 ModuleSystem，这个断言
+	// 模块数钉死了——而 AllModules() 手写列表漏掉一个模块时，这个断言
 	// 反而成了"漏掉也是对的"的证明。改为断言"每个权限表里的模块都在"。
+	// （2026-10-15 删掉 system 模块后，本文件的这条断言同样不需要改。）
 	if len(am) == 0 {
 		t.Fatalf("管理员权限为空：%v", adm)
 	}

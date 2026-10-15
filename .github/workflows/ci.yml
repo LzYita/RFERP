@@ -8,11 +8,13 @@ on:
     branches:
       - main
 
+  workflow_dispatch:
+
 permissions:
   contents: read
 
 concurrency:
-  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: pr-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -123,8 +125,9 @@ jobs:
             exit 1
           }
           # PR checkout is the test merge commit; its first parent is the target branch.
+          # Manual runs recheck the selected commit against its first parent.
           # On push, check the entire pushed range, not only the last commit.
-          if ($env:GITHUB_EVENT_NAME -eq 'pull_request') {
+          if ($env:GITHUB_EVENT_NAME -in @('pull_request', 'workflow_dispatch')) {
             $base = 'HEAD^1'
           } else {
             $event = Get-Content $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json

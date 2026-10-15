@@ -185,8 +185,14 @@ func (j *downloadJob) finish(res downloadResult) {
 }
 
 // jobState 是一次快照：进度数字 + 是否已完成 + 完成后的结果。
+//
+// **所有**从 job 读出来的字段都必须经它取出（在锁内拷贝），不能在 handler 里直接
+// 读 job 的字段：进度回调在后台 goroutine 里持续写这些字段，直接读会被 -race 抓到。
+// 上一版就是 `"total": job.total` 这么直接读的，本地跑没带 -race 所以没暴露，
+// CI 一跑就红。
 type jobState struct {
 	doneBytes int64
+	total     int64
 	finished  bool
 	res       downloadResult
 }
@@ -194,7 +200,12 @@ type jobState struct {
 func (j *downloadJob) snapshot() jobState {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return jobState{doneBytes: j.doneBytes, finished: j.finished, res: j.res}
+	return jobState{
+		doneBytes: j.doneBytes,
+		total:     j.total,
+		finished:  j.finished,
+		res:       j.res,
+	}
 }
 
 func (j *downloadJob) expired(now time.Time) bool {
@@ -344,7 +355,7 @@ func (s *Server) handleUpdateProgress(w http.ResponseWriter, r *http.Request) {
 		"jobId":   job.id,
 		"version": job.version,
 		"done":    res.doneBytes,
-		"total":   job.total,
+		"total":   res.total,
 		"state":   "running",
 	}
 	if res.finished {

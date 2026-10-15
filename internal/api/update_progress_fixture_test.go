@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -60,7 +61,10 @@ func startSignedManifestServer(t *testing.T, version string, payload []byte) (st
 	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/package.bin", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", string(rune(len(payload))))
+		// Content-Length 必须是十进制字符串：写成 string(rune(len(payload))) 会得到
+		// 一个**字符**（长度 44 变成 ','），Go 的 http 服务器直接拒绝——
+		// CI 日志里那句 `invalid Content-Length of ")"` 就是这个。
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
 		_, _ = w.Write(payload)
 	})
 	srv = httptest.NewServer(mux)

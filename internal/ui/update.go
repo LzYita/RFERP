@@ -24,14 +24,19 @@ func StartUpdateCheck(w fyne.Window, manifestURL, currentVersion string) {
 			log.Printf("update check disabled: %v", err)
 			return
 		}
-		m, err := checker.Check()
+		res, err := checker.Check()
+		// 验签被拒/清单不可用时，净结果可能仍是"没有更新"，但日志必须留痕（先决项⑤）
+		if warn := res.Warning(); warn != "" {
+			log.Printf("update check WARNING: %s", warn)
+		}
 		if err != nil {
 			log.Printf("update check failed: %v", err)
 			return
 		}
-		if m == nil {
+		if res.Manifest == nil {
 			return
 		}
+		m := res.Manifest
 		log.Printf("update available: %s (current %s)", m.Version, currentVersion)
 		msg := fmt.Sprintf("发现新版本 %s（当前 %s）", m.Version, currentVersion)
 		if m.Notes != "" {

@@ -929,7 +929,7 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > |---|---|---|
 > | `AllModules()` 漏了 `ModuleSystem` | **真 bug**：`/api/me/permissions` 少返回一个模块，前端永远看不到它 | 已修：模块清单改为从权限表派生（见下） |
 > | e2e 断言 `len(admin.modules) == 9` | **把 bug 锁住了**：这个数字反成了"漏掉也是对的"的证明 | 已改为断言"权限表里的每个模块都在" |
-> | `System.CheckUpdate`/`Identity.UserCount`/`Identity.ChangePassword` 三个权限点未接线 | 有意为之（登录页更新提示、首启判断、自助改密），但权限表没写明，容易被"顺手修回去" | 已在这三行加注说明"为什么不能照它去收紧路由" |
+> | `System.CheckUpdate`/`Identity.UserCount`/`Identity.ChangePassword` 三个权限点未接线 | 有意为之（登录页更新提示、首启判断、自助改密），但权限表没写明，容易被"顺手修回去" | 当时已在这三行加注说明；**2026-10-15 更新改为登录即可后，三个 `System.*` 权限点已整条删除**（连同 `ModuleSystem`），另两个保留 |
 >
 > 根因是**同一信息有两处声明**：`moduleAccess`（map）与 `AllModules()`（另写的
 > 字面量列表）。注释当时还写着"从一处派生才不会漂移"，而实现正是漂移的来源。
@@ -948,7 +948,11 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > | audit 操作记录 | 🔵 | 🔵 | 🔵 | ⚪ |
 > | backup 备份导出 | 🟢 | 🔵 | ⚪ | ⚪ |
 > | users 用户管理 | 🟢 | ⚪ | ⚪ | ⚪ |
-> | system 应用维护 | 🟢 | ⚪ | ⚪ | ⚪ |
+>
+> **2026-10-15 更新**：`system 应用维护` 这一行连同 `ModuleSystem` 模块与
+> `System.*` 三个权限点已删除——产品决定软件更新对齐 Fyne 旧版，任何登录角色都能更新，
+> 不再需要"仅管理员"的模块。上表其余各行不变；`internal/auth/matrix_test.go` 的
+> `TestNoSystemModule` 守着它不再回来，`nav_contract_test.go` 的非导航模块白名单随之变空。
 >
 > 前端侧核对：9 个导航项全部用正确的模块键做 `canRead` 门控；各屏写操作全部用
 > `canWrite(modules, '<本模块>')`；**前端无任何硬编码角色判断**；`backup` 屏仍是
@@ -958,7 +962,7 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 >
 > | 测试 | 挡住什么 |
 > |---|---|
-> | `internal/auth/matrix_test.go` | 模块漏列 / 某模块漏写某个角色的档位 / 已决策档位被无声改动。反向验证：去掉 `ModuleSystem` → 失败 |
+> | `internal/auth/matrix_test.go` | 模块漏列 / 某模块漏写某个角色的档位 / 已决策档位被无声改动。反向验证：去掉一个模块 → 失败 |
 > | `internal/auth/nav_contract_test.go` | **后端加了模块、前端 `nav.ts` 没加导航**——TS 编译不会报错，表现为"功能加了但没有入口"。反向验证：加一个假模块 `reports` → 失败 |
 > | `internal/api/routes_permissions_test.go` | **路由漏挂权限点**（`s.auth(h, "")` 等于放行所有登录用户，就是当初 update/download 那个事故）；权限点名拼错（表现为"所有人 403"）；定义了权限点却没接线。反向验证：把 `/api/parts` 改成空权限点 → 失败 |
 >
@@ -1035,20 +1039,48 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 > ② apply 会**再核对一次哈希**，所以下载与 apply 之间不要移动或修改那个临时文件，
 > 否则会被拒并提示重新下载（这是有意的）。
 
-> 本轮设置屏只做到「查询」，**没有**在界面里放下载 / 应用按钮：安装仍走启动时的
-> 原生提示（`startUpdateCheck`），与 Fyne 版一致。在界面里做安装要考虑进度、
-> 失败重试与「哪些角色能替换 exe」（`System.DownloadUpdate` / `System.ApplyUpdate`
-> 仅管理员），不是这一轮的范围。
-
+> 本轮设置屏只做到「查询」，**没有**在界面里放下载 / 应用按钮：安装走启动时的
+> 原生提示（`api.StartUpdateCheck`），与 Fyne 版一致。
+>
 > **更正（2026-10-14 实机演练后）**：上句「安装仍走启动时的原生提示」在 **Wails 版并不成立**——
 > `internal/api/update.go` 的 `startUpdateCheck` 全仓库无调用点，`cmd/desktop-wails/main.go`
 > 只调 `update.CleanupOld()`，前端也只调 `/api/update/check`。实测：把清单指向更高版本
 > （2.1.0）重启 Wails 版，日志无任何 update 行、exe 不变；而同一份配置下 Fyne 版会记
 > `update available` 并弹确认框。→ 切成新 UI 后**只能查、不能装**，已列为 Round 8 第一先决项。
+>
+> **已修（2026-10-15）**：`startUpdateCheck` 导出为 `api.StartUpdateCheck` 并由
+> `cmd/desktop-wails/main.go` 在窗口形态启动前调用，门与 Fyne 版一致；手动「查询最新更新」
+> 查到新版后调 `POST /api/update/prompt`，**服务端弹同一个原生框**（共用 `runUpdatePrompt`），
+> 点「是」即安装。同一天按产品决定**取消角色门**（`System.DownloadUpdate` /
+> `System.ApplyUpdate` 与 `ModuleSystem` 一并删除），更新对所有登录角色开放。
+> 人工确认环节仍待实测。
 
 **关口（2026-10-14 实机通过）**：**1.3.0（Fyne 旧 UI）→ 2.0.0（Wails 新 UI）升级演练**，
 含升级前备份、迁移、验签门、哈希门、失败中止与回滚材料。全程用隔离库 + 临时数据目录，
 正式库 / 正式数据目录零写入。
+
+**关口二（2026-10-15 实机通过）：出厂 1.3.0 + 生产私钥签发清单，双存储形态各跑一遍。**
+与上一轮不同：清单由**真实的**生产签名私钥签发，1.3.0 是真实发布产物，升级目标是由
+`wails build` 正确构建的 2.0.1（上一轮曾误用 `go build`，产物缺 Wails build tags，
+起不来——**更新机制本身没问题，构建方式才是那次失败的原因**）。
+
+| 验证项 | SQLite 形态 | MySQL 形态 |
+|---|---|---|
+| 弹框 → 验签 → 下载 → 哈希 → 替换 → 重启 | ✅ | ✅ |
+| 新进程**第一次启动**就成功 | ✅ `sqlite ready applied=[]` | ✅ `mysql ready applied=[]` |
+| 新界面真的起来 | ✅ `[WebView2] Environment created successfully` | ✅ 同左 |
+| 目标存储形态正确 | ✅ `storage=sqlite` | ✅ `storage=mysql` + 连 `127.0.0.1:3307/rferp_d4` |
+| 正式环境零改动 | ✅ `config.json` / `%APPDATA%\RFERP` / `D:\仓库数据` 三项指纹全未变 | ✅ 同左 |
+
+两次演练各自暴露一个真问题，都已修并合并：
+- **升级后新进程开库失败**（`disk I/O error (1546)`）—— 先决项⑦，PR #92。SQLite 形态必现；
+  MySQL 形态不会出现（数据库不是应用持有的文件），这一轮在 MySQL 上验证了"无重试、一次成功"。
+- **弹框时机在登录之前** —— PR #92 一并改回登录之后。
+
+演练方法学（下次再做时照抄）：配置查找顺序是 **exe 目录 → CWD → `%APPDATA%`**
+（`internal/config/config.go` `candidatePaths`），所以**三个候选位置都要断言没有
+`config.json`**，否则启动目录里一个残留文件就会盖过沙箱 APPDATA、直接连上正式库；
+`wails build` 的绑定生成阶段会跑一次 `main()`，因此**构建也必须在沙箱 APPDATA 下执行**。
 
 | 验证项 | 结果 |
 |---|---|
@@ -1068,31 +1100,139 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 #### 先决项（按此顺序；冻结前每一条都要落地或明确定案）
 
-- [ ] **① 给 Wails 版接上更新入口**（第一优先）。现状：`startUpdateCheck`
-      （`internal/api/update.go:199`）全仓库无调用点，`cmd/desktop-wails/main.go` 只调
-      `update.CleanupOld()`，前端也只调 `/api/update/check` → 切成新 UI 后用户**只能查、不能装**。
-      做法二选一（实现时定）：启动时复用 `ui.StartUpdateCheck` 的检查逻辑（原生提示），
-      或在设置屏给管理员加「下载并安装」（`System.DownloadUpdate` / `System.ApplyUpdate` 仅管理员），
-      注意进度、失败重试，并遵守 §4.5 T2 的两条约定（apply 忽略请求体 `path`、apply 再验哈希）。
-      验收：同一份配置与更新源下，Wails 版与 Fyne 版行为一致——发现更高版本时必须出现提示/入口。
-- [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。`POST /api/backup`、`/api/export/all`、
-      `/api/export/audit` 三个写端点没有本机闸门；`GET /api/datadir`、`POST /api/export/all`、
-      `POST /api/export/audit` 回传服务器绝对路径。二选一并在文字上定案：补
-      `requireHostOperations`，或按 §4.5「本地 / 远程能力矩阵」明确豁免。验收要点见 §4.5 该条末尾
-      （跨机形态 403 或矩阵豁免 + 路径不出现绝对盘符）。
-- [ ] **③ 确认剪枝策略对 legacy 备份成立**。`internal/backuplayout` 已有 `CategoryLegacy` 与
-      「只迁**确认无误**的文件」的 `MigrateLegacy`（PR #73 合并），`internal/paths/paths.go:145`
-      也明记「用户主动创建的额外备份不受任何清理策略影响」。本条转为**验证**：为「`备份\` 根下的
-      legacy 备份不会被任何剪枝策略删除」补一条断言（若无则补，若有则指出出处）。背景：1.3.0 写
-      `备份\backup_<ts>.sql`，当前源码写 `备份\safety\pre_migrate_<ts>.sql`，老用户升级后两代并存。
+- [x] **① 给 Wails 版接上更新入口**（第一优先）。**2026-10-15 已落地**：`api.StartUpdateCheck`
+      （`internal/api/update.go`）从 `cmd/desktop-wails/main.go` 启动前调用，门与 Fyne 版一致
+      （`cfg.AutoUpdate` 为 false 时 `updateURL` 已被清空 → 不查不弹）。行为逐条对齐
+      `internal/ui/update.go`：延时 3 秒静默查 → 有新版弹原生确认框（含版本与说明）→
+      下载 → 替换 exe 并重启；查不到/没配置/不点确认一律安静退出。
+      同时按产品决定**取消角色门**：`POST /api/update/download` 与 `/apply` 改为登录即可
+      （`s.auth(h, "")`），`System.CheckUpdate/DownloadUpdate/ApplyUpdate` 三个权限点与
+      `ModuleSystem` 模块一并删除——旧版的启动检查本就对任何登录用户弹框。安全边界改为与
+      角色无关的三道闸门：包必须由**生产私钥** ed25519 签名、哈希与清单一致（下载与 apply
+      前各核一次）、apply 只认本次下载刚校验过的文件且必须 `confirm:true`。
+      与 Fyne 版的唯一差别：没有进度条（原生 MessageBox 画不出来），进度写日志 +
+      一条"正在下载更新，请勿关闭程序…"提示。
+      手动入口同批接上：设置屏「查询最新更新」查到新版本后调 `POST /api/update/prompt`，
+      **服务端弹出与启动时完全同一个原生框**（两条入口共用 `runUpdatePrompt`），
+      用户点「是」即下载安装。端点立即返回 202（对话框要等人点、下载可能几分钟，
+      不能把 HTTP 请求挂在上面）；同一时刻只允许一条更新流程（`promptGate`），重复
+      触发返回 409。
+      **2026-10-15 实机演练（出厂 1.3.0 + 生产私钥签发的清单）已跑通弹框 → 验签 →
+      下载 → 哈希核对 → 就地替换 → 重启全链路**；当时的更新包是用 `go build` 造的
+      （缺 Wails build tags），新 exe 起不来——更新机制本身没问题，构建必须用
+      `wails build`。
+- [x] **⑦ 升级后新进程第一次开库会失败**（2026-10-15 实机演练查出并已修）。软件更新是
+      「先启动新进程、老进程再退出」（`internal/update.ApplyAndRestart`），新进程只等单实例锁，
+      而**单实例锁比文件句柄先释放** → 新进程在老进程还在拆 WAL/SHM 时开库，驱动报
+      `disk I/O error (1546)`（主码 10），用户看到「RFERP 无法启动」，手动再点一次就好了。
+      DSN 里的 `busy_timeout(5000)` 救不了：它只管 `BUSY`/`LOCKED`，不管硬 I/O 错误。
+      修法：`repository.OpenSQLite` 外包一层**有界重试**（约 6 秒，只重试 `BUSY`/`LOCKED`/`IO`，
+      每次写日志）；`CANTOPEN` 这类配置问题不重试，免得把明确报错拖成几秒后才出现。
+      **只能在新版本这边修** —— 1.3.0 已发布，它的 `ApplyAndRestart` 改不了。
+      同轮还把**弹框时机改回登录之后**（1.3.0 就是登录后检查；之前挂在启动后 3 秒＝登录前，
+      会在用户刚坐下、正在录入数据时弹框，点「是」就立刻重启）。
+      **同轮实测确认 ④**：`.old` 活不过下一次启动（升级失败那轮因为老进程映像占着文件而删不掉，
+      下一���启动就被删）。
+- [x] **⑥ `POST /api/update/apply` 回完响应后没有人退出旧进程**（2026-10-15 实施①时
+      查出，**2026-10-15 已修**）。`server.go` 的 `applyUpdate` 默认就是 `update.ApplyAndRestart`，
+      而它**只启动新进程、不退出自己**；handler 随后回 200 就结束了。旧进程继续持单实例锁，
+      新进程带着 `RFERP_UPDATE_RESTART=1` 等满 20 秒后弹"已在运行"并自己退出——**用户在界面上
+      点了安装，程序却没换掉**。原生弹框那条路早就有 `os.Exit(0)`（Fyne 版同位置也有），
+      只有这个 HTTP 端点漏了。
+      修法：回完响应后延迟 `exitAfterResponseDelay`（200ms）再退出，退出动作**可注入**
+      （`WithProcessExit`）——否则测试进程会被自己杀掉。apply **失败**与三条前置校验失败
+      （缺 `confirm` / 尚未下载 / 哈希不符）一律**不退出**：程序还好好跑着，用户可以直接重试。
+      反向验证：临时去掉 `exitAfterRestart()` 后 `TestApplySchedulesProcessExit` 与
+      `TestApplyExitIsDeferredNotImmediate` 立刻失败。
+      **2026-10-15 补齐调用者（同批做完整）**：复核时发现这条链**当时没有调用者**——
+      `POST /api/update/download` 与 `/apply` 在 `web/src` 里零命中，界面走的是
+      `POST /api/update/prompt` 原生弹框那条；`-serve` 无头形态不注册更新端点
+      （`runHeadless` 没有 `WithUpdate`），窗口形态绑随机端口 + 启动 token 网关，
+      外部也注入不了。**没有调用者就没有端到端验证的入口**。
+      于是设置屏「使用指南」页签补上**「下载并安装」**：查到新版本后出现该按钮 →
+      确认框列出"会自动重启、未保存输入会丢失" → 确认后走
+      `POST /api/update/download?async=1`（立即回 202 + job id）→
+      `GET /api/update/progress?job=<id>` 轮询显示"正在下载 x%（已下载/总量 MB）"→
+      完成后 `POST /api/update/apply`（必须 `confirm:true`）。
+      由此新增：异步下载 + 进度端点（`downloadJob` / `jobState`，job 表上限 `maxJobs`
+      并保留 `jobKeepDuration` 容错窗口），以及"**下载失败绝不留下可 apply 的槽位**"
+      这条断言（否则界面上重试会 apply 一个下了一半的包）。
+      设置屏同时保留「查询最新更新」原生弹框那条路 —— 两条路各有用处：原生弹框与
+      Fyne 版行为一致且不需要界面参与，HTTP 那条能在界面里显示进度与失败原因。
+      **同批实机端到端验证通过**（沙箱隔离、驱动真实 HTTP 链、无需人工点击：
+      异步下载 202 + jobId → 进度 100%（7434172 / 7434172）→ apply 200 →
+      **旧进程退出码 0** → 新版本自报 2.0.3 + WebView2 就绪 → 安装目录 exe = 更新包指纹）。
+      这一轮同时抓到并修掉 ⑧（新进程被 Job Object 连带杀掉）—— 见下条。
+- [x] **⑧ 更新后新进程被连带杀掉（Job Object 继承）**（2026-10-15 端到端演练查出并已修）。
+      现象：apply 之后新进程起来了、日志写了 `[WebView2] Environment created successfully`，
+      然后**无声消失** —— 没有关机日志、进程表里也查不到。不是自己退出，是被内核终止。
+      根因：`windowsobj.Guard()` 把进程放进一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业
+      （目的是让 WebView2 那棵树随宿主消失），而 **Windows 的子进程默认继承父进程的作业**；
+      更新又是"老进程启动新进程、老进程随后退出" → 老进程一退，作业关闭就把新版本一起带走。
+      **为什么之前的演练没抓到**：那些演练的老版本是已发布的 Fyne 1.3.0，**不调 `Guard()`**，
+      根本没有作业可继承。只有"Wails 版升级 Wails 版"才会踩到 —— 也就是**下一次更新**。
+      已用受控实验确认（临时程序建作业 + spawn 子进程 + 退出 → 子进程 4 秒后消失），不是推断。
+      修法：作业追加 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`（只是"允许"脱离，WebView2 那棵树照旧留在
+      作业里，原有保证不变），两个启动新进程的地方（`ApplyAndRestart`、`RestartApp`）加
+      `CREATE_BREAKAWAY_FROM_JOB`（`internal/update/detach_windows.go`，其它平台空实现）。
+      端到端验证（2.0.2 → 2.0.3，两个都是 Wails 版）：修复前进程表里查不到；修复后新进程
+      **存活 12 秒以上**（每秒核对一次）。
+      **踩坑记录**：演练脚本自己也有两个错——探针字符串写成 `embedded server`（`-serve` 实际打印
+      `headless on`）、以及没清理端口占用。后者更要命：Windows 的 `SO_REUSEADDR` 允许
+      **多个**进程绑同一端口，前几轮遗留的 `http.server` 让请求打到了 `--directory` 已不存在的
+      旧进程，清单取不到 → 检查器回退到真实 GitHub 地址 → 卡满 60 秒超时。演练脚本现在开场
+      先按端口清场。
+- [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。**2026-10-15 部分完成**（issue #91）：
+      **S1 已定案 = 矩阵豁免** —— 三个写端点在远程形态下不开本机闸门，只由 `Backup.*`
+      权限点限制（仅 admin），并接受"管理员可反复写盘、无配额无清理"这一代价；与矩阵里
+      「备份导出 ✅✅✅」一致，不改矩阵本身。
+      **S2 仍未定案**：绝对路径如何处理留到联网形态设计，届时补"远程形态下界面不出现
+      绝对盘符"的关口断言。
+      完整理由、代价与"下一个人的绊脚石提示"见 §4.5「遗留待办：远程服务器联机启动后处理」
+      的定案段（`docs/plans/wails-migration.md`）。因 S2 未收口，本条**不勾**。
+- [x] **③ 确认剪枝策略对 legacy 备份成立**（**2026-10-15 已补断言**）。结论：现有代码**成立**，
+      但原本**只有注释里的承诺**、没有任何断言守着。核查到的四条剪枝路径全部枚举如下，
+      没有一条会碰 `备份\` 根下的 legacy 文件：
+      1. `internal/service/autobackup.go:107` — `PruneSnapshots(备份\auto, "auto", AutoBackupKeep)`；
+      2. `internal/service/restore.go:288` `pruneSafetyCopies` — **有 `switch` 白名单**，
+         只清 `pre_restore` / `pre_clear` / `pre_migrate`，`backup`（手动备份）不在其中；
+      3. `internal/bootstrap/bootstrap.go:274` — 升级前快照，prefix `pre_migrate`；
+      4. `internal/backuplayout.MigrateLegacy` — 只按前缀搬，**搬不动的留下**。
+      新增 `internal/backuplayout/prune_legacy_test.go`：把四条路径真跑一遍（分类目录里塞满
+      超过上限的文件，逼策略真的动手），断言 legacy 的三个文件仍在**且仍被 `List()` 列出**
+      （还在磁盘上但界面看不到，等于丢失）。另有对照断言"剪枝确实删得掉自己那类"，
+      否则上一条可能只是因为剪枝整体失灵才通过。
+      **反向验证时踩到的坑值得记**：第一版探针用**新**时间戳（`20260924`）造 legacy，
+      它混进"保留最新 keep 个"里被顺手救下来 → 断言成了假阴性。legacy 必须用**旧**
+      时间戳，才真正落在"会被删"的那一侧。
+      背景仍然成立：1.3.0 写 `备份\backup_<ts>.sql`，当前源码写 `备份\safety\pre_migrate_<ts>.sql`，
+      老用户升级后两代并存。
 - [ ] **④ 更新失败也要能回退**。`ApplyAndRestart`（`internal/update/update.go:225-253`）在
       `cmd.Start()` 失败时直接返回错误，此时 exe 已被换成新的、只剩 `.old`；而下次启动
       `CleanupOld()`（`cmd/desktop-wails/main.go:113`）会**先删 `.old`**。→ 要么启动失败自动回退，
       要么在确认新 exe 起得来之前不删 `.old`。**未实测**，需实机构造（目标 exe 启动即退出）验证。
-- [ ] **⑤ 让「验签被拒」不再伪装成「没有更新」**。`Checker.Check()`
-      （`internal/update/update.go:76-90`）先试配置源、失败再试 `DefaultFallbackURL`，返回**第一个
-      成功**的结果；演练中配置源被生产公钥拒 → 回退源成功 → 净结果「没有更新」。至少在日志里
-      区分这两者。可观测性问题，排最后，不影响安全。
+- [x] **⑤ 让「验签被拒」不再伪装成「没有更新」**（**2026-10-15 已修**）。
+      问题：`Checker.Check()` 先试配置源、失败再试 `DefaultFallbackURL`，返回**第一个成功**
+      的结果；配置源被生产公钥拒 → 回退源成功且没有更高版本 → 净结果就是「没有更新」，
+      而那条验签失败**被彻底丢弃，日志里一个字都没有**。失败路径还会误导：全都失败时
+      报的是**回退源的网络错误**，让一次发版事故看起来像网络抖动。
+      危害不是安全（拒绝本身是对的），而是**可观测性**：发版时签错密钥这类事故表现为
+      "所有用户静默停止更新、界面一律显示已是最新、没有任何人报错"。
+      修法：
+      1. `Check()` 返回 `Result`（含每个源的 `Attempts`），状态分为
+         `newer` / `not-newer` / **`rejected`（验签被拒）** / `unusable`（缺字段、版本过低）
+         / `unreachable`；全部失败时用 `preferError` 优先返回**强信号**（被拒 > 不可用 > 其它）；
+      2. `Result.Warning()` 只对 `rejected` / `unusable` 报警，**`unreachable` 不算**——
+         配置源连不上、回退源顶上本来就是设计好的容错路径，每次都告警等于没告警；
+      3. `/api/update/check` 在有异常时带 `warning` 字段；设置屏据此显示
+         "更新源返回的清单未通过校验，已拒绝：…"，**而不是"已是最新版本"**；
+         下载端点与两处启动检查同样把它写进日志/文案。
+      验证：`internal/update` 四个场景（被拒但回退成功 / 被拒优先于不可达 / 纯容错不告警 /
+      清单不可用）、`internal/api` 三条（响应带 warning / 正常路径无 warning / 下载文案说清原因）、
+      前端一条（**反向验证过**：把界面改回"一律说已是最新"，该测试立刻红）。
+      为此给 `Server` 加了 `WithUpdateChecker` 注入点（**仅供测试**）：真实 checker 的回退
+      地址是线上 GitHub，本机不通会卡 60 秒、CI 上通了结果又不同，注入后两条源都能指向本地。
+      可观测性问题，不影响安全。
 
 #### 本轮交付
 
@@ -1224,8 +1364,10 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 
 且 apply 阶段**不验签**。下载阶段确实验了 SHA-256 与 ed25519 清单，但
 **验证绑在下载产生的临时文件上，与 apply 传进来的路径毫无关联** ——
-「校验过的文件」与「即将执行的文件」被割开了。于是任何持有 `System.ApplyUpdate`
-的会话，只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
+「校验过的文件」与「即将执行的文件」被割开了。于是任何已登录会话
+（当时该路由要求 `System.ApplyUpdate`，即仅管理员；该权限点已于 2026-10-15 随
+「更新对齐旧版」删除，改为登录即可，见 Round 8 先决项 ①），
+只要目标机器上存在一个 zip 且知道路径，就能让 ERP 以自己身份运行
 攻击者的程序；随之可读 `config.json`（含数据库凭证、当前用户 DPAPI 可解）、
 连库、读写全部备份与导出。
 
@@ -1271,6 +1413,30 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 处理时的验收要点：① 三个端点在 `cmd/server`（跨机形态）下必须与 `restore`/`clear` 一样
 被 403 挡下，或按矩阵明确豁免；② 关口需补远程形态下"路径不出现绝对盘符"的断言。
 
+**2026-10-15 定案：选「按矩阵明确豁免」。** 理由与内容如下。
+
+**S1 已定案。** `POST /api/backup`、`POST /api/export/all`、`POST /api/export/audit`
+在远程形态下**不开本机闸门**，只由 `Backup.*` 权限点限制（`backup` 模块仅 admin 是 write，
+warehouse 是 read）——即"管理员可发起，其他人不可"。
+
+- **为什么这是允许的**：能力矩阵里「备份导出（下载到本机）」本来就写着 ✅ / ✅ / ✅，
+  三种形态都允许。豁免与既有矩阵**一致**，不是新增例外。另一个理由是远程形态的导出
+  流程尚未设计（§4 Round 2「运行模式选择」暂缓），现在加闸门等于把一条还没定型的路径
+  提前堵死。
+- **接受的代价（必须留在纸上）**：管理员可以让服务器反复生成整库备份与全量 CSV 导出
+  文件填满磁盘，**没有配额，也没有自动清理**。影响评估见上（磁盘占用向量，不含任何
+  数据外泄）。这是**有意接受**，不是遗漏。
+- **给下一个人的绊脚石提示**：最可能出事的地方就在这儿——看到"同组其它端点都有
+  `requireHostOperations`、就这三个没有"，很可能顺手补上，而那会**直接打死联网形态的
+  备份导出**。要改先来这里读这段。
+
+**S2 未定案，留到联网形态设计时处理。** 绝对路径在远程形态下怎么处理（显示相对位置，
+还是区分「本机路径照常显示 / 远程路径只显示相对位置」）依赖远程形态的交互设计，今天在
+技术上做不到——前端还没有远程模式。届时必须补一条关口断言：**远程形态下界面不出现
+绝对盘符**。
+
+> 因此 Round 8 先决项②只算**部分完成**：S1 有定案，S2 仍然是遗留待办。
+
 ### 本地 / 远程能力矩阵（2026-10-02 新增）
 
 破坏性操作**不应**在跨机场景开放。现有四道确认门——校验过的备份文件、需手输的时间戳令牌、
@@ -1289,6 +1455,12 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 | 初始化 / 启动 MySQL | ✅ | ❌ server 本机操作 | ❌ |
 | 本地目录选择 | ✅ | N/A（无"本地"概念） | N/A |
 
+> **「备份导出（下载到本机）」在阶段 B/C 的落地方式已于 2026-10-15 定案**（见上文
+> 「遗留待办：远程服务器联机启动后处理」的定案段）：`POST /api/backup`、
+> `/api/export/all`、`/api/export/audit` **不开本机闸门**，只由 `Backup.*` 权限点限制
+> （仅 admin 可发起），并接受"管理员可反复写盘、无配额无清理"这一代价。
+> 这一行本来就是 ✅ / ✅ / ✅，定案没有改动矩阵本身。
+>
 > 本地目录选择与"修改远程服务器目录"是**不同能力**，不可合并成一条"补端点"的事项。
 > 远程文件操作需另行定义：文件归属、权限、上传大小上限与格式校验、下载与恢复的安全门槛。
 

@@ -18,6 +18,7 @@
 //     同一个共享库（曾因此撞唯一键，也曾差点误连正式库）。
 //   - 绝不读写用户配置/正式数据库：本轮配置只指向本轮临时目录里的 SQLite。
 import { spawn } from 'node:child_process'
+import { stripVTControlCharacters } from 'node:util'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -247,14 +248,16 @@ async function startFrontend(desktopStyle) {
   })
   let output = ''
   const capture = (chunk) => { output = (output + chunk.toString()).slice(-4096) }
+  // Strip after accumulation: escape sequences can span output chunks.
+  const plain = () => stripVTControlCharacters(output)
   vite.stdout.on('data', capture)
   vite.stderr.on('data', capture)
   // An occupied port can answer HTTP before our Vite process reports listening.
   const up = await until(async () => (
-    vite.exitCode === null && output.includes(VITE_URL) && (await fetch(VITE_URL)).ok
+    vite.exitCode !== null || (plain().includes(VITE_URL) && (await fetch(VITE_URL)).ok)
   ))
   if (!up || vite.exitCode !== null) {
-    throw new Error(`vite 未就绪（${VITE_URL}）：${output.trim().replace(/\s+/g, ' ') || '没有启动输出'}`)
+    throw new Error(`vite 未就绪（${VITE_URL}）：${plain().trim().replace(/\s+/g, ' ') || '没有启动输出'}`)
   }
   return VITE_URL
 }

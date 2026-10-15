@@ -70,12 +70,9 @@ const (
 	ModuleAudit     = "audit"
 	ModuleBackup    = "backup"
 	ModuleUsers     = "users"
-	// ModuleSystem 是**应用自身**的维护：检查/下载/替换可执行文件。
-	//
-	// 单独一个模块，而不是挂到 Backup 或 Users 下面：备份与用户管理都有
-	// 合理的非管理员档位，而「替换正在运行的程序」不是——那等于把程序控制权
-	// 交给任何登录的人。写权限只给管理员。
-	ModuleSystem = "system"
+	// 原有的 ModuleSystem（应用自身维护）已于 2026-10-15 删掉，理由见下方
+	// modules 表的注释：更新流程对齐 Fyne 旧版，对所有登录角色开放，因此
+	// 「只有管理员能替换可执行文件」这条不再成立，也不该留成一个空模块。
 )
 
 // moduleGrant 是一个模块及其四个角色的档位。
@@ -92,6 +89,10 @@ type moduleGrant struct {
 // /api/me/permissions 少返回一个模块，前端永远看不到它——而代码注释当时还写着
 // 「模块增减必须同时反映到权限表、导航与界面上，从一处派生才不会漂移」。
 // 把清单做成这张表的键之后，加模块不可能只加到一半。
+//
+// 2026-10-15：删掉 ModuleSystem 后，这条教训仍然成立——本表现在就是「模块清单」
+// 的唯一来源，将来若再引入非导航模块（例如某个只在设置屏出现的模块），必须
+// 在这张表里加条目，并在 internal/auth/nav_contract_test.go 里显式承认它不进导航。
 var modules = []moduleGrant{
 	{ModuleDashboard, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
 	{ModuleStats, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessRead}},
@@ -104,12 +105,21 @@ var modules = []moduleGrant{
 	{ModuleAudit, map[Role]Access{RoleAdmin: AccessRead, RoleWarehouse: AccessRead, RoleProduction: AccessRead, RoleViewer: AccessNone}},
 	{ModuleBackup, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessRead, RoleProduction: AccessNone, RoleViewer: AccessNone}},
 	{ModuleUsers, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone}},
-	// 应用维护：只有管理员能写（替换可执行文件），其他角色无权限。
+	// 这里原本还有一行 ModuleSystem（仅管理员 write）。2026-10-15 按产品决定删除：
+	// 软件更新对齐 Fyne 旧版——**任何登录角色都能检查、下载并安装更新**，真正的
+	// 边界不再是角色，而是三道与角色无关的硬闸门：
 	//
-	// 注意 AccessNone 是**每个角色都要显式写出来**的：缺键会经 AccessFor 落回
-	// AccessNone，看起来一样，但「显式写 None」和「忘了写」在评审时无法区分。
-	// TestEveryModuleCoversEveryRole 会挡住漏写。
-	{ModuleSystem, map[Role]Access{RoleAdmin: AccessWrite, RoleWarehouse: AccessNone, RoleProduction: AccessNone, RoleViewer: AccessNone}},
+	//  1. 更新包必须由**生产私钥** ed25519 签名，且文件哈希与清单一致（下载与
+	//     apply 之前各核一次）——非签名者无法让程序装上任何自己选的代码；
+	//  2. apply 只认「本次下载刚校验通过」的那个临时文件，请求体里的路径一律忽略；
+	//  3. apply 必须带 confirm:true，由用户显式确认。
+	//
+	// 因此不需要为了「谁能替换 exe」单独设一个管理员模块；模块表里每一条都要
+	// 对应一个真实存在的页面（见 nav_contract_test.go 的契约）。
+	//
+	// 仍然适用于本表的约定：AccessNone 是**每个角色都要显式写出来**的——缺键会经
+	// AccessFor 落回 AccessNone，看起来一样，但「显式写 None」和「忘了写」在评审时
+	// 无法区分；TestEveryModuleCoversEveryRole 会挡住漏写。
 }
 
 var moduleAccess = func() map[string]map[Role]Access {

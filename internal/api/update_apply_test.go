@@ -15,14 +15,21 @@ import (
 //
 // 原实现把请求体里的 path 直接交给 update.ApplyAndRestart，而那条链是
 // 「从该路径的 zip 里取出任意 .exe → 覆盖程序自身 → 启动它」，且 apply 不验签。
-// 于是任何持有 System.ApplyUpdate 的会话，只要目标机器上有一个 zip 且知道路径，
+// 于是任何一个已登录会话，只要目标机器上有一个 zip 且知道路径，
 // 就能让 ERP 以自己身份运行攻击者的程序。
 //
 // 现在 apply 只认「下载步骤刚产生并校验过」的那一个，并在应用前再核一次哈希。
+// 2026-10-15 起这条路由对所有登录角色开放（不再要求 System.ApplyUpdate），
+// 这道路径闸门因此成了**唯一**的路径约束，见 update.go 的函数注释。
 //
 // ⚠️ 测试**必须**注入假的 applier：真实实现会替换正在运行的测试二进制并启动它。
 
 // newUpdateServer 建服务器，并注入只记录不执行的 applier。
+//
+// **同时注入一个什么都不做的 exitProcess**：apply 成功之后真实实现会 os.Exit(0)，
+// 而这里只关心"applier 被调用了几次、待办文件怎么变"。不注入的话，
+// 这些用例会走到真实的退出动作，把整个测试二进制杀掉——go test 表现为中途无声结束。
+// 退出行为本身由 update_exit_test.go 单独验证（那里才注入会打信号的假实现）。
 func newUpdateServer(t *testing.T) (*Server, *[]string) {
 	t.Helper()
 	var applied []string
@@ -30,7 +37,8 @@ func newUpdateServer(t *testing.T) (*Server, *[]string) {
 		WithUpdateApplier(func(p string) error {
 			applied = append(applied, p)
 			return nil
-		}))
+		}),
+		WithProcessExit(func() {}))
 	return s, &applied
 }
 

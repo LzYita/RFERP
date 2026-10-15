@@ -9,8 +9,10 @@ import "testing"
 // 角色都有明确档位、以及几条经过决策的具体档位不被无声改掉。
 //
 // 背景：AllModules() 曾经是手写的字面量列表，与 moduleAccess 分开维护；
-// 新增 ModuleSystem 时只加了 map、忘了列表，于是 /api/me/permissions 少返回
+// 新增一个模块时只加了 map、忘了列表，于是 /api/me/permissions 少返回
 // 一个模块，前端永远看不到它。下面的 TestEveryModuleIsListed 就是为了挡住它。
+// （2026-10-15 删掉 ModuleSystem 时，这个不变量正好顺手把"删干净"也挡住了：
+// 只要有人把 map 里的条目删了却留着别处的引用，这里立刻红。）
 
 // 模块清单必须与权限表完全一致：不多、不少、不重。
 func TestEveryModuleIsListed(t *testing.T) {
@@ -118,12 +120,9 @@ func TestDecidedGrants(t *testing.T) {
 		{ModuleUsers, RoleWarehouse, AccessNone},
 		{ModuleUsers, RoleProduction, AccessNone},
 		{ModuleUsers, RoleViewer, AccessNone},
-
-		// 应用维护：仅管理员
-		{ModuleSystem, RoleAdmin, AccessWrite},
-		{ModuleSystem, RoleWarehouse, AccessNone},
-		{ModuleSystem, RoleProduction, AccessNone},
-		{ModuleSystem, RoleViewer, AccessNone},
+		// 原先这里还有 ModuleSystem 的四行（仅管理员 write）。2026-10-15 按产品
+		// 决定删除：软件更新对齐 Fyne 旧版，对所有登录角色开放，不再需要"应用维护"
+		// 这个管理员模块。反向断言见 TestNoSystemModule。
 	}
 	for _, c := range cases {
 		got := AccessFor(c.role, c.module)
@@ -149,18 +148,24 @@ func TestWriteImpliesRead(t *testing.T) {
 	}
 }
 
-// ModuleSystem 必须在清单里——这条单独列出，因为漏掉它正是当初的事故。
-func TestModuleSystemIsExposed(t *testing.T) {
-	found := false
+// "system" 模块必须**不再存在**。这条与 TestModuleSystemIsExposed 正好相反，
+// 记在这里是因为同一个名字在两天里含义相反过：
+//
+//	2026-10-13 起：ModuleSystem=「应用维护」，写权限仅 admin，更新端点靠它门控。
+//	2026-10-15 起：产品决定更新对齐 Fyne 旧版（任何登录角色都能更新），于是删掉
+//	               权限点与模块。
+//
+// 断言用字面量 "system" 而不是常量，是故意的：常量已经删了，这样写才能在
+// "有人又把 system 加回矩阵"时立刻失败（而不是编译不过、只在新分支上炸）。
+func TestNoSystemModule(t *testing.T) {
 	for _, m := range AllModules() {
-		if m == ModuleSystem {
-			found = true
+		if m == "system" {
+			t.Fatalf("system 模块又回来了：更新已对所有登录角色开放，不该再有管理员专属模块（%v）", AllModules())
 		}
 	}
-	if !found {
-		t.Fatal("ModuleSystem 不在 AllModules() 里，前端将无法据权限点门控更新入口")
-	}
-	if AccessFor(RoleAdmin, ModuleSystem) != AccessWrite {
-		t.Error("管理员对 ModuleSystem 应是 write")
+	for _, r := range Roles() {
+		if a := AccessFor(r, "system"); a != AccessNone {
+			t.Errorf("%s 对 system 的档位 = %v，未知模块应落回 AccessNone", r, a)
+		}
 	}
 }

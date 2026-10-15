@@ -247,6 +247,9 @@ func ApplyAndRestart(zipPath string) error {
 	}
 	cmd := exec.Command(target)
 	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
+	// 必须脱离当前的作业对象：否则老进程一退出，作业关闭就把这个新进程一起杀掉。
+	// 详见 detach_windows.go（2026-10-15 演练抓到的"新版本起来后无声消失"）。
+	cmd.SysProcAttr = detachedAttrs()
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -276,6 +279,8 @@ func RestartApp() error {
 	cmd := exec.Command(target)
 	// Reuse the update-restart lock wait so the old process can drop single-instance.
 	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
+	// 同上：新进程必须脱离作业对象，否则本进程退出时把它一起带走。
+	cmd.SysProcAttr = detachedAttrs()
 	return cmd.Start()
 }
 

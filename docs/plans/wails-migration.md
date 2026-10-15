@@ -1129,6 +1129,25 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       换句话说：**在界面真正走 HTTP 路径之前，这条端到端链无法被触发**。
       要端到端验，需要先有一个界面去调它（例如设置屏里做"下载并安装"按钮，以便显示
       进度与失败重试）；那时这条修复也才真正有用户可感的分量。
+- [x] **⑧ 更新后新进程被连带杀掉（Job Object 继承）**（2026-10-15 端到端演练查出并已修）。
+      现象：apply 之后新进程起来了、日志写了 `[WebView2] Environment created successfully`，
+      然后**无声消失** —— 没有关机日志、进程表里也查不到。不是自己退出，是被内核终止。
+      根因：`windowsobj.Guard()` 把进程放进一个 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业
+      （目的是让 WebView2 那棵树随宿主消失），而 **Windows 的子进程默认继承父进程的作业**；
+      更新又是"老进程启动新进程、老进程随后退出" → 老进程一退，作业关闭就把新版本一起带走。
+      **为什么之前的演练没抓到**：那些演练的老版本是已发布的 Fyne 1.3.0，**不调 `Guard()`**，
+      根本没有作业可继承。只有"Wails 版升级 Wails 版"才会踩到 —— 也就是**下一次更新**。
+      已用受控实验确认（临时程序建作业 + spawn 子进程 + 退出 → 子进程 4 秒后消失），不是推断。
+      修法：作业追加 `JOB_OBJECT_LIMIT_BREAKAWAY_OK`（只是"允许"脱离，WebView2 那棵树照旧留在
+      作业里，原有保证不变），两个启动新进程的地方（`ApplyAndRestart`、`RestartApp`）加
+      `CREATE_BREAKAWAY_FROM_JOB`（`internal/update/detach_windows.go`，其它平台空实现）。
+      端到端验证（2.0.2 → 2.0.3，两个都是 Wails 版）：修复前进程表里查不到；修复后新进程
+      **存活 12 秒以上**（每秒核对一次）。
+      **踩坑记录**：演练脚本自己也有两个错——探针字符串写成 `embedded server`（`-serve` 实际打印
+      `headless on`）、以及没清理端口占用。后者更要命：Windows 的 `SO_REUSEADDR` 允许
+      **多个**进程绑同一端口，前几轮遗留的 `http.server` 让请求打到了 `--directory` 已不存在的
+      旧进程，清单取不到 → 检查器回退到真实 GitHub 地址 → 卡满 60 秒超时。演练脚本现在开场
+      先按端口清场。
 - [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。`POST /api/backup`、`/api/export/all`、
       `/api/export/audit` 三个写端点没有本机闸门；`GET /api/datadir`、`POST /api/export/all`、
       `POST /api/export/audit` 回传服务器绝对路径。二选一并在文字上定案：补

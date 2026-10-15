@@ -128,7 +128,13 @@ function GuideTab({ data }: { data: HelpPayload }) {
       }
       if (!r.hasUpdate) {
         setAvailable(null)
-        setStatus(`当前 v${data.currentVersion} 已是最新版本。`)
+        // 有源"验签被拒/清单不可用"时**不能**说"已是最新版本"：那是把一次发版事故
+        // （比如签错了密钥）伪装成一切正常，用户和你都看不出来（先决项⑤）。
+        setStatus(
+          r.warning
+            ? `更新源返回的清单未通过校验，已拒绝：${r.warning}`
+            : `当前 v${data.currentVersion} 已是最新版本。`,
+        )
         return
       }
       setAvailable(r)

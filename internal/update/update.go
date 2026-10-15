@@ -71,27 +71,174 @@ func NewChecker(manifestURL, currentVersion string) (*Checker, error) {
 	}, nil
 }
 
-// Check returns a manifest when a newer, signed version is available; nil when
-// there is nothing to do.
-func (c *Checker) Check() (*Manifest, error) {
+// AttemptStatus 是一次清单获取的结果分类。
+//
+// 为什么要分类而不是"一个 error"：`Check` 会依次试配置源与内置回退源，
+// 而这两类失败的含义完全不同 ——
+//
+//	"这个源连不上"      → 正常容错，换个源继续，不必惊动任何人
+//	"这个源给的清单验签没过" → **强信号**：密钥配错、清单被改、或发版时签错了钥匙
+//
+// 早前的实现把后者也当成普通错误，于是"配置源被验签拒 → 回退源说没有新版"的净结果
+// 是「没有更新」—— 用户界面说"已是最新"，日志里一个字都没有。发版签错密钥这类事故
+// 就表现为"用户一直不升级"且无人报错（Round 8 先决项⑤）。
+type AttemptStatus string
+
+const (
+	// AttemptNewer 拿到清单、验签通过、版本更高。
+	AttemptNewer AttemptStatus = "newer"
+	// AttemptNotNewer 拿到清单、验签通过、版本不更高（正常情况）。
+	AttemptNotNewer AttemptStatus = "not-newer"
+	// AttemptRejected **拿到了清单但验签没过**。强信号，必须显眼。
+	AttemptRejected AttemptStatus = "rejected"
+	// AttemptUnusable 验签过了但清单本身不可用（缺字段、或声明当前版本过低）。
+	AttemptUnusable AttemptStatus = "unusable"
+	// AttemptUnreachable 没能拿到可用清单（网络、超时、非 200、JSON 解析失败）。
+	AttemptUnreachable AttemptStatus = "unreachable"
+)
+
+// Attempt 是对一个源的一次尝试。
+type Attempt struct {
+	URL    string
+	Status AttemptStatus
+	Err    error // 非 nil 时是具体原因
+}
+
+// Result 是一次 Check 的完整结果：有没有新版，以及每个源各自是什么结果。
+type Result struct {
+	Manifest *Manifest // 有新版时非 nil
+	Attempts []Attempt
+}
+
+// RejectedError 表示"拿到了清单但验签没过"。
+//
+// 单独一个类型，是为了让上层能把"这个源有问题"与"这个源暂时连不上"分开 ——
+// 两者都该回退，但前者必须留下痕迹。
+type RejectedError struct {
+	URL string
+	Err error
+}
+
+func (e *RejectedError) Error() string { return e.Err.Error() }
+func (e *RejectedError) Unwrap() error { return e.Err }
+
+// UnusableError 表示清单验签通过了、但不能用（缺字段，或声明当前版本过低）。
+// 与 RejectedError 一样属于"源告诉我们发布有问题"，值得显眼。
+type UnusableError struct {
+	URL string
+	Err error
+}
+
+func (e *UnusableError) Error() string { return e.Err.Error() }
+func (e *UnusableError) Unwrap() error { return e.Err }
+
+// Notable 返回需要被看见的尝试：验签被拒、清单不可用。
+//
+// **不含 unreachable**：配置源连不上、回退源顶上，是设计好的容错路径，不该每次都
+// 报警。把两者混在一起是上一版可观测性问题的根源。
+func (r Result) Notable() []Attempt {
+	var out []Attempt
+	for _, a := range r.Attempts {
+		if a.Status == AttemptRejected || a.Status == AttemptUnusable {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// Warning 把 Notable 的尝试压成一句可供日志与界面使用的话；没有异常时返回空串。
+//
+// 界面据此把"已是最新版本"换成"更新源清单未通过验签，已拒绝"——这正是本条的要点：
+// 让"验签被拒"不再伪装成"没有更新"。
+func (r Result) Warning() string {
+	notes := r.Notable()
+	if len(notes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(notes))
+	for _, a := range notes {
+		parts = append(parts, fmt.Sprintf("%s：%v", a.URL, a.Err))
+	}
+	return strings.Join(parts, "；")
+}
+
+// Check 依次尝试配置源与内置回退源，返回**第一个成功**的结果，并记录每个源的尝试结果。
+//
+// 与早前实现的差别只在"失败时返回什么"：
+//   - 返回值从 (*Manifest, error) 变成 (Result, error)，Attempts 保留了每个源各自的结果；
+//   - 全都失败时优先返回**强信号错误**（验签被拒 / 清单不可用），而不是最后一个网络错误。
+//     上一版会把"配置源被验签拒"丢掉、只报回退源的连接失败，把排查方向带偏。
+func (c *Checker) Check() (Result, error) {
 	urls := []string{c.ManifestURL}
 	if c.FallbackURL != "" && c.FallbackURL != c.ManifestURL {
 		urls = append(urls, c.FallbackURL)
 	}
-	var lastErr error
+
+	var res Result
+	var best error
 	for _, u := range urls {
 		m, err := c.checkURL(u)
+		res.Attempts = append(res.Attempts, Attempt{
+			URL:    u,
+			Status: classifyAttempt(err, m),
+			Err:    err,
+		})
 		if err == nil {
-			return m, nil
+			res.Manifest = m // 可能为 nil：验签通过但没有更高版本
+			return res, nil
 		}
-		lastErr = err
+		best = preferError(best, err)
 	}
-	return nil, lastErr
+	return res, best
+}
+
+// classifyAttempt 把一次尝试归到 AttemptStatus。
+func classifyAttempt(err error, m *Manifest) AttemptStatus {
+	if err == nil {
+		if m != nil {
+			return AttemptNewer
+		}
+		return AttemptNotNewer
+	}
+	var rejected *RejectedError
+	if errors.As(err, &rejected) {
+		return AttemptRejected
+	}
+	var unusable *UnusableError
+	if errors.As(err, &unusable) {
+		return AttemptUnusable
+	}
+	return AttemptUnreachable
+}
+
+// preferError 在多个失败里挑一个**更能说明问题**的返回。
+//
+// 顺序：验签被拒 > 清单不可用 > 其它。
+// 为什么：把"配置源清单验签没过"换成"回退源连不上"，会让一次发版事故看起来像网络抖动。
+func preferError(cur, next error) error {
+	if cur == nil {
+		return next
+	}
+	rank := func(err error) int {
+		var rejected *RejectedError
+		if errors.As(err, &rejected) {
+			return 3
+		}
+		var unusable *UnusableError
+		if errors.As(err, &unusable) {
+			return 2
+		}
+		return 1
+	}
+	if rank(next) > rank(cur) {
+		return next
+	}
+	return cur
 }
 
 func (c *Checker) checkURL(url string) (*Manifest, error) {
 	if len(c.PublicKey) == 0 {
-		return nil, errors.New("更新公钥未配置")
+		return nil, &UnusableError{URL: url, Err: errors.New("更新公钥未配置")}
 	}
 	client := c.httpClient(30 * time.Second)
 	resp, err := client.Get(url)
@@ -110,17 +257,19 @@ func (c *Checker) checkURL(url string) (*Manifest, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, fmt.Errorf("解析更新清单失败: %w", err)
 	}
+	// 验签失败单独一圈类型：它与"连不上"含义完全不同，上层要据此留下痕迹。
 	if err := m.Verify(c.PublicKey); err != nil {
-		return nil, err
+		return nil, &RejectedError{URL: url, Err: err}
 	}
 	if CompareVersions(m.Version, c.CurrentVersion) <= 0 {
 		return nil, nil
 	}
 	if m.MinVersion != "" && CompareVersions(c.CurrentVersion, m.MinVersion) < 0 {
-		return nil, fmt.Errorf("当前版本过低，无法自动更新，请重新安装最新版")
+		return nil, &UnusableError{URL: url,
+			Err: errors.New("当前版本过低，无法自动更新，请重新安装最新版")}
 	}
 	if m.URL == "" || m.SHA256 == "" {
-		return nil, errors.New("更新清单缺少下载地址或校验值")
+		return nil, &UnusableError{URL: url, Err: errors.New("更新清单缺少下载地址或校验值")}
 	}
 	return &m, nil
 }

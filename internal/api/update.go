@@ -217,7 +217,40 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearPendingUpdate()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
+
+	// 换完 exe 之后**必须让旧进程退出**，否则更新等于没做（2026-10-15 查出，Round 8 先决项⑥）。
+	//
+	// update.ApplyAndRestart 只负责启动新进程，文档里明写"caller 应随后退出"。不退的后果：
+	// 旧进程继续持有单实例锁，新进程带着 RFERP_UPDATE_RESTART=1 等满 20 秒后弹
+	// "已在运行"并自己退出——用户点了安装，exe 却没被换掉。原生弹框那条路早就有
+	// os.Exit(0)（Fyne 版同位置也有），只有这个 HTTP 端点漏了。
+	//
+	// 为什么延迟而不是立刻退：响应还没送达客户端，进程就没了的话前端会看到
+	// "restarting" 变成网络错误，白白让人以为失败。延后退出期间旧进程仍在服务，
+	// 已经拿到响应的客户端不会受影响。
+	s.exitAfterRestart()
+
+	// 把"要退出了"这件事说清楚：这条响应之后客户端再发任何请求都可能落空，
+	// 日志里留下痕迹比什么都不写更容易排查。
+	log.Printf("update: 已换新版本，%s 后退出本进程（pid %d）", exitAfterResponseDelay, os.Getpid())
 }
+
+// exitAfterRestart 在短暂延迟后退出当前进程，让刚启动的新版本接管单实例锁。
+//
+// 单独一个方法而不是内联 os.Exit：测试里它是可注入的（WithProcessExit），
+// 否则跑测试会把自己的测试二进制换掉 —— 与 applyUpdate 同一个理由。
+func (s *Server) exitAfterRestart() {
+	go func() {
+		// 延迟要够 HTTP 响应真正出去。200ms 是实测：本地环回写一个 30 字节的 JSON
+		// 远不到这个量级，留 5 倍余量；太长则会让"点了没反应"的感觉变明显。
+		time.Sleep(exitAfterResponseDelay)
+		s.exitProcess()
+	}()
+}
+
+// exitAfterResponseDelay 是「回完响应」到「退出旧进程」之间的等待。
+// 调它做单飞节流的人不要复用这个常量（那是 promptGate 的事）。
+const exitAfterResponseDelay = 200 * time.Millisecond
 
 // promptGate 保证同一时刻只有一条更新流程（一个对话框 + 一次下载）。
 //

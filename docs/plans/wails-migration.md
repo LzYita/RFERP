@@ -1110,22 +1110,47 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       会在用户刚坐下、正在录入数据时弹框，点「是」就立刻重启）。
       **同轮实测确认 ④**：`.old` 活不过下一次启动（升级失败那轮因为老进程映像占着文件而删不掉，
       下一���启动就被删）。
-- [ ] **⑥ `POST /api/update/apply` 回完响应后没有人退出旧进程**（2026-10-15 实施①时
-      查出）。`server.go` 的 `applyUpdate` 默认就是 `update.ApplyAndRestart`，而它**只启动
-      新进程、不退出自己**；handler 随后回 200 就结束了。旧进程继续持单实例锁，新进程带着
-      `RFERP_UPDATE_RESTART=1` 等满 20 秒后弹"已在运行"并自己退出——**用户在界面上点了
-      安装，程序却没换掉**。原生弹框那条路已在①里补上 `os.Exit(0)`，HTTP 这条还没有。
-      修法：回完响应后延迟 `os.Exit(0)`，且必须可注入（否则测试进程会被换掉）。**未实测**。
+- [x] **⑥ `POST /api/update/apply` 回完响应后没有人退出旧进程**（2026-10-15 实施①时
+      查出，**2026-10-15 已修**）。`server.go` 的 `applyUpdate` 默认就是 `update.ApplyAndRestart`，
+      而它**只启动新进程、不退出自己**；handler 随后回 200 就结束了。旧进程继续持单实例锁，
+      新进程带着 `RFERP_UPDATE_RESTART=1` 等满 20 秒后弹"已在运行"并自己退出——**用户在界面上
+      点了安装，程序却没换掉**。原生弹框那条路早就有 `os.Exit(0)`（Fyne 版同位置也有），
+      只有这个 HTTP 端点漏了。
+      修法：回完响应后延迟 `exitAfterResponseDelay`（200ms）再退出，退出动作**可注入**
+      （`WithProcessExit`）——否则测试进程会被自己杀掉。apply **失败**与三条前置校验失败
+      （缺 `confirm` / 尚未下载 / 哈希不符）一律**不退出**：程序还好好跑着，用户可以直接重试。
+      反向验证：临时去掉 `exitAfterRestart()` 后 `TestApplySchedulesProcessExit` 与
+      `TestApplyExitIsDeferredNotImmediate` 立刻失败。
+      **验证范围的准确说法（2026-10-15 复核后改写）**：本条**只有单元测试覆盖**，
+      **不能做端到端实机验证 —— 因为当前没有调用者**。`POST /api/update/download` 与
+      `/apply` 在 `web/src` 里零命中（界面走的是 `POST /api/update/prompt` 原生弹框那条），
+      而 `-serve` 无头形态不注册更新端点（`cmd/desktop-wails/main.go` 的 `runHeadless`
+      没有 `WithUpdate`），窗口形态又绑随机端口 + 启动 token 网关，外部无法注入请求。
+      换句话说：**在界面真正走 HTTP 路径之前，这条端到端链无法被触发**。
+      要端到端验，需要先有一个界面去调它（例如设置屏里做"下载并安装"按钮，以便显示
+      进度与失败重试）；那时这条修复也才真正有用户可感的分量。
 - [ ] **② 清掉或豁免 §4.5 的 S1 / S2**。`POST /api/backup`、`/api/export/all`、
       `/api/export/audit` 三个写端点没有本机闸门；`GET /api/datadir`、`POST /api/export/all`、
       `POST /api/export/audit` 回传服务器绝对路径。二选一并在文字上定案：补
       `requireHostOperations`，或按 §4.5「本地 / 远程能力矩阵」明确豁免。验收要点见 §4.5 该条末尾
       （跨机形态 403 或矩阵豁免 + 路径不出现绝对盘符）。
-- [ ] **③ 确认剪枝策略对 legacy 备份成立**。`internal/backuplayout` 已有 `CategoryLegacy` 与
-      「只迁**确认无误**的文件」的 `MigrateLegacy`（PR #73 合并），`internal/paths/paths.go:145`
-      也明记「用户主动创建的额外备份不受任何清理策略影响」。本条转为**验证**：为「`备份\` 根下的
-      legacy 备份不会被任何剪枝策略删除」补一条断言（若无则补，若有则指出出处）。背景：1.3.0 写
-      `备份\backup_<ts>.sql`，当前源码写 `备份\safety\pre_migrate_<ts>.sql`，老用户升级后两代并存。
+- [x] **③ 确认剪枝策略对 legacy 备份成立**（**2026-10-15 已补断言**）。结论：现有代码**成立**，
+      但原本**只有注释里的承诺**、没有任何断言守着。核查到的四条剪枝路径全部枚举如下，
+      没有一条会碰 `备份\` 根下的 legacy 文件：
+      1. `internal/service/autobackup.go:107` — `PruneSnapshots(备份\auto, "auto", AutoBackupKeep)`；
+      2. `internal/service/restore.go:288` `pruneSafetyCopies` — **有 `switch` 白名单**，
+         只清 `pre_restore` / `pre_clear` / `pre_migrate`，`backup`（手动备份）不在其中；
+      3. `internal/bootstrap/bootstrap.go:274` — 升级前快照，prefix `pre_migrate`；
+      4. `internal/backuplayout.MigrateLegacy` — 只按前缀搬，**搬不动的留下**。
+      新增 `internal/backuplayout/prune_legacy_test.go`：把四条路径真跑一遍（分类目录里塞满
+      超过上限的文件，逼策略真的动手），断言 legacy 的三个文件仍在**且仍被 `List()` 列出**
+      （还在磁盘上但界面看不到，等于丢失）。另有对照断言"剪枝确实删得掉自己那类"，
+      否则上一条可能只是因为剪枝整体失灵才通过。
+      **反向验证时踩到的坑值得记**：第一版探针用**新**时间戳（`20260924`）造 legacy，
+      它混进"保留最新 keep 个"里被顺手救下来 → 断言成了假阴性。legacy 必须用**旧**
+      时间戳，才真正落在"会被删"的那一侧。
+      背景仍然成立：1.3.0 写 `备份\backup_<ts>.sql`，当前源码写 `备份\safety\pre_migrate_<ts>.sql`，
+      老用户升级后两代并存。
 - [ ] **④ 更新失败也要能回退**。`ApplyAndRestart`（`internal/update/update.go:225-253`）在
       `cmd.Start()` 失败时直接返回错误，此时 exe 已被换成新的、只剩 `.old`；而下次启动
       `CleanupOld()`（`cmd/desktop-wails/main.go:113`）会**先删 `.old`**。→ 要么启动失败自动回退，

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"log"
 
@@ -28,14 +29,19 @@ type manifestProbe struct {
 }
 
 func (p *manifestProbe) Probe() (string, error) {
-	m, err := p.checker.Check()
+	res, err := p.checker.Check()
 	if err != nil {
 		return "", err
 	}
-	if m == nil {
+	// 有源验签被拒 / 清单不可用时，即便净结果是"没有更新"也要说出来，
+	// 不能显示成"已经是最新"（先决项⑤）。
+	if warn := res.Warning(); warn != "" {
+		return "", errors.New(warn)
+	}
+	if res.Manifest == nil {
 		return "", nil // 已是最新
 	}
-	return m.Version, nil
+	return res.Manifest.Version, nil
 }
 
 // newUpdateProbe 构造查询器；updateURL 为空时返回 nil。

@@ -64,7 +64,11 @@ func logUpdateProgress(start time.Time, done, total int64) {
 
 func (s *Server) checkerFor(url string) (*update.Checker, error) {
 	s.updater.once.Do(func() {
-		s.updater.c, s.updater.err = update.NewChecker(url, s.updater.cur)
+		build := s.newChecker
+		if build == nil {
+			build = update.NewChecker
+		}
+		s.updater.c, s.updater.err = build(url, s.updater.cur)
 	})
 	return s.updater.c, s.updater.err
 }
@@ -81,15 +85,23 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "更新检查不可用: "+err.Error())
 		return
 	}
-	m, err := checker.Check()
+	res, err := checker.Check()
 	if err != nil {
+		// 这里的 err 已经过 preferError 挑选：若某个源的清单验签被拒，报的是那一条，
+		// 而不是回退源的连接失败（否则一次发版事故会看起来像网络抖动）。
 		writeErr(w, http.StatusBadGateway, "无法获取更新信息: "+err.Error())
 		return
 	}
+	m := res.Manifest
 	out := map[string]any{
 		"enabled":        true,
 		"currentVersion": s.updater.cur,
 		"hasUpdate":      m != nil,
+	}
+	// 有源"验签被拒 / 清单不可用"时，即使净结果是"没有更新"，也要把这件事带出去。
+	// 否则界面只能说"已是最新版本"，发版签错密钥这类事故就完全不可见（先决项⑤）。
+	if warn := res.Warning(); warn != "" {
+		out["warning"] = warn
 	}
 	if m != nil {
 		out["version"] = m.Version
@@ -274,11 +286,18 @@ func (s *Server) handleDownloadUpdate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "更新检查不可用: "+err.Error())
 		return
 	}
-	m, err := checker.Check()
-	if err != nil || m == nil {
-		writeErr(w, http.StatusBadRequest, "没有可下载的新版本")
+	res, err := checker.Check()
+	if err != nil || res.Manifest == nil {
+		// 把"为什么没有可下载的新版本"说清楚：如果原因是某个源的清单验签被拒，
+		// 那和"确实已是最新"是两件事，不能让调用方以为后者。
+		msg := "没有可下载的新版本"
+		if warn := res.Warning(); warn != "" {
+			msg += "（更新源清单未通过校验：" + warn + "）"
+		}
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
+	m := res.Manifest
 
 	if r.URL.Query().Get("async") == "1" {
 		s.startAsyncDownload(w, checker, m)
@@ -550,14 +569,20 @@ func runUpdatePrompt(url, current string) {
 		log.Printf("update check disabled: %v", err)
 		return
 	}
-	m, err := checker.Check()
+	res, err := checker.Check()
+	// 先报"值得注意的"那条：验签被拒/清单不可用时，净结果可能仍是"没有更新"，
+	// 但日志里必须留下痕迹（先决项⑤）。unreachable 不算——那是容错路径。
+	if warn := res.Warning(); warn != "" {
+		log.Printf("update check WARNING: %s", warn)
+	}
 	if err != nil {
 		log.Printf("update check failed: %v", err)
 		return
 	}
-	if m == nil {
+	if res.Manifest == nil {
 		return
 	}
+	m := res.Manifest
 	log.Printf("update available: %s (current %s)", m.Version, current)
 	msg := "发现新版本 " + m.Version + "（当前 " + current + "）"
 	if m.Notes != "" {

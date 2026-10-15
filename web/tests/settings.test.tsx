@@ -127,6 +127,24 @@ describe('设置屏', () => {
       expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
     })
 
+    it('有源验签被拒时不能显示成"已是最新版本"（先决项⑤）', async () => {
+      const calls = stubApi({
+        enabled: true,
+        hasUpdate: false,
+        warning: 'http://configured.invalid/releases.json：更新清单签名校验失败',
+      })
+      await renderSettings()
+
+      await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
+      await waitFor(() => expect(screen.getByRole('status').textContent).toContain('未通过校验'))
+      // 关键：绝不能显示"已是最新版本"——那会把一次发版事故伪装成一切正常
+      expect(screen.getByRole('status').textContent).not.toContain('已是最新版本')
+      expect(screen.getByRole('status').textContent).toContain('签名校验失败')
+      // 源有问题时不该出现安装入口
+      expect(screen.queryByRole('button', { name: '下载并安装' })).toBeNull()
+      expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
+    })
+
     it('查到新版本就给出「下载并安装」入口，并说清新版本号', async () => {
       stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
       await renderSettings()

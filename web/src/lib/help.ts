@@ -46,6 +46,15 @@ export interface UpdateCheck {
   size?: number
   publishedAt?: string
   channel?: string
+  /**
+   * 有源"验签被拒 / 清单不可用"时的说明；没有异常时不出现。
+   *
+   * 为什么必须有这个字段：更新检查会先试配置源、再试内置回退源。配置源被生产公钥拒
+   * （例如发版时签错了密钥）而回退源显示没有新版时，净结果就是"没有更新"——
+   * 若不把它带出来，界面只会说"已是最新版本"，**发版事故就完全不可见**
+   * （Round 8 先决项⑤）。
+   */
+  warning?: string
 }
 
 export const updateCheck = {

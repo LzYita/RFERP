@@ -94,12 +94,18 @@ type Server struct {
 	// jobSeqMu 只护 jobSeq（id 要单调递增，避免同毫秒内两次请求撞 id）。
 	jobSeqMu sync.Mutex
 
-	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。
-	//
+	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。	//
 	// 可注入的理由同上，而且更硬：真实实现会**弹一个模态框等人点**，在 Windows 上
 	// 等于把测试进程挂住；它还会去连清单地址，连不上时退到真实的 GitHub 发布页，
 	// 那里可能真有更高的正式版本——于是测试机上会真的弹出一个更新提示。
 	runPrompt func(url, current string)
+
+	// newChecker 是「构造更新检查器」的方式，默认 update.NewChecker。
+	//
+	// 可注入的原因：真实实现给检查器安了**线上 GitHub** 作回退地址，于是"配置源失败"
+	// 的测试会去打外网（本机不通 → 卡 60 秒；CI 通 → 结果又和本地不同）。注入后
+	// 两条源都能指向本地，确定且离线。仅测试使用（WithUpdateChecker）。
+	newChecker func(url, current string) (*update.Checker, error)
 
 	// pendingUpdate 保存**下载步骤刚产生并通过校验**的更新包。
 	//
@@ -240,6 +246,15 @@ func WithUpdatePromptRunner(f func(url, current string)) Option {
 // 默认实现是 os.Exit，会把跑测试的进程直接杀掉。
 func WithProcessExit(f func()) Option {
 	return func(s *Server) { s.exitProcess = f }
+}
+
+// WithUpdateChecker 替换「构造更新检查器」的方式。**仅供测试**：
+// 真实实现（update.NewChecker）会把内置回退地址设为**线上 GitHub**，
+// 于是任何"配置源失败"的用例都会去打外网 —— 本机 github.com 不通，一卡就是 60 秒；
+// CI 上通了，也会因公钥对不上而得到与本地不同的结果。注入后两条源都能指向本地，
+// 结果确定、不依赖网络。
+func WithUpdateChecker(f func(url, current string) (*update.Checker, error)) Option {
+	return func(s *Server) { s.newChecker = f }
 }
 
 // exitProcessNow 是 apply 成功之后结束旧进程的默认实现。

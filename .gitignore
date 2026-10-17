@@ -8,7 +8,6 @@ deploy/docker/.env
 
 # 构建产物
 *.exe
-!rcedit-x64.exe
 dist/
 
 # 运行数据、备份与导出
@@ -19,6 +18,8 @@ dist/
 *.key
 
 # 发布说明（每次发版临时编辑）
+# 发版脚本本身不在仓库内（见 CONTRIBUTING.md 的 Release 流程），
+# 但它会在仓库根生成这两个临时文件，所以这里继续忽略。
 release-notes.txt
 release-notes.full.md
 

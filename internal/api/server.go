@@ -94,12 +94,6 @@ type Server struct {
 	// jobSeqMu 只护 jobSeq（id 要单调递增，避免同毫秒内两次请求撞 id）。
 	jobSeqMu sync.Mutex
 
-	// runPrompt 是「弹原生确认框 → 下载 → 替换重启」这条流程，默认 runUpdatePrompt。	//
-	// 可注入的理由同上，而且更硬：真实实现会**弹一个模态框等人点**，在 Windows 上
-	// 等于把测试进程挂住；它还会去连清单地址，连不上时退到真实的 GitHub 发布页，
-	// 那里可能真有更高的正式版本——于是测试机上会真的弹出一个更新提示。
-	runPrompt func(url, current string)
-
 	// newChecker 是「构造更新检查器」的方式，默认 update.NewChecker。
 	//
 	// 可注入的原因：真实实现给检查器安了**线上 GitHub** 作回退地址，于是"配置源失败"
@@ -234,14 +228,6 @@ func WithUpdateApplier(f func(zipPath string) error) Option {
 	return func(s *Server) { s.applyUpdate = f }
 }
 
-// WithUpdatePromptRunner 替换「弹更新确认框并安装」的实际动作。**仅供测试**：
-// 真实实现会弹一个模态框等人点，Windows 上跑测试会挂住测试进程；
-// 而且它会去连清单地址（连不上时还会退到 DefaultFallbackURL，也就是真实的
-// GitHub 发布页——那里可能真的有更高的正式版本，于是测试机上会真的弹框）。
-func WithUpdatePromptRunner(f func(url, current string)) Option {
-	return func(s *Server) { s.runPrompt = f }
-}
-
 // WithProcessExit 替换「apply 成功之后退出旧进程」的动作。**仅供测试**：
 // 默认实现是 os.Exit，会把跑测试的进程直接杀掉。
 func WithProcessExit(f func()) Option {
@@ -284,9 +270,6 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	if s.applyUpdate == nil {
 		s.applyUpdate = update.ApplyAndRestart
 	}
-	if s.runPrompt == nil {
-		s.runPrompt = runUpdatePrompt
-	}
 	if s.exitProcess == nil {
 		s.exitProcess = exitProcessNow
 	}
@@ -328,9 +311,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/download", s.auth(s.handleDownloadUpdate, ""))
 	mux.HandleFunc("GET /api/update/progress", s.auth(s.handleUpdateProgress, ""))
 	mux.HandleFunc("POST /api/update/apply", s.auth(s.handleApplyUpdate, ""))
-	// 手动「查询最新更新」查到新版后弹原生确认框（设置屏调用）。
-	// 与 download/apply 同一个口径：登录即可，不按角色区分。
-	mux.HandleFunc("POST /api/update/prompt", s.auth(s.handlePromptUpdate, ""))
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)

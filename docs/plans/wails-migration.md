@@ -1050,10 +1050,23 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 >
 > **已修（2026-10-15）**：`startUpdateCheck` 导出为 `api.StartUpdateCheck` 并由
 > `cmd/desktop-wails/main.go` 在窗口形态启动前调用，门与 Fyne 版一致；手动「查询最新更新」
-> 查到新版后调 `POST /api/update/prompt`，**服务端弹同一个原生框**（共用 `runUpdatePrompt`），
-> 点「是」即安装。同一天按产品决定**取消角色门**（`System.DownloadUpdate` /
+> 查到新版后走 HTTP 端点（`download` → `progress` → `apply`），点「下载并安装」即安装。
+> 同一天按产品决定**取消角色门**（`System.DownloadUpdate` /
 > `System.ApplyUpdate` 与 `ModuleSystem` 一并删除），更新对所有登录角色开放。
 > 人工确认环节仍待实测。
+>
+> **已改（2026-10-17）：登录后的更新提示从原生框改为网页弹窗。** 原先是服务端弹
+> Win32 MessageBox（`runUpdatePrompt`），并把**整份更新说明**塞进消息正文。这条路有两个
+> 绕不开的问题：MessageBox 画不了 markdown、也没有滚动条，只能靠把窗口整体拉高来容纳
+> 全文 —— 1.3.0 的说明有上百行，于是「下载并安装」按钮被顶到屏幕之外，用户既看不全也
+> 点不到（用户报的现象）；同时 `== 中文 ==`、`- ` 这些标记以原文示人。
+> 现在 `POST /api/update/prompt`、`runUpdatePrompt`、`promptGate` 与测试注入 seam
+> `WithUpdatePromptRunner` 一并删除，`GET /api/update/check` 多返回一个 `sections`
+> （服务端用 `help.ParseNotes` 切好，与「设置 → 更新说明」共用同一个解析器），前端
+> `UpdatePromptModal` 渲染成限高可滚动的正文 + 固定在底部的按钮 + 下载进度条。
+> 安装动作抽出 `useUpdateInstall`，登录弹窗与设置屏「下载并安装」共用同一份轮询与 apply。
+> 当初绕开 HTTP 端点的理由（「apply 回完响应后没人退出旧进程」）已由先决项⑥ 修掉
+> （`handleApplyUpdate` 现在会 `exitAfterRestart()`），那个理由不再成立。
 
 **关口（2026-10-14 实机通过）**：**1.3.0（Fyne 旧 UI）→ 2.0.0（Wails 新 UI）升级演练**，
 含升级前备份、迁移、验签门、哈希门、失败中止与回滚材料。全程用隔离库 + 临时数据目录，
@@ -1110,13 +1123,12 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       `ModuleSystem` 模块一并删除——旧版的启动检查本就对任何登录用户弹框。安全边界改为与
       角色无关的三道闸门：包必须由**生产私钥** ed25519 签名、哈希与清单一致（下载与 apply
       前各核一次）、apply 只认本次下载刚校验过的文件且必须 `confirm:true`。
-      与 Fyne 版的唯一差别：没有进度条（原生 MessageBox 画不出来），进度写日志 +
-      一条"正在下载更新，请勿关闭程序…"提示。
-      手动入口同批接上：设置屏「查询最新更新」查到新版本后调 `POST /api/update/prompt`，
-      **服务端弹出与启动时完全同一个原生框**（两条入口共用 `runUpdatePrompt`），
-      用户点「是」即下载安装。端点立即返回 202（对话框要等人点、下载可能几分钟，
-      不能把 HTTP 请求挂在上面）；同一时刻只允许一条更新流程（`promptGate`），重复
-      触发返回 409。
+      与 Fyne 版的唯一差别：**有进度条**。原实现（2026-10-15 至 2026-10-17）是服务端弹
+      原生 MessageBox，画不出进度条，只能写日志 + 一条"正在下载更新，请勿关闭程序…"提示；
+      同一批里手动入口也是 `POST /api/update/prompt` 走**同一个原生框**（共用
+      `runUpdatePrompt`），并用 `promptGate` 保证同一时刻只有一条更新流程。
+      **2026-10-17 全部改为网页弹窗**（详见上面那条）：`/api/update/prompt` 与原生框整条
+      路删除，两个入口统一走 `download → progress → apply`，界面上能看到进度。
       **2026-10-15 实机演练（出厂 1.3.0 + 生产私钥签发的清单）已跑通弹框 → 验签 →
       下载 → 哈希核对 → 就地替换 → 重启全链路**；当时的更新包是用 `go build` 造的
       （缺 Wails build tags），新 exe 起不来——更新机制本身没问题，构建必须用
@@ -1146,7 +1158,8 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       `TestApplyExitIsDeferredNotImmediate` 立刻失败。
       **2026-10-15 补齐调用者（同批做完整）**：复核时发现这条链**当时没有调用者**——
       `POST /api/update/download` 与 `/apply` 在 `web/src` 里零命中，界面走的是
-      `POST /api/update/prompt` 原生弹框那条；`-serve` 无头形态不注册更新端点
+      `POST /api/update/prompt` 原生弹框那条（该端点与原生框已于 2026-10-17 删除，
+      见上面那条）；`-serve` 无头形态不注册更新端点
       （`runHeadless` 没有 `WithUpdate`），窗口形态绑随机端口 + 启动 token 网关，
       外部也注入不了。**没有调用者就没有端到端验证的入口**。
       于是设置屏「使用指南」页签补上**「下载并安装」**：查到新版本后出现该按钮 →

@@ -31,6 +31,12 @@ export const helpContent = {
   load: () => api.get<HelpPayload>('/api/help'),
 }
 
+/** 更新说明里的一小节，与 /api/help 的 `helpSection` 同构。 */
+export interface NoteSection {
+  title?: string
+  body: string
+}
+
 /**
  * 在线查询结果的形状，对应 handleCheckUpdate。
  *
@@ -42,7 +48,16 @@ export interface UpdateCheck {
   currentVersion?: string
   hasUpdate?: boolean
   version?: string
+  /** Markdown 原文。**界面不要直接渲染它** —— 用下面已切好的 sections。 */
   notes?: string
+  /**
+   * 服务端按 `== 中文 ==` 切好的小节（有 notes 时才有内容）。
+   *
+   * 为什么不让前端自己切：`== 中文 ==` 的切分规则只存在于 help.ParseNotes 一处，
+   * 前端再写一份，同一份 notes 在「设置 → 更新说明」与更新弹窗里迟早切出不同的
+   * 段落。两处都读这个字段，就没有第二份实现可分叉。
+   */
+  sections?: NoteSection[]
   size?: number
   publishedAt?: string
   channel?: string
@@ -117,18 +132,6 @@ export const updateProgress = {
 export const updateApply = {
   run: (opts: { confirm: boolean }) =>
     api.post<{ status: string }>('/api/update/apply', { confirm: opts.confirm }),
-}
-
-/**
- * 弹更新确认框（**服务端**弹原生框，不是网页弹）。
- *
- * 与上面的 download + apply 是两条路：
- *   - 这条路：服务端自己弹原生框、自己下载、自己替换重启（界面看不到进度）；
- *   - download + apply：界面里显示进度条与失败重试（设置屏的「下载并安装」走这条）。
- * 保留两条是因为早期只有第一条（与 Fyne 版行为一致），而它无法显示进度。
- */
-export const updatePrompt = {
-  request: () => api.post<{ status: string }>('/api/update/prompt'),
 }
 
 /**

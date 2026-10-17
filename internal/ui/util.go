@@ -273,9 +273,15 @@ func productStatusText(status int) string {
 	return "停用"
 }
 
-func partStatusStyle(lowStock bool, status int) (color.Color, color.Color, string) {
-	if lowStock {
-		return badgeErrorBg, badgeErrorFg, "库存紧张"
+// partStatusStyle 零件状态单元格。库存维度优先于启停（与库存紧张时的旧行为
+// 一致），且零库存与跌破预警线用不同颜色：红色 badgeError 表示没货，
+// 橙色 badgeWarn 表示快没了 —— 两者的处置动作不同，不该混成同一个信号。
+func partStatusStyle(level, status int) (color.Color, color.Color, string) {
+	switch level {
+	case stockOut:
+		return badgeErrorBg, badgeErrorFg, "无库存"
+	case stockLow:
+		return badgeWarnBg, badgeWarnFg, "库存紧张"
 	}
 	if status == 1 {
 		return badgeSuccessBg, badgeSuccessFg, "启用"

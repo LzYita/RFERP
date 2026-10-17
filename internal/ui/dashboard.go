@@ -189,7 +189,7 @@ func (d *DashboardScreen) Refresh() {
 	warnCount := 0
 	var warns []model.Part
 	for _, p := range parts {
-		if isLowStock(p) {
+		if isStockAlert(p) {
 			warnCount++
 			warns = append(warns, p)
 		}

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
+import { isStockAlert, stockLevel, STOCK_LEVEL_TEXT } from '../lib/lowStock'
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
 import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
@@ -18,22 +19,6 @@ import {
 
 
 const DEFAULT_PAGE_SIZE = 20
-
-/**
- * 低库存判定。
- *
- * 必须与 Fyne 版 `isLowStock`（internal/ui/part.go:35）逐字一致：
- *
- *   1. `warnQty > 0` 守卫 —— 预警值设为 0 表示「不预警」。少了这条，所有
- *      未设预警的零件都会被算成低库存，预警列表直接失去意义。
- *   2. 严格小于 —— 库存正好等于预警线不算低。「已到线」与「已跌破」是两件事，
- *      `stock <= warn` 会把前者也标成「库存紧张」，让用户提前补货却没有依据。
- *
- * Round 2 这里写的是 `stock_qty <= p.warn_qty`，两条都不对。
- */
-function isLowStock(p: { stock_qty: number; warn_qty: number }): boolean {
-  return p.warn_qty > 0 && p.stock_qty < p.warn_qty
-}
 
 /**
  * 「分类」筛选的候选项。
@@ -103,7 +88,7 @@ export function filterParts(
       ),
     )
   }
-  if (lowOnly) out = out.filter(isLowStock)
+  if (lowOnly) out = out.filter(isStockAlert)
   return out
 }
 
@@ -372,7 +357,9 @@ export function PartsScreen() {
           <Field label="库存">
             <label className="flex h-[26px] items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px]">
               <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
-              低于阈值
+              {/* 勾选后列出「零库存 + 跌破预警线」，不只是跌破预警线，
+                  所以文案跟着口径改，否则用户会以为漏掉了没货的零件。 */}
+              库存预警
             </label>
           </Field>
           <Btn primary onClick={() => setPage(1)}>
@@ -448,7 +435,7 @@ export function PartsScreen() {
             </thead>
             <tbody>
               {rows.map((p) => {
-                const low = isLowStock(p)
+                const level = stockLevel(p)
                 return (
                   <tr key={p.id} data-selected={selected.has(p.id)}>
                     <td className="mid">
@@ -473,8 +460,21 @@ export function PartsScreen() {
                       {fmtQty(p.warn_qty)} {p.unit}
                     </td>
                     <td className="mid">
-                      <Badge kind={p.status === 1 && !low ? 'ok' : low ? 'warn' : 'neutral'}>
-                        {p.status !== 1 ? '停用' : low ? '低库存' : '正常'}
+                      {/* 停用优先：停用件显示灰色「停用」，不再叠加库存档位。
+                          零件已经停用、不会补货，把它的库存问题标红只会淹没真正
+                          要处理的零件。库存维度在 status===1 时才显示。 */}
+                      <Badge
+                        kind={
+                          p.status !== 1
+                            ? 'neutral'
+                            : level === 'out'
+                              ? 'danger'
+                              : level === 'low'
+                                ? 'warn'
+                                : 'ok'
+                        }
+                      >
+                        {p.status !== 1 ? '停用' : STOCK_LEVEL_TEXT[level]}
                       </Badge>
                     </td>
                     <td style={{ color: 'var(--color-fg-muted)' }}>{p.supplier || '—'}</td>

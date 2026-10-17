@@ -3,7 +3,7 @@
 // 设置屏（Round 7）。三个页签的内容与服务端 /api/help 一次取回；
 // 版本号用服务端自报值，不许前端写死。
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SettingsScreen } from '../src/screens/SettingsScreen'
 import { renderScreen } from '../src/screens/registry'
@@ -73,6 +73,16 @@ async function renderSettings() {
   await screen.findByText(/当前版本/)
 }
 
+/**
+ * 更新弹窗本身。
+ *
+ * 弹窗里的「下载并安装」与页签顶部那个"再叫回弹窗"的入口同名，所以查按钮必须
+ * 限定在弹窗内 —— 否则 getByRole 会因找到两个而报错。
+ */
+function updateDialog(): HTMLElement {
+  return screen.getByRole('dialog', { name: '软件更新' })
+}
+
 describe('设置屏', () => {
   it('默认展开使用指南，并显示服务端自报的版本与内置最新版本', async () => {
     stubApi()
@@ -123,8 +133,11 @@ describe('设置屏', () => {
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
       await waitFor(() => expect(screen.getByRole('status').textContent).toBe('当前 v2.0.0 已是最新版本。'))
-      // 没有新版就不该去弹框
-      expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
+      // 没有新版就不该动手：既不下载也不应用。
+      // （原先这里断言"没调 /api/update/prompt"，那个原生框端点 2026-10-17 已删除，
+      //   断言会永远为真、失去约束力，所以换成仍然能失败的那些。）
+      expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
+      expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(false)
     })
 
     it('有源验签被拒时不能显示成"已是最新版本"（先决项⑤）', async () => {
@@ -145,17 +158,34 @@ describe('设置屏', () => {
       expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
     })
 
-    it('查到新版本就给出「下载并安装」入口，并说清新版本号', async () => {
-      stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+    // 2026-10-17：手动查询改成**查询即弹窗**。之前这里是"状态行 + 一个确认框"，
+    // 更新说明只躺在下面的指南正文里，用户点「下载并安装」也看不到这一版改了什么。
+    // 现在与登录后的自动检查是同一个 UpdatePromptModal（正文、按钮、进度都在里面）。
+
+    it('查到新版本就直接弹出带更新说明的窗口，并说清新版本号', async () => {
+      stubApi({
+        enabled: true,
+        hasUpdate: true,
+        version: '2.0.1',
+        currentVersion: '2.0.0',
+        sections: [{ title: '一、新功能', body: '- 新增导出' }],
+      })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
       await waitFor(() => expect(screen.getByRole('status').textContent).toContain('v2.0.1'))
-      // 查到新版后才出现安装入口（没有新版时不出现）
+
+      // 窗口自己开了，而且把这一版的更新说明渲染出来了
+      expect(screen.getByRole('dialog', { name: '软件更新' })).toBeTruthy()
+      expect(screen.getByText('一、新功能')).toBeTruthy()
+      expect(screen.getByText('新增导出')).toBeTruthy()
+      // 关掉之后，顶部那个入口还能把它再叫回来
+      await userEvent.click(screen.getByRole('button', { name: '稍后' }))
+      expect(screen.queryByRole('dialog', { name: '软件更新' })).toBeNull()
       expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy()
     })
 
-    it('没有新版本时不出现「下载并安装」入口', async () => {
+    it('没有新版本时不弹窗，也不出现「下载并安装」入口', async () => {
       stubApi({ enabled: true, hasUpdate: false })
       await renderSettings()
 
@@ -163,18 +193,27 @@ describe('设置屏', () => {
       await waitFor(() =>
         expect(screen.getByRole('status').textContent).toBe('当前 v2.0.0 已是最新版本。'),
       )
+      expect(screen.queryByRole('dialog', { name: '软件更新' })).toBeNull()
       expect(screen.queryByRole('button', { name: '下载并安装' })).toBeNull()
     })
 
-    it('点「下载并安装」先弹确认框，确认后才下载并应用', async () => {
-      const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+    it('弹窗里点「下载并安装」先弹确认框，确认后才下载并应用', async () => {
+      const calls = stubApi({
+        enabled: true,
+        hasUpdate: true,
+        version: '2.0.1',
+        sections: [{ title: '一、新功能', body: '- 新增导出' }],
+      })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
-      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
+      await waitFor(() => expect(screen.getByRole('dialog', { name: '软件更新' })).toBeTruthy())
 
       // 确认框没确认之前，绝不该开始下载
-      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+      // （弹窗里的「下载并安装」与页签顶部的重开入口同名，查询必须限定在弹窗内）
+      await userEvent.click(
+        within(updateDialog()).getByRole('button', { name: '下载并安装' }),
+      )
       expect(screen.getByText(/安装完成后程序会/)).toBeTruthy()
       expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
 
@@ -188,12 +227,19 @@ describe('设置屏', () => {
     })
 
     it('取消确认框就什么都不做', async () => {
-      const calls = stubApi({ enabled: true, hasUpdate: true, version: '2.0.1' })
+      const calls = stubApi({
+        enabled: true,
+        hasUpdate: true,
+        version: '2.0.1',
+        sections: [{ title: '一、新功能', body: '- 新增导出' }],
+      })
       await renderSettings()
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
-      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
-      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+      await waitFor(() => expect(screen.getByRole('dialog', { name: '软件更新' })).toBeTruthy())
+      await userEvent.click(
+        within(updateDialog()).getByRole('button', { name: '下载并安装' }),
+      )
 
       await userEvent.click(screen.getByRole('button', { name: '取消' }))
       expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
@@ -218,19 +264,27 @@ describe('设置屏', () => {
           )
         }
         if (u.includes('/api/update/check')) {
-          return new Response(JSON.stringify({ enabled: true, hasUpdate: true, version: '2.0.1' }))
+          return new Response(
+            JSON.stringify({
+              enabled: true,
+              hasUpdate: true,
+              version: '2.0.1',
+              sections: [{ title: '一、新功能', body: '- 新增导出' }],
+            }),
+          )
         }
         return new Response(JSON.stringify(HELP), { status: 200 })
       })
 
       await userEvent.click(screen.getByRole('button', { name: '查询最新更新' }))
-      await waitFor(() => expect(screen.getByRole('button', { name: '下载并安装' })).toBeTruthy())
-      await userEvent.click(screen.getByRole('button', { name: '下载并安装' }))
+      await waitFor(() => expect(screen.getByRole('dialog', { name: '软件更新' })).toBeTruthy())
+      await userEvent.click(
+        within(updateDialog()).getByRole('button', { name: '下载并安装' }),
+      )
       await userEvent.click(screen.getByRole('button', { name: '下载 v2.0.1' }))
 
-      await waitFor(() =>
-        expect(screen.getByRole('status').textContent).toContain('更新失败：网络中断'),
-      )
+      // 失败原因显示在弹窗里（不再是页签顶部那行状态）
+      await waitFor(() => expect(screen.getByText('更新失败：网络中断')).toBeTruthy())
       // 下载失败绝不能去 apply —— 那会把一个不完整的包推给替换程序
       expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(false)
     })
@@ -243,7 +297,8 @@ describe('设置屏', () => {
       await waitFor(() =>
         expect(screen.getByRole('status').textContent).toBe('未配置更新地址，无法在线查询。'),
       )
-      expect(calls.some((u) => u.includes('/api/update/prompt'))).toBe(false)
+      expect(calls.some((u) => u.includes('/api/update/download'))).toBe(false)
+      expect(calls.some((u) => u.includes('/api/update/apply'))).toBe(false)
     })
 
     it('查询失败时把原因带出来（不静默）', async () => {

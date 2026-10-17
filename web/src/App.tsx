@@ -15,6 +15,7 @@ import {
   type Me,
 } from './lib/api'
 import { useUpdateCheckOnLogin } from './lib/useUpdateCheck'
+import { UpdatePromptModal } from './screens/updatePromptModal'
 
 const VERSION = '1.3.0'
 
@@ -44,8 +45,8 @@ export default function App() {
   const { modules, reload } = usePermissions()
 
   // 登录态成立后查一次更新（手动登录与「记住登录」自动恢复两条路都覆盖到）——
-  // 时机与 Fyne 1.3.0 一致，都是登录之后。
-  useUpdateCheckOnLogin(me)
+  // 时机与 Fyne 1.3.0 一致，都是登录之后。有新版时在这里弹窗。
+  const { pending: pendingUpdate, dismiss: dismissUpdate } = useUpdateCheckOnLogin(me)
 
   // 会话 token 只在内存里，进程启动时必然为空 —— 登录页一定会出现。
   // 这里只处理「页面在已登录状态下被重载」的情况（例如 WebView 自身刷新）。
@@ -151,6 +152,13 @@ export default function App() {
 
   const activeKey = screen.key
 
+  // 登录后的更新提示：放在壳**外面**。它与「登录已失效」那个弹窗不同——那一个要在
+  // 用户原来的界面上就地弹出（用户正在录入数据，不能把他踢走），而更新提示是一次
+  // 打断，遮住界面正合适。壳外渲染也保证它在设置屏等任何页面之上都算数。
+  const updateModal = pendingUpdate ? (
+    <UpdatePromptModal check={pendingUpdate} onClose={dismissUpdate} />
+  ) : null
+
   // 「刷新」用改 key 强制重挂载当前屏，而不是逐屏暴露一个 reload()。
   // 九个屏都在 mount 时自己取数，所以重挂载就等于重新取数——顺带把筛选、
   // 页码、勾选一并复位，这正是刷新该做的事。要逐屏加 reload 回调，就得在
@@ -163,35 +171,41 @@ export default function App() {
   )
 
   return (
-    <AppShell
-      me={me}
-      modules={modules}
-      active={activeKey}
-      version={VERSION}
-      onNavigate={(key) => setScreen({ kind: 'shell', key })}
-      onLogout={onLogout}
-      onRefresh={() => setRefreshToken((n) => n + 1)}
-    >
-      {screenNode}
+    <>
+      <AppShell
+        me={me}
+        modules={modules}
+        active={activeKey}
+        version={VERSION}
+        onNavigate={(key) => setScreen({ kind: 'shell', key })}
+        onLogout={onLogout}
+        onRefresh={() => setRefreshToken((n) => n + 1)}
+      >
+        {screenNode}
 
-      {/* 会话失效：原地弹窗，确认后才回登录。
-          放在壳内部而不是壳外——壳外就意味着整棵树已经换成登录页了，
-          「在原界面弹窗」的前提是原界面还在。 */}
-      {sessionExpired ? (
-        <ConfirmDialog
-          title="登录状态已失效"
-          confirmLabel="重新登录"
-          message={
-            <>
-              登录已超时（长时间未操作，或已达单次登录上限）。
-              <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
-                为保护数据，需要重新登录后才能继续。未保存的编辑内容会丢失。
-              </div>
-            </>
-          }
-          onConfirm={goToLoginAfterExpiry}
-        />
-      ) : null}
-    </AppShell>
+        {/* 会话失效：原地弹窗，确认后才回登录。
+            放在壳内部而不是壳外——壳外就意味着整棵树已经换成登录页了，
+            「在原界面弹窗」的前提是原界面还在。 */}
+        {sessionExpired ? (
+          <ConfirmDialog
+            title="登录状态已失效"
+            confirmLabel="重新登录"
+            message={
+              <>
+                登录已超时（长时间未操作，或已达单次登录上限）。
+                <div className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+                  为保护数据，需要重新登录后才能继续。未保存的编辑内容会丢失。
+                </div>
+              </>
+            }
+            onConfirm={goToLoginAfterExpiry}
+          />
+        ) : null}
+      </AppShell>
+
+      {/* 更新提示在壳之外：它是打断而不是就地提示，遮住界面正合适，
+          也不会被壳的布局约束到。 */}
+      {updateModal}
+    </>
   )
 }

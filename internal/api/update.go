@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"app/internal/help"
 	"app/internal/update"
-	"app/internal/winmsg"
 )
 
 // ---- 软件更新 ----
@@ -106,6 +106,10 @@ func (s *Server) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
 	if m != nil {
 		out["version"] = m.Version
 		out["notes"] = m.Notes
+		// 已切好小节的正文，和 /api/help 的更新说明页签用同一个解析器
+		// （help.ParseNotes）。前端不再自己按 `== 中文 ==` 切一遍：同一份 notes
+		// 在两个界面上切出不同段落，迟早变成「弹窗里少一节、设置里多一节」。
+		out["sections"] = helpSections(help.ParseNotes(m.Notes))
 		out["size"] = m.Size
 		out["publishedAt"] = m.PublishedAt
 		out["channel"] = m.Channel
@@ -508,135 +512,6 @@ func (s *Server) exitAfterRestart() {
 }
 
 // exitAfterResponseDelay 是「回完响应」到「退出旧进程」之间的等待。
-// 调它做单飞节流的人不要复用这个常量（那是 promptGate 的事）。
+// 只给 exitAfterRestart 用：别的等待各有各的理由（单飞节流有自己的门），
+// 复用这个常量会让「为什么是 200ms」失去出处。
 const exitAfterResponseDelay = 200 * time.Millisecond
-
-// promptGate 保证同一时刻只有一条更新流程（一个对话框 + 一次下载）。
-//
-// 为什么需要：启动检查在 3 秒后弹框，而设置屏的「查询最新更新」随时可能也弹一次。
-// 两个框叠在一起、或者两次下载各写各的待应用文件，用户点哪个"是"都不清楚，
-// 而 pendingUpdate 只认最后一次下载的结果。
-//
-// 包级变量：一个进程一个服务实例（窗口形态一个内嵌服务、无头形态根本不注册
-// 更新端点），所以这里不需要按实例存。
-var promptGate updatePromptGate
-
-type updatePromptGate struct {
-	mu   sync.Mutex
-	busy bool
-}
-
-// acquire 抢占执行权；已被占用时返回 false（不排队、不叠加）。
-func (g *updatePromptGate) acquire() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.busy {
-		return false
-	}
-	g.busy = true
-	return true
-}
-
-func (g *updatePromptGate) release() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.busy = false
-}
-
-func (g *updatePromptGate) inProgress() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.busy
-}
-
-// runUpdatePrompt 是**唯一**一条"弹框 → 下载 → 替换重启"的实现，调用方必须已经
-// 持有 promptGate。
-//
-// 两个调用方都走它，行为因此必然一致：
-//   - 设置屏「查询最新更新」查到新版后（handlePromptUpdate）；
-//   - 登录成功后的自动检查（前端在登录后调同一个端点，见下）。
-//
-// **时机也按 Fyne 版**：1.3.0 的检查在 launchMain 里，也就是**登录之后**
-// （cmd/desktop/main.go:291-309）。Wails 版曾经放在启动后 3 秒（登录之前），
-// 那样会在用户刚坐下、可能正在录入数据时弹框，点「是」就立刻重启——已改回。
-//
-// 查不到 / 没配置 / 用户不点确认 → 安静退出（只写日志）。
-func runUpdatePrompt(url, current string) {
-	defer promptGate.release()
-
-	checker, err := update.NewChecker(url, current)
-	if err != nil {
-		log.Printf("update check disabled: %v", err)
-		return
-	}
-	res, err := checker.Check()
-	// 先报"值得注意的"那条：验签被拒/清单不可用时，净结果可能仍是"没有更新"，
-	// 但日志里必须留下痕迹（先决项⑤）。unreachable 不算——那是容错路径。
-	if warn := res.Warning(); warn != "" {
-		log.Printf("update check WARNING: %s", warn)
-	}
-	if err != nil {
-		log.Printf("update check failed: %v", err)
-		return
-	}
-	if res.Manifest == nil {
-		return
-	}
-	m := res.Manifest
-	log.Printf("update available: %s (current %s)", m.Version, current)
-	msg := "发现新版本 " + m.Version + "（当前 " + current + "）"
-	if m.Notes != "" {
-		msg += "\n\n" + m.Notes
-	}
-	msg += "\n\n是否立即更新？"
-	if !winmsg.Confirm("软件更新", msg) {
-		return
-	}
-	// 顶替 Fyne 版那个带进度条的模态框：MessageBox 画不了进度条，
-	// 至少要让用户知道"程序没卡死，正在下载"。
-	winmsg.Info("软件更新", "正在下载更新，请勿关闭程序...")
-	start := time.Now()
-	zipPath, err := checker.Download(m, os.TempDir(), func(done, total int64) {
-		logUpdateProgress(start, done, total)
-	})
-	if err != nil {
-		winmsg.Error("软件更新失败", err.Error())
-		return
-	}
-	if err := update.ApplyAndRestart(zipPath); err != nil {
-		winmsg.Error("软件更新失败", err.Error())
-		return
-	}
-	// ApplyAndRestart 只负责启动新进程，**不退出自己**（见其文档）。
-	// 不在这里退出会出事：新进程带着 RFERP_UPDATE_RESTART=1 去抢单实例锁，
-	// 等 20 秒拿不到就弹"已在运行"然后自己退出——于是用户点了"是"，
-	// 程序却没换掉。Fyne 版在同一位置也是 os.Exit(0)。
-	os.Exit(0)
-}
-
-// handlePromptUpdate 弹更新确认框，供设置屏「查询最新更新」在查到新版后调用。
-//
-// 为什么不让前端自己 download + apply：那两步走的是 HTTP 端点，而端点那条链回完
-// 响应后**没有人退出旧进程**（见 server.go 的 applyUpdate 默认实现），新进程会
-// 等满 20 秒单实例锁然后自己退出。这里复用与启动时完全相同的原生弹框与下载流程，
-// 既避开了那个坑，也保证两条入口的行为一致。
-//
-// 立即返回 202：对话框要等人点，下载可能几分钟，HTTP 请求不能挂在那里。
-func (s *Server) handlePromptUpdate(w http.ResponseWriter, r *http.Request) {
-	url := s.updater.url
-	if url == "" {
-		writeErr(w, http.StatusBadRequest, "未配置更新地址")
-		return
-	}
-	if promptGate.inProgress() {
-		writeErr(w, http.StatusConflict, "已有一个更新流程在进行中，请先完成或取消")
-		return
-	}
-	if !promptGate.acquire() {
-		// inProgress 与 acquire 之间被启动检查插了一手：同一句话，同样处理。
-		writeErr(w, http.StatusConflict, "已有一个更新流程在进行中，请先完成或取消")
-		return
-	}
-	go s.runPrompt(url, s.updater.cur)
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "prompted"})
-}

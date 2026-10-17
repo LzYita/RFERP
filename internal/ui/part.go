@@ -32,8 +32,37 @@ func NewPartScreen(svc usecase.Applications, w fyne.Window) *PartScreen {
 	return &PartScreen{svc: svc, window: w}
 }
 
-func isLowStock(p model.Part) bool {
-	return p.WarnQty > 0 && p.StockQty < p.WarnQty
+// 库存档位。**派生值，不落库**：status 只表达启用/停用（用户手动勾选，
+// API 层 validStatus 只接受 1 和 2），「有没有货」由 stock_qty 推出。
+// 把「无库存」做成 status 的第三个取值会表达不了「已停用且无库存」，而且
+// 补货后 status 还得靠入库逻辑改回启用，否则与库存长期不一致。
+//
+// 必须与 Web 版 stockLevel（web/src/lib/lowStock.ts）逐字一致：
+//  1. 零库存优先于一切 —— 没货是比「快没」更硬的��实。
+//  2. 跌破预警线需要两条：warn_qty > 0 守卫（预警值 0 的含义是「不预警」，
+//     表单 hint 写着「0=不预警」），以及严格小于（正好等于预警线是「已到线」。
+//     不是「已跌破」）。
+const (
+	stockOK = iota
+	stockLow
+	stockOut
+)
+
+func stockLevel(p model.Part) int {
+	if p.StockQty <= 0 {
+		return stockOut
+	}
+	if p.WarnQty > 0 && p.StockQty < p.WarnQty {
+		return stockLow
+	}
+	return stockOK
+}
+
+// isStockAlert 是预警口径：**零库存也算预警**。零件页筛选、工作台预警列表与
+// 卡片计数都用这一份。曾经这几处各写各的 `stock <= warn`，后果是「工作台报 15
+// 条、零件页勾选后一条都查不出来」。
+func isStockAlert(p model.Part) bool {
+	return stockLevel(p) != stockOK
 }
 
 func (s *PartScreen) Build() fyne.CanvasObject {
@@ -85,7 +114,7 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 					return
 				}
 				p := s.data[idx]
-				warn := isLowStock(p)
+				warn := isStockAlert(p)
 				bg := dataRowBG(idx, sel)
 				if warn && !sel {
 					bg = warnColor
@@ -106,7 +135,7 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 				case 5:
 					text = fmt.Sprintf("%.2f", p.WarnQty)
 				case 6:
-					bbg, _, btext := partStatusStyle(warn, p.Status)
+					bbg, _, btext := partStatusStyle(stockLevel(p), p.Status)
 					bg = bbg
 					text = btext
 					isBadge = true
@@ -140,7 +169,7 @@ func (s *PartScreen) Build() fyne.CanvasObject {
 func (s *PartScreen) showWarnList() {
 	var warnParts []model.Part
 	for _, p := range s.data {
-		if isLowStock(p) {
+		if isStockAlert(p) {
 			warnParts = append(warnParts, p)
 		}
 	}
@@ -254,11 +283,13 @@ func (s *PartScreen) applyFilter() {
 			filtered = append(filtered, p)
 		}
 	}
+	// 库存最紧张的排前面。零库存（stockOut）先于跌破预警线（stockLow），
+	// 两者处置动作不同：没货要先补，没了就先订。
 	sort.Slice(filtered, func(i, j int) bool {
-		wi := isLowStock(filtered[i])
-		wj := isLowStock(filtered[j])
-		if wi != wj {
-			return wi
+		si := stockLevel(filtered[i])
+		sj := stockLevel(filtered[j])
+		if si != sj {
+			return si > sj
 		}
 		return filtered[i].Code < filtered[j].Code
 	})
@@ -280,7 +311,7 @@ func (s *PartScreen) fitColumns() {
 	headers := []string{"编码", "名称", "规格", "分类", "库存", "预警库存", "状态", "供应商", "选择"}
 	rows := make([][]string, 0, len(s.data))
 	for _, p := range s.data {
-		_, _, status := partStatusStyle(isLowStock(p), p.Status)
+		_, _, status := partStatusStyle(stockLevel(p), p.Status)
 		rows = append(rows, []string{
 			p.Code, p.Name, nullStr(p.Spec), nullStr(p.PartType),
 			fmt.Sprintf("%.2f", p.StockQty), fmt.Sprintf("%.2f", p.WarnQty),

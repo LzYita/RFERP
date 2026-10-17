@@ -12,6 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { isStockAlert, stockLevel, STOCK_LEVEL_TEXT } from '../lib/lowStock'
 import { tableLabel, actionLabel, shortSummary } from '../lib/auditLabels'
 import { Badge, Panel, ScreenError, classifyLoadError, fmtQty, shortTime } from '../components/ui'
 
@@ -91,7 +92,7 @@ useEffect(() => {
   }, [])
 
   const partList = parts ?? []
-  const alerts = partList.filter((p) => p.status !== 1 || p.stock_qty <= p.warn_qty)
+  const alerts = partList.filter((p) => p.status !== 1 || isStockAlert(p))
 
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
@@ -99,7 +100,7 @@ useEffect(() => {
     { label: '零件总数', value: partList.length },
     { label: '产品总数', value: (products ?? []).length },
     { label: '批次数', value: (batches ?? []).length },
-    { label: '低库存预警', value: alerts.filter((a) => a.status === 1 && a.stock_qty <= a.warn_qty).length },
+    { label: '低库存预警', value: alerts.filter((a) => a.status === 1 && isStockAlert(a)).length },
   ]
 
   return (
@@ -146,18 +147,31 @@ useEffect(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  {alerts.slice(0, 8).map((p) => (
-                    <tr key={p.id}>
-<td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
-                      <td>{p.name}</td>
-                      <td className="num">{fmtQty(p.stock_qty)}</td>
-                      <td className="mid">
-                        <Badge kind={p.status !== 1 ? 'neutral' : 'warn'}>
-                          {p.status !== 1 ? '停用' : '低库存'}
-                        </Badge>
-                      </td>
-                    </tr>
-                  ))}
+                  {alerts.slice(0, 8).map((p) => {
+                    const level = stockLevel(p)
+                    return (
+                      <tr key={p.id}>
+                        <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
+                        <td>{p.name}</td>
+                        <td className="num">{fmtQty(p.stock_qty)}</td>
+                        <td className="mid">
+                          {/* 与零件页同为停用优先；库存维度只在启用件上区分零库存
+                              （红）与低库存（橙）。 */}
+                          <Badge
+                            kind={
+                              p.status !== 1
+                                ? 'neutral'
+                                : level === 'out'
+                                  ? 'danger'
+                                  : 'warn'
+                            }
+                          >
+                            {p.status !== 1 ? '停用' : STOCK_LEVEL_TEXT[level]}
+                          </Badge>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             )}

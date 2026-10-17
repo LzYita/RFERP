@@ -119,3 +119,33 @@ describe('filterParts', () => {
     expect(rows.map((p) => p.id)).toEqual(before)
   })
 })
+
+// 勾选框现在列的是「库存预警」：零库存 + 跌破预警线两档。
+// 这批数据取自生产库的真实形状 —— 说明书、包装袋这类 warn_qty=0 的配件，
+// 它们库存归零时曾被工作台按 stock<=warn 报成「低库存」，而零件页一条都查不出。
+describe('filterParts 的库存预警口径包含零库存', () => {
+  const stock: Part[] = [
+    part({ id: 11, code: 'P-0011', name: '说明书', part_type: '包装', stock_qty: 0, warn_qty: 0 }),
+    part({ id: 12, code: 'P-0012', name: '外壳', part_type: '塑料', stock_qty: 2, warn_qty: 10 }),
+    part({ id: 13, code: 'P-0013', name: '电阻', part_type: '电子', stock_qty: 0, warn_qty: 10 }),
+    part({ id: 14, code: 'P-0014', name: '螺丝', part_type: '五金', stock_qty: 100, warn_qty: 10 }),
+    part({ id: 15, code: 'P-0015', name: '袋子', part_type: '包装', stock_qty: 12, warn_qty: 0 }),
+  ]
+
+  it('零库存与跌破预警线都被列出', () => {
+    expect(filterParts(stock, '', '全部', true).map((p) => p.code)).toEqual([
+      'P-0011', // 零库存且未设预警线
+      'P-0012', // 跌破预警线
+      'P-0013', // 零库存且配了预警线
+    ])
+  })
+
+  it('不勾选时不过滤', () => {
+    expect(filterParts(stock, '', '全部', false)).toHaveLength(5)
+  })
+
+  it('零库存同样叠加在分类与关键字之上', () => {
+    expect(filterParts(stock, '', '包装', true).map((p) => p.code)).toEqual(['P-0011'])
+    expect(filterParts(stock, '袋', '包装', true)).toHaveLength(0)
+  })
+})

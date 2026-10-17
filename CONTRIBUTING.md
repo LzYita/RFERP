@@ -25,13 +25,44 @@ Open a pull request for every change that should appear in the release notes —
 
 ### Release notes
 
-Release notes are assembled by `changelog.ps1` (called from `release.bat`) from three parts:
+Release notes are assembled from three parts:
 
 1. hand-written bilingual highlights — `release-notes.txt`
 2. pull requests, grouped by label via `.github/release.yml`
 3. commits pushed straight to `main` (mainline, non-merge)
 
 Add `[skip changelog]` to a commit subject to keep that commit out of the list.
+
+### Release process
+
+The release tooling (build, sign, installer, publish) is **not part of this
+repository** and is not published with it. It is maintained privately because it
+necessarily contains machine-specific values: where the checkout lives, where the
+signing key lives, and which mirror reaches GitHub. None of that belongs in a
+public repository.
+
+What is public is the process, and it has not changed:
+
+1. confirm the signing key is present
+2. write the hand-written bilingual highlights
+3. accumulate the release into the in-app changelog — **before** the build, since
+   the changelog ships through `go:embed` and a later write is a no-op
+4. build the Wails executable (frontend bundle first, then `wails build` with the
+   version injected into `main.version`)
+5. package the update zip
+6. sign the manifest with the production ed25519 key
+7. build the installer
+8. publish the installer, the zip and `releases.json` to a GitHub release
+
+Step 3 is the one that has broken before: the in-app changelog page and the
+guide header both ship inside the binary, so accumulating after the build leaves
+the release one version behind. Keep it before step 4.
+
+A build must never run against a live configuration: `wails build` executes the
+application while generating bindings, and the application opens whatever
+database its configuration points at. The release tooling therefore builds with
+an isolated `APPDATA` and refuses to run if a `config.json` sits where it could be
+picked up instead.
 
 ### Language
 
@@ -71,13 +102,38 @@ instead of proposing a change.
 
 ### 发行说明
 
-发行说明由 `changelog.ps1`（由 `release.bat` 调用）组合三部分：
+发行说明组合三部分：
 
 1. 手写双语要点 —— `release-notes.txt`
 2. 按标签分组的 PR 列表（规则见 `.github/release.yml`）
 3. 直推 `main` 的提交（主干上的非合并提交）
 
 提交信息里带 `[skip changelog]` 可让该提交不进入列表。
+
+### 发版流程
+
+发版工具（构建、签名、安装包、发布）**不属于本仓库，也不随本仓库公开**。它是私下维护的，
+因为它必然包含本机专属的值：仓库在哪、私钥在哪、以及走哪个镜像访问 GitHub —— 这些都不该
+进公共仓库。
+
+公开的是流程本身，流程没有变：
+
+1. 确认签名私钥存在
+2. 写手写双语要点
+3. 累积本次发版进程序内更新说明 —— **必须在构建之前**，因为更新说明靠 `go:embed` 打进二进制，
+   构建之后再累积等于白累积
+4. 构建 Wails 可执行文件（先前端打包，再 `wails build` 并把版本注入 `main.version`）
+5. 打更新包 zip
+6. 用生产 ed25519 私钥签清单
+7. 打安装包
+8. 把安装包、zip 与 `releases.json` 发布到 GitHub Release
+
+第 3 步是唯一出过故障的一步：程序内「更新说明」页与指南顶部的版本号都编在二进制里，
+构建之后累积会让这次发布停在上一版。请保持它在第 4 步之前。
+
+构建绝不能在有真实配置的情况下进行：`wails build` 在生成绑定时会真的运行一次应用，
+而应用会去连它配置里指向的数据库。发版工具因此用隔离的 `APPDATA` 构建，
+并且一旦发现可能被优先命中的 `config.json` 就直接拒绝执行。
 
 ### 语言
 

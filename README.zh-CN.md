@@ -85,36 +85,34 @@
 
 ## 从源码构建
 
-### 环境要求
+> 构建、签名与发布脚本**不属于本仓库**，也不随本仓库公开 ——
+> 流程与原因见 [CONTRIBUTING 的发版流程](CONTRIBUTING.md#发版流程)。下面只讲如何构建应用本身。
+
+### 需要什么
 
 | 项 | 要求 |
 |---|---|
 | 操作系统 | Windows 10 / 11（64 位） |
-| Go | **1.26 或更高**（发布与 CI 均使用 **go1.26.5** 构建） |
-| C 编译器 | **64 位 mingw-w64 GCC**（CGO 必需）。**已验证：TDM-GCC 64 位（10.3.0）**；其他 GCC 发行版可能无法生成可运行的程序 |
-| Inno Setup | 6（仅构建安装包时需要） |
+| Go | **1.26 或更新**（发布与 CI 使用 **go1.26.5** 构建） |
+| C 编译器 | **64 位 mingw-w64 GCC**（CGO 需要）。**已验证：TDM-GCC 64 位（10.3.0）**；其他 GCC 发行版可能无法产出可运行的二进制 |
+| Node.js | 20 或更新，用于构建编入二进制的前端包 |
+| Wails CLI | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0` |
+| Inno Setup | 6（仅在打安装包时需要） |
 
-> 以上工具仅**构建者**需要；**最终用户安装和运行不需要 Go 或 GCC**（发布产物已自带运行库）。
+> 这些工具**只有构建者需要**；**最终用户既不需要 Go 也不需要 GCC**（发布物自带运行时）。
 
-### 构建
+### 构建应用
 
-```bat
-build.bat
-```
-
-产物：`RFERP.exe`
-
-> 脚本通过系统 PATH 查找 `go` / `gcc` / `gh` / `ISCC`，并相对脚本自身目录运行，可在任意路径执行。
-> 如需覆盖，可设置环境变量：`GOROOT`、`GCC_DIR`、`GH`、`ISCC`。
-
-### 构建安装包
+这是 Wails 应用：前端包在编译期嵌入，所以必须先构建前端。
 
 ```bat
-build-installer.bat
+cd web && npm ci && npm run build:embed && cd ..
+cd cmd\desktop-wails && wails build -s
 ```
 
-产物：`dist\Setup-RFERP-<版本>.exe`
+产物：`cmd\desktop-wails\build\bin\RFERP.exe`
 
+> 用 `npm ci` 而不是 `npm install`：发布必须按锁定版本构建，CI 也是这么做的。
 ## 技术栈
 
 | 层 | 技术 |
@@ -147,10 +145,8 @@ internal/
   nativefiledialog/  原生文件夹选择器
   ui/            界面（含登录、用户管理）
   ...
-setup.iss        安装包脚本
-build*.bat       构建脚本
-release.bat      发布脚本
 docs/decisions/  决策记录（D-xxx）
+docs/plans/      迁移计划与进度
 ```
 
 ## 许可证

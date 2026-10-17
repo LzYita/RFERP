@@ -49,8 +49,10 @@
 |---|---|
 | `cmd/desktop` | 现有 Fyne 桌面入口（约 210 行；含模式选择 → 登录 → 主界面） |
 | `cmd/server` | HTTP API 服务（本地内嵌 / 远程独立部署两用） |
-| `cmd/keygen` | 生成密钥（更新签名相关） |
 | `cmd/signmanifest` | 清单签名（更新包） |
+
+> 2026-10-17：`cmd/keygen` 已移出仓库。它只依赖标准库，属于发版工具；
+> 仓库是 public，而发版工具必然带本机专属值，详见 CONTRIBUTING.md「发版流程」。
 
 ### 内部包（`internal/`，20 个）
 `api`、`auth`、`config`、`dbbackup`、`dbsetup`、`logging`、`migrate`、`model`、`mysqlfind`、
@@ -89,8 +91,8 @@
 ### 其它已具备
 - `deploy/docker/`：`Dockerfile`、`docker-compose.yml`、`.env.example`、`README.md`
 - `.github/workflows/ci.yml`；`docs/rulesets/`（`main-flow.json`、`main-safety.json`）
-- 打包：`build.bat`、`build-installer.bat`、`release.bat`、`setup.iss`、`lang/ChineseSimplified.isl`
-- 更新：`internal/update`、`internal/singleinstance`、`rferp-update-public.key`、`changelog.ps1`
+- 打包与发版：**已移出仓库**（2026-10-17，仓库是 public；流程见 CONTRIBUTING.md「发版流程」）
+- 更新：`internal/update`、`internal/singleinstance`、`changelog.ps1`（随发版工具移出）
 - 文档：`README.md` / `README.zh-CN.md` / `CONTRIBUTING.md`
 
 ### 迁移需覆盖的完整屏幕清单（含新增项）
@@ -207,7 +209,7 @@ RFERP/
 ├─ deploy/docker/           # Dockerfile / docker-compose.yml / README / .env.example
 ├─ docs/                    # decisions/、plans/、rulesets/（main-flow、main-safety 存档）、screenshot.png
 ├─ lang/ChineseSimplified.isl
-├─ setup.iss / release.bat / build-installer.bat / build.bat  # 打包链（目前仍产出 Fyne 版）
+├─ （发版工具已于 2026-10-17 移出仓库，见 CONTRIBUTING.md「发版流程」）
 └─ .github/                 # workflows/ci.yml、workflows/codeql.yml、codeql/extensions/、模板
 ```
 
@@ -1252,8 +1254,12 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 - [x] CI 覆盖前端（**Action 仍固定到 commit SHA**）：`npm run build:embed` + 前端测试
       已经在 `verify` job 里顺序执行；**没有**拆成并行 job——拆不拆不影响结论，
       现在这样只需一处 checkout 与一次依赖安装。
-- [ ] `wails build` 纳入发布脚本；`release.bat` 产出改为「Wails exe + 安装包」
-      （现状：`release.bat:72` 仍构建 `cmd/desktop/main.go`，产出的是 Fyne 版）
+- [x] `wails build` 纳入发布脚本；产出改为「Wails exe + 安装包」
+      （2026-10-17 完成。八步结构不变，只把第 4 步从 `go build cmd/desktop/main.go`
+      换成「`npm ci` + `npm run build:embed` + `wails build -ldflags "-X main.version=..."`」。
+      新增一条硬约束：`wails build` 在生成绑定时会**真的运行一次应用**，因此构建必须
+      隔离 `APPDATA`，否则会在打包过程中打开生产库 —— 这条已经因为漏写一行而真发生过一次。
+      同日发版工具移出仓库，流程改记在 `CONTRIBUTING.md`。）
 - [x] 服务用 `embed` 托管前端 dist：Round 1 就已落地——
       `internal/webassets/webassets.go` 的 `//go:embed all:dist` +
       `api.WithStaticFS`，`cmd/desktop-wails` 的窗口与 `-serve` 两种形态共用

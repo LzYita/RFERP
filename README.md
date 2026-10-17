@@ -82,7 +82,11 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 - The package and manifest are verified with **Ed25519 signatures**; updates are rejected on mismatch
 - Prompts when a new version is found; you can install immediately
 
-## Build from source
+### Build from source
+
+> The build, signing and publishing scripts are **not part of this repository** —
+> see [Release process](CONTRIBUTING.md#release-process) for what they do and why they
+> are kept private. What follows describes building the application itself.
 
 ### Requirements
 
@@ -91,28 +95,26 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 | OS | Windows 10 / 11 (64-bit) |
 | Go | **1.26 or newer** (releases and CI are built with **go1.26.5**) |
 | C compiler | **64-bit mingw-w64 GCC** (required by CGO). **Verified: TDM-GCC 64-bit (10.3.0)**; other GCC distributions may fail to produce a runnable binary |
+| Node.js | 20 or newer, for the frontend bundle that is embedded in the binary |
+| Wails CLI | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0` |
 | Inno Setup | 6 (only to build the installer) |
 
 > These tools are needed by **builders only**; **end users need neither Go nor GCC** (releases bundle their runtime).
 
-### Build
+### Build the application
+
+The binary is a Wails app: the frontend bundle is embedded at compile time, so the
+frontend has to be built first.
 
 ```bat
-build.bat
+cd web && npm ci && npm run build:embed && cd ..
+cd cmd\desktop-wails && wails build -s
 ```
 
-Output: `RFERP.exe`
+Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 
-> Scripts find `go` / `gcc` / `gh` / `ISCC` on the system PATH and run relative to their own directory, so they work from any location.
-> Override with environment variables: `GOROOT`, `GCC_DIR`, `GH`, `ISCC`.
-
-### Build the installer
-
-```bat
-build-installer.bat
-```
-
-Output: `dist\Setup-RFERP-<version>.exe`
+> `npm ci` rather than `npm install`: the release is built from the locked versions,
+> the same way CI does it.
 
 ## Tech stack
 
@@ -146,10 +148,8 @@ internal/
   nativefiledialog/  native folder picker
   ui/            interface (incl. login, user management)
   ...
-setup.iss        installer script
-build*.bat       build scripts
-release.bat      release script
 docs/decisions/  decision records (D-xxx)
+docs/plans/      migration plan and progress
 ```
 
 ## License

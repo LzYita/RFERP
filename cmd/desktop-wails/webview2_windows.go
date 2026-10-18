@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,10 +42,6 @@ const webview2BootstrapperURL = "https://go.microsoft.com/fwlink/p/?LinkId=21247
 // maxWebView2Attempts 是自动安装的重试上限。
 // 不设上限的话，"装完仍检测不到"会变成无限循环，用户只能强杀进程。
 const maxWebView2Attempts = 3
-
-// errWebView2Unavailable 表示用户选择了放弃（取消 / 退出）。
-// 调用方据此安静退出：该说的话 ensureWebView2 都已经说过了。
-var errWebView2Unavailable = errors.New("webview2 不可用，用户已选择退出")
 
 type webview2State int
 
@@ -144,24 +139,6 @@ func askInstall(state webview2State, version string) bool {
 		}
 	}
 	return winmsg.ConfirmOK(m.MissingRequirements, body)
-}
-
-// offerManualInstall 是"取消自动安装"之后的唯一出路：说明 + 打开下载页。
-// 返回 errWebView2Unavailable，让调用方安静退出。
-func offerManualInstall() error {
-	if winmsg.ConfirmOK(webviewMessages().MissingRequirements, webviewCancelNotice) {
-		return openDownloadPage()
-	}
-	return errWebView2Unavailable
-}
-
-// openDownloadPage 打开下载页；打不开就再给一次纯文本指引（此时没有别的办法）。
-func openDownloadPage() error {
-	if err := winmsg.OpenURL(webviewDownloadPage); err != nil {
-		log.Printf("webview2: 打开下载页失败: %v", err)
-		winmsg.Error("无法打开浏览器", "请手动在浏览器里打开：\n"+webviewDownloadPage)
-	}
-	return errWebView2Unavailable
 }
 
 // installWebView2 下载官方引导程序并静默运行。

@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -85,13 +86,42 @@ func TestWebviewCancelNoticeTellsHowToOpenThePage(t *testing.T) {
 	}
 }
 
-// 最低版本必须与 Wails 内部一致，否则会出现"我们放行、Wails 再拦一次"。
-func TestMinimumWebView2MatchesWails(t *testing.T) {
-	// Wails v2.16.0 的 internal/wv2installer.MinimumRuntimeVersion。
-	// 升级 Wails 时这条会提醒我们同步。
-	const wailsMinimum = "94.0.992.31"
-	if minimumWebView2 != wailsMinimum {
-		t.Errorf("minimumWebView2 = %q，与 Wails 的 %q 不一致", minimumWebView2, wailsMinimum)
+// 我们把版本判定交回 Wails，所以这里不该再出现"最低版本"这种东西。
+//
+// 留着一条反向断言：一旦有人重新引入一个必须与 Wails 保持同步的常量，
+// 就等于把"只有对方知道"的数字抄进了本仓库 —— 这条会提醒他先读 webview2_windows.go
+// 顶部的理由。
+func TestNoHardcodedWebView2Minimum(t *testing.T) {
+	src, err := os.ReadFile("webview2_windows.go")
+	if err != nil {
+		t.Fatalf("读取 webview2_windows.go: %v", err)
+	}
+
+	// 只看代码，不看注释：文件顶部会提到这个版本号，用来说明"我们为什么不抄它"，
+	// 那是文档不是判据。截断点用 " //"（空格+双斜杠），这样不会误伤
+	// "https://..." 这类字符串里的双斜杠。
+	var code []string
+	for _, line := range strings.Split(string(src), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if i := strings.Index(line, " //"); i >= 0 {
+			line = line[:i]
+		}
+		code = append(code, line)
+	}
+	body := strings.Join(code, "\n")
+
+	for _, banned := range []string{
+		"CompareBrowserVersions",
+		"minimumWebView2",
+		"94.0.992.31",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("webview2_windows.go 的**代码**里又出现了 %q：版本判定应当由 Wails 负责，"+
+				"抄一个它内部的常量只能靠测试提醒同步（理由见该文件顶部）", banned)
+		}
 	}
 }
 

@@ -31,7 +31,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
@@ -478,7 +477,9 @@ func runFirstRunSetup(base *config.Config) {
 	}
 	log.Printf("first-run setup: window on http://%s (loopback only)", ln.Addr().String())
 
-	wails.Run(&options.App{
+	// 返回值交给 runWails：WebView2 不可用时它会给出中文说明并退出，
+	// 其余错误保持向导原有的"忽略并继续"行为。
+	_ = runWails(&options.App{
 		Title:       "RFERP-仁风仓库管理系统 v" + version,
 		Width:       720,
 		Height:      620,

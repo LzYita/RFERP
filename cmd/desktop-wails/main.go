@@ -177,7 +177,7 @@ func main() {
 	log.Printf("RFERP %s embedded server on http://%s (storage=%s)", version, emb.addr, res.Kind)
 
 	winW, winH := fitWindow(1360, 860)
-	if err := wails.Run(&options.App{
+	if err := runWails(&options.App{
 		Title:  "RFERP-仁风仓库管理系统 v" + version,
 		Width:  winW,
 		Height: winH,
@@ -456,11 +456,11 @@ func (e *embeddedServer) proxyHandler() http.Handler {
 func webviewMessages() *windows.Messages {
 	m := windows.DefaultMessages()
 	m.InstallationRequired = "缺少 Microsoft Edge WebView2 运行时，RFERP 无法显示界面。\n\n" +
-		"点击「确定」将自动下载并安装，装完后重新启动 RFERP 即可。\n" +
-		"若自动安装失败，请手动下载：" +
-		"https://developer.microsoft.com/microsoft-edge/webview2/"
+		"点「确定」将自动下载并安装；装好后程序会继续启动，不需要重启。\n" +
+		"若自动安装失败，可手动下载：" +
+		webviewDownloadPage
 	m.UpdateRequired = "Microsoft Edge WebView2 运行时版本过旧，需要更新后才能显示界面。\n\n" +
-		"点击「确定」将自动下载并安装最新版本。"
+		"点「确定」将自动下载并安装最新版本；装好后程序会继续启动，不需要重启。"
 	m.MissingRequirements = "缺少运行 RFERP 所需的组件"
 	m.Webview2NotInstalled = "未检测到 Microsoft Edge WebView2 运行时"
 	m.InvalidFixedWebview2 = "指定的 WebView2 运行时路径无效。\n\n" +
@@ -469,12 +469,99 @@ func webviewMessages() *windows.Messages {
 		"如果反复出现，请更新 WebView2 运行时或重启电脑后重试。"
 	m.FailedToInstall = "WebView2 运行时自动安装失败。\n\n" +
 		"请手动下载安装后再启动：" +
-		"https://developer.microsoft.com/microsoft-edge/webview2/"
-	m.DownloadPage = "https://developer.microsoft.com/microsoft-edge/webview2/"
+		webviewDownloadPage
+	m.DownloadPage = webviewDownloadPage
 	m.PressOKToInstall = "点击「确定」开始下载安装"
 	m.Error = "错误"
 	m.ContactAdmin = "如需协助，请联系系统管理员。"
 	return m
+}
+
+// webviewCancelNotice 是用户在 WebView2 缺失提示里点「取消」之后，再弹一次的说明。
+//
+// 为什么需要它：Wails 在用户点取消时只把 Webview2NotInstalled 当成一个普通
+// error 返回（internal/wv2installer/download.go），而我们原先拿到这个 error
+// 只写日志就 os.Exit(1) —— 用户点完取消，程序直接消失，屏幕上什么都没留下。
+// 第一次弹的消息重点在「点确定就自动装」，取消的人需要的是手动路径。
+//
+// 文案覆盖两种情况：wv2installer 对「没装」和「版本过旧」返回的是同一个
+// Webview2NotInstalled，所以这里不能只写"未安装"。
+//
+// webviewInstallFailedNotice 是自动安装失败后的三选一说明。
+//
+// 三个按钮的映射必须写清楚：MessageBox 只给「是 / 否 / 取消」，不写明用户
+// 不知道该点哪个。原因按用户能采取的动作排序，每条都指向下一步该做什么。
+// 「Evergreen 引导程序，x64」写出来是因为微软那个页面上有好几组按钮，
+// 非技术用户很容易下错。
+const webviewInstallFailedNotice = "自动安装 WebView2 没有成功。\n\n" +
+	"常见原因：\n" +
+	"· 安装需要管理员权限，UAC 提示被拒绝\n" +
+	"· 网络受限，安装程序下载不下来\n" +
+	"· 公司策略禁止安装运行时\n\n" +
+	"点「是」再自动安装一次\n" +
+	"点「否」用浏览器打开下载页，手动安装（选 Evergreen 引导程序，x64）\n" +
+	"点「取消」退出 RFERP"
+
+// webviewDownloadPage 是 WebView2 下载页。全应用只在这里写一次：
+// 这条链接同时出现在多条文案与「打开下载页」的动作里，写几遍就迟早有一处对不上。
+const webviewDownloadPage = "https://developer.microsoft.com/microsoft-edge/webview2/"
+
+// webviewCancelNotice 是用户在 WebView2 缺失提示里点「取消」之后，再弹一次的说明。
+//
+// 为什么需要它：Wails 在用户点取消时只把 Webview2NotInstalled 当成一个普通
+// error 返回（internal/wv2installer/download.go），而我们原先拿到这个 error
+// 只写日志就 os.Exit(1) —— 用户点完取消，程序直接消失，屏幕上什么都没留下。
+// 第一次弹的消息重点在「点确定就自动装」，取消的人需要的是手动路径。
+//
+// 文案覆盖两种情况：wv2installer 对「没装」和「版本过旧」返回的是同一个
+// Webview2NotInstalled，所以这里不能只写"未安装"。
+//
+// 「确定」不是关闭而是打开下载页：MessageBox 里的网址是不可点击的纯文本，
+// 而这条提示唯一可做的事就是去那个网址 —— 让用户照着敲一条 70 字符的 URL
+// 不算提示。按钮语义因此用「确定/取消」而不是「是/否」。
+const webviewCancelNotice = "未检测到可用的 Microsoft Edge WebView2 运行时（未安装或版本过旧）。\n\n" +
+	"RFERP 无法显示界面。点「确定」用浏览器打开下载页，安装后重新启动：\n" +
+	webviewDownloadPage
+
+// isWebview2Unavailable 判断 wails.Run 的返回值是不是「WebView2 不可用」。
+//
+// 只能按字符串比对：Wails 没有导出这个错误值，它在 internal/wv2installer 里
+// 直接 errors.New(messages.Webview2NotInstalled)，也就是我们自己设的那句话。
+// 两边都取自 webviewMessages()，所以改文案时不会只有一侧失效。
+func isWebview2Unavailable(err error) bool {
+	return err != nil && err.Error() == webviewMessages().Webview2NotInstalled
+}
+
+// runWails 跑一个 Wails 窗口，并在 WebView2 不可用时把出路告诉用户。
+//
+// 两个入口（首次配置向导 runFirstRunSetup、主窗口 main）都会遇到同一个缺失
+// 场景，所以放在一处：向导那边原本连 wails.Run 的返回值都没接，用户点完取消
+// 连日志都没有。
+//
+// 非 WebView2 的错误原样返回，交给调用方按各自原有的方式处理——向导会继续
+// 往下走，主窗口会退出；这里不替它们改变既有行为。
+func runWails(app *options.App) error {
+	// 先自己确认 WebView2 可用：缺就装、装不上就问，装好才进 wails.Run。
+	// 详见 webview2_windows.go 顶部——Wails 自带的 preflight 在失败时不可靠，
+	// 也没有重试。
+	if err := ensureWebView2(); err != nil {
+		os.Exit(1)
+	}
+
+	err := wails.Run(app)
+	if err == nil {
+		return nil
+	}
+	log.Printf("wails exited with error: %v", err)
+
+	// 兜底：万一还是走到了 Wails 自己那条 preflight（例如它提高了最低版本，
+	// 而我们的检测放行了），用户看到的是"点了取消"这一支。给手动出路，
+	// 而不是让程序无声消失。
+	if isWebview2Unavailable(err) {
+		_ = offerManualInstall()
+		os.Exit(1)
+	}
+	return err
 }
 
 // newStartupToken 生成 24 字节随机 token（192 位），同机其它进程猜不到。

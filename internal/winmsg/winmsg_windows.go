@@ -3,6 +3,7 @@
 package winmsg
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 )
@@ -118,6 +119,10 @@ func AskRetryOpenPage(title, text string) (retry bool, openPage bool) {
 
 // OpenURL 用系统默认浏览器打开一个网址。
 //
+// **只接受我们自己的常量 URL。** 它走 ShellExecuteW("open", ...)：传进来一个
+// 文件名就等于执行它。将来若要打开用户提供的地址，必须先校验 scheme（只放行
+// http/https），不要把外部输入直接转发进来。
+//
 // 存在的理由很具体：MessageBox 里的网址**是不可点击的纯文本**，而
 // 「请手动下载」这类提示唯一可做的事就是去那个网址。让用户照着敲一条
 // 70 字符的 URL 不算提示，算刁难。
@@ -136,10 +141,13 @@ func OpenURL(url string) error {
 		uintptr(unsafe.Pointer(target)),
 		0, 0, swShow,
 	)
-	// ShellExecuteW 的返回值 <= 32 才是失败；那些错误码不是 errno，
-	// 所以不能只看 callErr。
+	// ShellExecuteW 的失败码在**返回值**里（<= 32），而 GetLastError 未必被设；
+	// 所以不能直接把 callErr 返回 —— 那可能是 nil，于是"什么都没打开"被报成成功。
 	if ret <= 32 {
-		return callErr
+		if callErr != nil {
+			return fmt.Errorf("打开网页失败（code=%d）：%w", ret, callErr)
+		}
+		return fmt.Errorf("打开网页失败（code=%d）", ret)
 	}
 	return nil
 }

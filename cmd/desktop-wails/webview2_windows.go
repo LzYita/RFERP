@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/wailsapp/go-webview2/webviewloader"
@@ -125,11 +124,26 @@ func askInstall() bool {
 // 不主动提权：与 Wails 一致，由引导程序自己的 manifest 触发 UAC。
 // 用户拒绝 UAC 时安装程序以非零码退出，这里如实转成错误。
 func installWebView2() error {
-	installer := filepath.Join(os.TempDir(), "MicrosoftEdgeWebview2Setup.exe")
+	// 随机文件名而不是固定的 MicrosoftEdgeWebview2Setup.exe：
+	// 固定名会被两个同时更新的实例互相覆盖，也让同用户的其它进程可以预占。
+	f, err := os.CreateTemp("", "MicrosoftEdgeWebview2Setup-*.exe")
+	if err != nil {
+		return fmt.Errorf("无法创建临时文件：%w", err)
+	}
+	installer := f.Name()
+	f.Close()
+
 	if err := downloadFile(webview2BootstrapperURL, installer); err != nil {
+		os.Remove(installer)
 		return fmt.Errorf("下载安装程序失败（多为网络受限或代理拦截）：%w", err)
 	}
 	defer os.Remove(installer)
+
+	// 执行前验签。失败就不执行 —— 宁可让用户走手动下载页，也不运行一个
+	// 来路不明的二进制（它紧接着还会请求管理员提权）。
+	if err := verifyAuthenticode(installer); err != nil {
+		return fmt.Errorf("下载的安装程序未通过签名校验，已拒绝执行（请手动到官网安装）：%w", err)
+	}
 
 	cmd := exec.Command(installer)
 	if err := cmd.Start(); err != nil {
@@ -141,10 +155,36 @@ func installWebView2() error {
 	return nil
 }
 
+// maxBootstrapperBytes 是下载上限。安装程序约 2 MB；200 MB 留足余量，
+// 同时挡住"异常服务器在 60 秒超时内灌几百 MB"这种消耗。
+const maxBootstrapperBytes = 200 << 20
+
+// httpsOnlyRedirect 保证重定向不降级。
+//
+// Go 的 http.Client 默认**不限制**重定向协议，https → http 会照跟 ——
+// 而下载回来的文件我们随后要执行。这里只放行 https，并限制跳转次数。
+func httpsOnlyRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("拒绝重定向到非 https 地址（%s）", req.URL.Scheme)
+	}
+	if len(via) >= 5 {
+		return fmt.Errorf("重定向次数过多（%d 次）", len(via))
+	}
+	return nil
+}
+
 // downloadFile 把 url 落到 dst。超时是必要的：fwlink 会重定向，
 // 在没有网络的环境里不设超时会挂到天荒地老。
 func downloadFile(url, dst string) error {
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{
+		Timeout:       60 * time.Second,
+		CheckRedirect: httpsOnlyRedirect,
+	}
+	return downloadTo(client, url, dst, maxBootstrapperBytes)
+}
+
+// downloadTo 是 downloadFile 的可测内核（limit 可注入，测试不必造 200 MB）。
+func downloadTo(client *http.Client, url, dst string, limit int64) error {
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -158,8 +198,12 @@ func downloadFile(url, dst string) error {
 		return err
 	}
 	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
 		return err
+	}
+	if n > limit {
+		return fmt.Errorf("响应体超过上限 %d MB，已中止", limit>>20)
 	}
 	return nil
 }

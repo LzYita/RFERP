@@ -199,6 +199,11 @@ func main() {
 			Messages: webviewMessages(),
 		},
 	}); err != nil {
+		// 用户已经在对话框里看过说明（或主动选了退出），这里安静退出，
+		// 让上面注册的 defer 正常收尾（关库、停内嵌服务）。
+		if errors.Is(err, errWebView2Unavailable) {
+			return
+		}
 		log.Printf("wails exited with error: %v", err)
 		os.Exit(1)
 	}
@@ -545,7 +550,9 @@ func runWails(app *options.App) error {
 	// 详见 webview2_windows.go 顶部——Wails 自带的 preflight 在失败时不可靠，
 	// 也没有重试。
 	if err := ensureWebView2(); err != nil {
-		os.Exit(1)
+		// 不在这里 os.Exit：调用方此刻已经注册了 res.Close()（数据库）与
+		// stop()（内嵌服务）的 defer，直接退出会把它们跳过。
+		return err
 	}
 
 	err := wails.Run(app)
@@ -559,7 +566,7 @@ func runWails(app *options.App) error {
 	// 而不是让程序无声消失。
 	if isWebview2Unavailable(err) {
 		_ = offerManualInstall()
-		os.Exit(1)
+		return errWebView2Unavailable
 	}
 	return err
 }

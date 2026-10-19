@@ -61,6 +61,10 @@ var routesWithoutAuth = map[string]string{
 	"GET /api/remember/load":      "同上",
 	"POST /api/remember/forget":   "同上",
 	"POST /api/remember/exchange": "同上",
+	// 前端首屏挂载后向内嵌服务报到，那时还没有会话。它是"这一版界面可用"的
+	// 证据，被伪造的后果是回退副本被清掉，所以必须由启动凭据闸门挡住本机其它
+	// 进程（见 TestUIReadyEndpointRequiresStartupToken）。
+	"POST /api/startup/ui-ready": "首屏报到，受启动凭据闸门保护",
 }
 
 // 权限表里已定义、但还没有路由消费的权限点。

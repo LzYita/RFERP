@@ -385,6 +385,14 @@ func ApplyAndRestart(zipPath string) error {
 		return err
 	}
 	oldPath := target + ".old"
+	// 先写"更新未确认"标记，再动 exe。顺序见 pending.go 的说明：
+	// 反过来的话，中途死掉就没有标记，.old 会被当成过期文件删掉。
+	if err := writePending(target); err != nil {
+		// 写不了标记就不做替换：没有标记意味着新版本一启动就会被当成"上次已确认"，
+		// 从而丢掉唯一的回退副本。宁可这次更新失败。
+		os.Remove(newPath)
+		return fmt.Errorf("无法写入更新标记，已取消本次更新: %w", err)
+	}
 	os.Remove(oldPath)
 	if err := os.Rename(target, oldPath); err != nil {
 		os.Remove(newPath)
@@ -406,6 +414,10 @@ func ApplyAndRestart(zipPath string) error {
 }
 
 // CleanupOld removes the leftover previous executable after a successful update.
+//
+// Deprecated: 它无条件删除 .old，而"更新是否成功"在新进程启动前无法判断，
+// 这正是先决项④的缺陷。新代码用 CleanupStale（有未确认标记时保留 .old）。
+// 保留此函数只因为 Fyne 旧版入口仍在使用。
 func CleanupOld() {
 	exe, err := os.Executable()
 	if err != nil {

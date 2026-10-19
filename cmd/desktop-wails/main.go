@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	"app/internal/bootstrap"
 	"app/internal/config"
 	"app/internal/logging"
+	"app/internal/mysqlfind"
 	"app/internal/paths"
 	"app/internal/singleinstance"
 	"app/internal/update"
@@ -54,6 +56,23 @@ var serveOnlyHint = new(bool)
 var version = "dev"
 
 func main() {
+	// 提权子进程：本次启动只为拉起 MySQL 服务，随后立即退出。
+	//
+	// 必须放在**最前面**：既不能抢单实例锁、建窗口、碰配置，也不能走到
+	// flag.Parse() —— 提权用的是 --rferp-start-mysql-service=<服务名>，
+	// 它没注册在下面那组 flag 里，先 Parse 会直接以 "flag provided but not
+	// defined" 退出，服务永远起不来。
+	//
+	// 参数形态由 mysqlfind.StartServiceElevated 生成，与 1.3.0 的 Fyne 入口
+	// 共用同一个约定。
+	if handled, err := mysqlfind.RunServiceStartIfRequested(os.Args); handled {
+		if err != nil {
+			log.Printf("elevated service start failed: %v", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+
 	// 开发/验证用：只起内嵌 HTTP 服务，不开 Wails 窗口。
 	//
 	// Vite 开发期需要 API 监听在一个已知端口上（见 vite.config.ts 的
@@ -100,6 +119,13 @@ func main() {
 	cfg := config.Load()
 	paths.SetDataDir(cfg.DataDir)
 
+	// 日志尽早初始化：下面 PrepareStart 与回退询问都会写日志，而它们一旦
+	// 发生在 Init 之前，就只能落到控制台、进不了日志文件 —— 用户反馈"弹了
+	// 回退提示"时，日志里恰恰缺了最需要的那几行（演练时踩到过）。
+	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
+		log.Printf("init log file failed: %v", err)
+	}
+
 	// 更新源：配置优先，环境变量可覆盖（测试与灰度发布用）。
 	// AutoUpdate 关掉、或地址为空时完全不启用——不发请求、不弹窗。
 	updateURL := cfg.UpdateURL
@@ -109,14 +135,35 @@ func main() {
 	if !cfg.AutoUpdate {
 		updateURL = ""
 	}
-	if updateURL != "" {
-		update.CleanupOld()
-	}
-	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
-		log.Printf("init log file failed: %v", err)
+	// 上一次更新留下的回退副本 .old：处理残留，并判断这次该不该问用户。
+	//
+	// 原先这里是无条件 update.CleanupOld()，而它删掉的正是新版本起不来时唯一的
+	// 回退副本 —— 判据只是"进程跑到了这一行"。现在交给 PrepareStart：
+	//   有 .old、无标记 → 判定为"从 1.3.0 那样不写标记的旧版升上来"，补记标记；
+	//   有 .old、有标记 → 上一轮始终没走到界面可用，这次启动就问要不要回退。
+	// 详见 internal/update/pending.go。
+	//
+	// 注意它**不受 updateURL 是否为空影响**：关掉自动更新只是不再去检查更新，
+	// 不该让"上一轮更新没确认"这件事失去回退机会。
+	startDecision := update.PrepareStart()
+	// 无头模式不弹任何对话框：它可能在 CI 或无人值守的脚本里运行，
+	// 一个模态框会把整个进程挂死（演练时真的这样挂过一次）。无头模式也
+	// 不会确认健康（没有界面），因此这里跳过询问、只保留磁盘状态。
+	if startDecision.OfferRollback && !*serveOnly {
+		reason := errors.New("上一个版本的程序始终没有把界面显示出来")
+		if offerUpdateRollback(reason) {
+			return
+		}
 	}
 
-	res, err := bootstrap.Build(cfg, bootstrap.Options{Logf: log.Printf})
+	res, err := bootstrap.Build(cfg, bootstrap.Options{
+		Logf: log.Printf,
+		// 本机 MySQL 没在跑时先尝试拉起服务；需要管理员权限时只把
+		// 「启动服务」这一个动作提权（UAC），不把整个应用提权。
+		// 1.3.0 一直有这一步，Wails 入口起初漏了 —— 表现为从 1.3.0 升级后
+		// 首次启动报"连不上库"，而库只是服务没起来。
+		EnsureMySQL: mysqlfind.EnsureRunning,
+	})
 
 	// 全新安装：没有任何配置。此时业务服务一个都起不来（not configured），
 	// 但用户需要的不是一条错误，而是「数据怎么连」这个问题的答案。
@@ -142,6 +189,10 @@ func main() {
 		}
 		// 阶段 A 的内嵌服务必须同时支持 SQLite 与 MySQL；两者都失败时
 		// 没有界面可以承载更详细的说明，先落到系统对话框。
+		// 若这次启动紧跟着一次更新（有未确认标记），先问用户要不要回退。
+		if offerUpdateRollback(err) {
+			return
+		}
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
 	}
@@ -169,6 +220,10 @@ func main() {
 
 	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
 	if err != nil {
+		// 同上：更新后的首次启动失败，给一次回退机会。
+		if offerUpdateRollback(err) {
+			return
+		}
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
 	}
@@ -188,7 +243,10 @@ func main() {
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},
 		// 窗口起来了才有 ctx，原生目录选择框从这一刻起才可用。
-		OnStartup: func(ctx context.Context) { dirPicker.setCtx(ctx) },
+		OnStartup: func(ctx context.Context) {
+			dirPicker.setCtx(ctx)
+			confirmUpdateHealthy()
+		},
 		Windows: &windows.Options{
 			WebviewGpuIsDisabled: false,
 			// WebView2 缺失/版本异常/崩溃时的提示。
@@ -202,6 +260,10 @@ func main() {
 		// 用户已经在对话框里看过说明（或主动选了退出），这里安静退出，
 		// 让上面注册的 defer 正常收尾（关库、停内嵌服务）。
 		if errors.Is(err, errWebView2Unavailable) {
+			// 界面出不来本身就是"这一版在这台机器上不可用"。若还留着上一版，
+			// 就该告诉用户可以回去 —— 尤其从 1.3.0 升上来时，旧版（Fyne）
+			// 根本不需要 WebView2，回去立刻就能用。
+			offerUpdateRollback(errors.New("缺少 Microsoft Edge WebView2 运行时，界面无法显示"))
 			return
 		}
 		log.Printf("wails exited with error: %v", err)
@@ -361,6 +423,8 @@ func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStartupToken(tok),
+		// 前端挂载成功后报到：更新后的回退判据靠它，见 notifyUIReady。
+		api.WithUIReadyHook(notifyUIReady),
 		// 软件更新：只桌面形态启用。更新会替换用户正在运行的 exe，
 		// 那是单机行为，不该在 cmd/server 上被触发。
 		api.WithUpdate(updateURL, version),
@@ -569,6 +633,89 @@ func runWails(app *options.App) error {
 		return errWebView2Unavailable
 	}
 	return err
+}
+
+// uiReady 在前端第一次挂载成功时被关闭。
+//
+// 它是"这一版能不能用"的唯一可信证据：窗口开着、进程活着都不算 —— 前端资源
+// 坏掉时正是那样运行，用户看到一片空白。所以确认更新必须等这个信号，
+// 收不到就一直不确认，标记与 .old 一直留着，下一次启动会问用户要不要回退。
+var uiReady = make(chan struct{})
+
+var uiReadyOnce sync.Once
+
+func notifyUIReady() { uiReadyOnce.Do(func() { close(uiReady) }) }
+
+// confirmUpdateHealthy 在**界面挂载成功**之后确认"新版本确实能用"。
+//
+// 原来的判据是"窗口起来 5 秒后还活着"，那把"前端资源坏了、界面一片空白"
+// 当成了健康：标记一清、.old 一删，从此再没有人会被问起回退。
+func confirmUpdateHealthy() {
+	go func() {
+		<-uiReady
+		update.ConfirmHealthy()
+		log.Printf("update: 界面已挂载，确认本次更新，清除标记与回退副本")
+	}()
+}
+
+// rollbackUnrelatedHint 判断这次启动失败是否**更像本机环境问题**（数据库/服务
+// 连不上），而不是"这一版程序有问题"，并给出一句提醒。
+//
+// 只影响措辞，不影响是否提供回退：我们无法证明故障与更新无关，替用户取消选项
+// 反而可能在"新版本换了驱动才连不上"时断掉唯一的出路。但至少别让他白退一次 ——
+// 回退到一个同样连不上库的旧版，只会多折腾一遍。
+func rollbackUnrelatedHint(reason error) string {
+	var ce *bootstrap.ConnectionError
+	if errors.As(reason, &ce) {
+		return "（本次故障看起来与本机数据库/服务有关，回退旧版本通常也不能解决。）\n\n"
+	}
+	return ""
+}
+
+// offerUpdateRollback 在启动失败时询问是否回退到上一版本。
+//
+// 只在**存在未确认标记**时才问：没有标记说明这次故障与更新无关（例如数据库根本没开），
+// 回退旧版本同样起不来，只会多折腾一次。
+//
+// 返回 true 表示**回退已经落到磁盘上**，调用方必须直接退出。
+//
+// 注意判断依据是"回退成功"，不是"旧版本重启成功"：磁盘上已经是旧版本之后，
+// 继续跑着当前这个进程等于让用户接着用一版已经被判定为不可用的程序，而且它随后
+// 还会把这一版当成"界面正常"确认掉（ConfirmHealthy），把刚恢复的状态又搅乱。
+// 重启失败时用户已经拿到了手工恢复的说明，这时退出才是对的。
+func offerUpdateRollback(reason error) bool {
+	pending, err := update.ReadPending()
+	if err != nil {
+		log.Printf("update: 读取更新标记失败，不提供回退: %v", err)
+		return false
+	}
+	if pending == nil {
+		return false
+	}
+	// 先确认旧版本还在，再问用户 —— 问了却没得回退比不问更糟。
+	if !update.HasRollbackCopy() {
+		log.Printf("update: 标记存在但没有回退副本，不提供回退")
+		return false
+	}
+	msg := "新版本启动失败：\n" + reason.Error() + "\n\n" +
+		rollbackUnrelatedHint(reason) +
+		"是否回退到更新前的版本？\n" +
+		"点「是」立即回退并重新启动（当前版本会保留为 RFERP.exe.failed 以便排查）。\n" +
+		"点「否」退出，之后再手工处理。"
+	if !winmsg.Confirm("RFERP 无法启动", msg) {
+		return false
+	}
+	if _, rbErr := update.Rollback(); rbErr != nil {
+		log.Printf("update: 回退失败: %v", rbErr)
+		winmsg.Error("回退失败", rbErr.Error())
+		return false
+	}
+	if err := update.RestartApp(); err != nil {
+		log.Printf("update: 回退后重启失败: %v", err)
+		winmsg.Error("回退后无法启动上一版本",
+			err.Error()+"\n\n已经回退完成，但无法自动重新启动。\n请手工运行安装目录下的 RFERP.exe。")
+	}
+	return true
 }
 
 // newStartupToken 生成 24 字节随机 token（192 位），同机其它进程猜不到。

@@ -116,6 +116,84 @@ func TestMissingBuildGivesActionableHint(t *testing.T) {
 		t.Fatalf("资源缺失 = %d, want 404", w.Code)
 	}
 	if !strings.Contains(w.Body.String(), "npm run build") {
-		t.Errorf("未给出修复指引: %q", w.Body.String())
+		t.Errorf("未给出修复指引 %q", w.Body.String())
+	}
+}
+
+// 「界面已挂载」端点（Round 8 先决项④的回退判据）。
+//
+// 它决定的是"这一版能不能用"，所以两条性质必须成立：
+//   - 收到就一定调到 hook（否则更新永远不被确认，回退副本永远留着）；
+//   - 没带启动凭据就不能调用（否则本机任何进程都能伪报"界面正常"，
+//     把唯一的回退副本骗掉）。
+
+func postUIReady(t *testing.T, s *Server, cookieVal string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/startup/ui-ready", nil)
+	if cookieVal != "" {
+		r.AddCookie(&http.Cookie{Name: startupCookieName, Value: cookieVal})
+	}
+	s.Handler().ServeHTTP(w, r)
+	return w
+}
+
+func TestUIReadyEndpointCallsHook(t *testing.T) {
+	calls := 0
+	s := New(&sessionApps{}, WithStartupToken(bootTok),
+		WithUIReadyHook(func() { calls++ }))
+
+	if w := postUIReady(t, s, bootTok); w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 {
+		t.Errorf("hook 调用 %d 次，期望 1 次 —— 收不到它就不会确认更新", calls)
+	}
+}
+
+// 前端在首屏就会报到，那时还没有会话；因此它只受启动凭据保护，不能要求登录。
+func TestUIReadyEndpointNeedsNoLogin(t *testing.T) {
+	called := false
+	s := New(&sessionApps{}, WithStartupToken(bootTok),
+		WithUIReadyHook(func() { called = true }))
+
+	if w := postUIReady(t, s, bootTok); w.Code != http.StatusOK {
+		t.Errorf("未登录时状态码 = %d，期望 200（首屏报到发生在登录之前）", w.Code)
+	}
+	if !called {
+		t.Error("hook 没被调到")
+	}
+}
+
+// 带启动凭据时才能报到：凭据由反向代理注入，只经由本进程窗口的请求才有。
+func TestUIReadyEndpointRequiresStartupToken(t *testing.T) {
+	called := false
+	s := New(&sessionApps{}, WithStartupToken(bootTok),
+		WithUIReadyHook(func() { called = true }))
+
+	if w := postUIReady(t, s, ""); w.Code != http.StatusForbidden {
+		t.Errorf("无凭据状态码 = %d，期望 403", w.Code)
+	}
+	if w := postUIReady(t, s, "wrong-token"); w.Code != http.StatusForbidden {
+		t.Errorf("错误凭据状态码 = %d，期望 403", w.Code)
+	}
+	if called {
+		t.Error("没有启动凭据却收到了报到 —— 那等于让本机任何进程都能" +
+			"伪报界面正常，把回退副本骗掉")
+	}
+	if w := postUIReady(t, s, bootTok); w.Code != http.StatusOK {
+		t.Errorf("带凭据状态码 = %d，期望 200", w.Code)
+	}
+	if !called {
+		t.Error("带凭据时 hook 没被调到")
+	}
+}
+
+// nil hook（没人关心时）不能 panic：cmd/server 走的就是这条。
+func TestUIReadyEndpointToleratesNilHook(t *testing.T) {
+	s := New(&sessionApps{}, WithStartupToken(bootTok))
+
+	if w := postUIReady(t, s, bootTok); w.Code != http.StatusOK {
+		t.Errorf("nil hook 时状态码 = %d，期望 200", w.Code)
 	}
 }

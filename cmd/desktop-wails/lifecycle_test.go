@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -160,6 +161,67 @@ func TestWebView2MessagesAreChineseAndActionable(t *testing.T) {
 	// 不能残留 Wails 的英文默认文案
 	if strings.Contains(m.InstallationRequired, "The WebView2 runtime is required") {
 		t.Error("InstallationRequired 仍是 Wails 英文默认文案")
+	}
+}
+
+// 「点取消」之后必须再给一次中文说明。
+//
+// 背景（2026-10-18）：Wails 把用户取消当成普通 error 返回
+// （internal/wv2installer/download.go 里 errors.New(messages.Webview2NotInstalled)），
+// 而我们原先把任何 wails.Run 错误都只写日志就 os.Exit(1)。结果是：用户点了取消，
+// 程序直接消失，屏幕上什么都没留下 —— 连"该去哪儿装"都没说。
+//
+// 这条测试守两件事：识别函数认得出那个错误（不认其它错误），以及那段文案本身可操作。
+func TestWebviewCancellationTellsTheUserWhatToDo(t *testing.T) {
+	m := webviewMessages()
+
+	// 识别：Wails 返回的正是这个字符串，所以按字符串比对是唯一可行的判据。
+	if !isWebview2Unavailable(errors.New(m.Webview2NotInstalled)) {
+		t.Fatal("认不出 Wails 在用户取消时返回的 Webview2NotInstalled")
+	}
+
+	// 不能把别的错误误判成 WebView2 缺失 —— 那会让正常启动失败也弹这条提示并退出。
+	for _, other := range []string{
+		"",
+		"some unrelated failure",
+		m.FailedToInstall,
+		m.InvalidFixedWebview2,
+	} {
+		if other == "" {
+			if isWebview2Unavailable(nil) {
+				t.Error("nil 错误被判成 WebView2 缺失")
+			}
+			continue
+		}
+		if isWebview2Unavailable(errors.New(other)) {
+			t.Errorf("%q 被误判成 WebView2 缺失", other)
+		}
+	}
+
+	// 文案本身：中文、有下载链接、并且同时覆盖「没装」与「版本过旧」——
+	// Wails 对这两种情况返回的是同一个错误，只写"未安装"会误导。
+	if !containsCJK(webviewCancelNotice) {
+		t.Error("取消后的提示不是中文")
+	}
+	if !strings.Contains(webviewCancelNotice, "developer.microsoft.com/microsoft-edge/webview2") {
+		t.Errorf("取消后的提示没有下载链接，用户无处可去：%q", webviewCancelNotice)
+	}
+	if !strings.Contains(webviewCancelNotice, "未安装") {
+		t.Error("取消后的提示没说明「未安装」这种可能")
+	}
+	if !strings.Contains(webviewCancelNotice, "版本过旧") {
+		t.Error("取消后的提示没说明「版本过旧」这种可能，而 Wails 对两者返回同一个错误")
+	}
+
+	// 必须说清「确定」会做什么。MessageBox 里的网址是点不动的，如果文案只写
+	// "请手动下载"，用户会以为那个确定按钮只是关闭，然后自己去猜怎么下载。
+	if !strings.Contains(webviewCancelNotice, "确定") {
+		t.Error("取消后的提示没说明「确定」按钮的作用（应当用它打开下载页）")
+	}
+
+	// 动作与文案必须指向同一个地址，否则用户看到的和浏览器打开的不是同一页。
+	if m.DownloadPage != webviewDownloadPage {
+		t.Errorf("文案里的下载页 %q 与 OpenURL 使用的 %q 不一致", m.DownloadPage, webviewDownloadPage)
 	}
 }
 

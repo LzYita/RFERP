@@ -119,6 +119,13 @@ func main() {
 	cfg := config.Load()
 	paths.SetDataDir(cfg.DataDir)
 
+	// 日志尽早初始化：下面 PrepareStart 与回退询问都会写日志，而它们一旦
+	// 发生在 Init 之前，就只能落到控制台、进不了日志文件 —— 用户反馈"弹了
+	// 回退提示"时，日志里恰恰缺了最需要的那几行（演练时踩到过）。
+	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
+		log.Printf("init log file failed: %v", err)
+	}
+
 	// 更新源：配置优先，环境变量可覆盖（测试与灰度发布用）。
 	// AutoUpdate 关掉、或地址为空时完全不启用——不发请求、不弹窗。
 	updateURL := cfg.UpdateURL
@@ -139,14 +146,14 @@ func main() {
 	// 注意它**不受 updateURL 是否为空影响**：关掉自动更新只是不再去检查更新，
 	// 不该让"上一轮更新没确认"这件事失去回退机会。
 	startDecision := update.PrepareStart()
-	if startDecision.OfferRollback {
+	// 无头模式不弹任何对话框：它可能在 CI 或无人值守的脚本里运行，
+	// 一个模态框会把整个进程挂死（演练时真的这样挂过一次）。无头模式也
+	// 不会确认健康（没有界面），因此这里跳过询问、只保留磁盘状态。
+	if startDecision.OfferRollback && !*serveOnly {
 		reason := errors.New("上一个版本的程序始终没有把界面显示出来")
 		if offerUpdateRollback(reason) {
 			return
 		}
-	}
-	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
-		log.Printf("init log file failed: %v", err)
 	}
 
 	res, err := bootstrap.Build(cfg, bootstrap.Options{

@@ -40,6 +40,7 @@ import (
 	"app/internal/bootstrap"
 	"app/internal/config"
 	"app/internal/logging"
+	"app/internal/mysqlfind"
 	"app/internal/paths"
 	"app/internal/singleinstance"
 	"app/internal/update"
@@ -55,6 +56,23 @@ var serveOnlyHint = new(bool)
 var version = "dev"
 
 func main() {
+	// 提权子进程：本次启动只为拉起 MySQL 服务，随后立即退出。
+	//
+	// 必须放在**最前面**：既不能抢单实例锁、建窗口、碰配置，也不能走到
+	// flag.Parse() —— 提权用的是 --rferp-start-mysql-service=<服务名>，
+	// 它没注册在下面那组 flag 里，先 Parse 会直接以 "flag provided but not
+	// defined" 退出，服务永远起不来。
+	//
+	// 参数形态由 mysqlfind.StartServiceElevated 生成，与 1.3.0 的 Fyne 入口
+	// 共用同一个约定。
+	if handled, err := mysqlfind.RunServiceStartIfRequested(os.Args); handled {
+		if err != nil {
+			log.Printf("elevated service start failed: %v", err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+
 	// 开发/验证用：只起内嵌 HTTP 服务，不开 Wails 窗口。
 	//
 	// Vite 开发期需要 API 监听在一个已知端口上（见 vite.config.ts 的
@@ -131,7 +149,14 @@ func main() {
 		log.Printf("init log file failed: %v", err)
 	}
 
-	res, err := bootstrap.Build(cfg, bootstrap.Options{Logf: log.Printf})
+	res, err := bootstrap.Build(cfg, bootstrap.Options{
+		Logf: log.Printf,
+		// 本机 MySQL 没在跑时先尝试拉起服务；需要管理员权限时只把
+		// 「启动服务」这一个动作提权（UAC），不把整个应用提权。
+		// 1.3.0 一直有这一步，Wails 入口起初漏了 —— 表现为从 1.3.0 升级后
+		// 首次启动报"连不上库"，而库只是服务没起来。
+		EnsureMySQL: mysqlfind.EnsureRunning,
+	})
 
 	// 全新安装：没有任何配置。此时业务服务一个都起不来（not configured），
 	// 但用户需要的不是一条错误，而是「数据怎么连」这个问题的答案。
@@ -626,6 +651,20 @@ func confirmUpdateHealthy() {
 	}()
 }
 
+// rollbackUnrelatedHint 判断这次启动失败是否**更像本机环境问题**（数据库/服务
+// 连不上），而不是"这一版程序有问题"，并给出一句提醒。
+//
+// 只影响措辞，不影响是否提供回退：我们无法证明故障与更新无关，替用户取消选项
+// 反而可能在"新版本换了驱动才连不上"时断掉唯一的出路。但至少别让他白退一次 ——
+// 回退到一个同样连不上库的旧版，只会多折腾一遍。
+func rollbackUnrelatedHint(reason error) string {
+	var ce *bootstrap.ConnectionError
+	if errors.As(reason, &ce) {
+		return "（本次故障看起来与本机数据库/服务有关，回退旧版本通常也不能解决。）\n\n"
+	}
+	return ""
+}
+
 // offerUpdateRollback 在启动失败时询问是否回退到上一版本。
 //
 // 只在**存在未确认标记**时才问：没有标记说明这次故障与更新无关（例如数据库根本没开），
@@ -652,6 +691,7 @@ func offerUpdateRollback(reason error) bool {
 		return false
 	}
 	msg := "新版本启动失败：\n" + reason.Error() + "\n\n" +
+		rollbackUnrelatedHint(reason) +
 		"是否回退到更新前的版本？\n" +
 		"点「是」立即回退并重新启动（当前版本会保留为 RFERP.exe.failed 以便排查）。\n" +
 		"点「否」退出，之后再手工处理。"

@@ -2,9 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -51,68 +49,6 @@ func init() {
 			break
 		}
 	}
-}
-
-// ensureMySQL 在连库前确保本机 MySQL 已就绪：探测端口，不通则启动对应服务。
-//
-// 启动 Windows 服务需要管理员权限。已提权时直接用 SCM API 启动；未提权时
-// 只把这一条命令通过 UAC 提权执行（见 mysqlfind.StartServiceElevated），
-// 因此正常使用时不会出现提权提示，只有 MySQL 确实没在运行时才弹一次 UAC。
-//
-// 返回值说明启动是否成功，供调用方决定是提示用户还是继续尝试连接。
-func ensureMySQL(host, port, service string) error {
-	if !isLocalHost(host) {
-		return nil
-	}
-	addr := net.JoinHostPort(host, port)
-	if portOpen(addr) {
-		return nil
-	}
-	if service == "" {
-		return errors.New("未配置 MySQL 服务名")
-	}
-
-	log.Printf("MySQL 未运行，尝试启动服务 %s...", service)
-	err := mysqlfind.StartService(service)
-	if err != nil {
-		// 权限不足：改用 UAC 提权启动（会弹一次用户确认）
-		var se *mysqlfind.StartError
-		if errors.As(err, &se) && se.NeedsAdmin {
-			log.Printf("启动 MySQL 服务需要管理员权限，改用 UAC 提权：%v", err)
-			if err2 := mysqlfind.StartServiceElevated(service); err2 != nil {
-				return err2
-			}
-		} else {
-			return err
-		}
-	}
-
-	// 等待 MySQL 就绪
-	for i := 0; i < 30; i++ {
-		if portOpen(addr) {
-			log.Println("MySQL 已就绪")
-			return nil
-		}
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("等待 MySQL 就绪超时（%s）", addr)
-}
-
-func portOpen(addr string) bool {
-	conn, err := net.DialTimeout("tcp", addr, time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-func isLocalHost(host string) bool {
-	switch host {
-	case "", "127.0.0.1", "localhost", "::1":
-		return true
-	}
-	return false
 }
 
 func main() {
@@ -209,7 +145,7 @@ func enterLocalMode(a fyne.App, cfg *config.Config) {
 	// 装配（选通道 → 连库 → 迁移 → 构造用例）已下沉到 internal/bootstrap，
 	// 与 cmd/server 共用同一份实现。本函数只负责把失败翻译成对应的界面。
 	res, err := bootstrap.Build(cfg, bootstrap.Options{
-		EnsureMySQL: ensureMySQL,
+		EnsureMySQL: mysqlfind.EnsureRunning,
 		Logf:        log.Printf,
 	})
 	if err != nil {

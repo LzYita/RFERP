@@ -51,10 +51,23 @@ export default function App() {
   // 后端就永远不确认这一版健康，回退副本也会一直留着，下次启动会问用户
   // 要不要回退（见 internal/update/pending.go）。
   //
-  // 失败不重试也不上报：报到只是健康证据，缺了它走的是"保守保留"那条路，
-  // 不会把用户的文件删掉。
+  // **要重试**：只发一次的话，一次瞬时失败（代理抖动、后端刚好在关）就会被
+  // 当成"界面没起来"，让一个完全正常的新版本在下次启动时被问要不要回退。
+  // 三次足够，间隔拉长；仍然失败就走"保守保留"那条路，不会删用户的文件。
   useEffect(() => {
-    api.post('/api/startup/ui-ready').catch(() => undefined)
+    let alive = true
+    const report = (attempt: number) => {
+      api.post('/api/startup/ui-ready').catch(() => {
+        if (!alive || attempt >= 3) return
+        setTimeout(() => {
+          if (alive) report(attempt + 1)
+        }, attempt === 1 ? 1000 : 3000)
+      })
+    }
+    report(1)
+    return () => {
+      alive = false
+    }
   }, [])
 
   // 登录态成立后查一次更新（手动登录与「记住登录」自动恢复两条路都覆盖到）——

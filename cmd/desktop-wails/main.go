@@ -109,9 +109,14 @@ func main() {
 	if !cfg.AutoUpdate {
 		updateURL = ""
 	}
-	if updateURL != "" {
-		update.CleanupOld()
-	}
+	// 上一次更新留下的回退副本 .old：只有在"没有未确认标记"时才清理。
+	//
+	// 原先这里是无条件 update.CleanupOld()，而它删掉的正是新版本起不来时唯一的
+	// 回退副本 —— 判据只是"进程跑到了这一行"。现在改为：
+	//   有标记（上一轮没确认）→ 保留 .old，等这次启动确认后再清；
+	//   无标记（上一轮确认过）→ 过期文件，删掉。
+	// 详见 internal/update/pending.go。
+	update.CleanupStale()
 	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
 		log.Printf("init log file failed: %v", err)
 	}
@@ -142,6 +147,10 @@ func main() {
 		}
 		// 阶段 A 的内嵌服务必须同时支持 SQLite 与 MySQL；两者都失败时
 		// 没有界面可以承载更详细的说明，先落到系统对话框。
+		// 若这次启动紧跟着一次更新（有未确认标记），先问用户要不要回退。
+		if offerUpdateRollback(err) {
+			return
+		}
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
 	}
@@ -169,6 +178,10 @@ func main() {
 
 	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
 	if err != nil {
+		// 同上：更新后的首次启动失败，给一次回退机会。
+		if offerUpdateRollback(err) {
+			return
+		}
 		winmsg.Error("RFERP 无法启动", err.Error())
 		os.Exit(1)
 	}
@@ -188,7 +201,10 @@ func main() {
 		// 若在此挂载内嵌资源，GET 会先被静态文件命中，代理就收不到了。
 		AssetServer: &assetserver.Options{Handler: emb.proxyHandler()},
 		// 窗口起来了才有 ctx，原生目录选择框从这一刻起才可用。
-		OnStartup: func(ctx context.Context) { dirPicker.setCtx(ctx) },
+		OnStartup: func(ctx context.Context) {
+			dirPicker.setCtx(ctx)
+			confirmUpdateHealthy()
+		},
 		Windows: &windows.Options{
 			WebviewGpuIsDisabled: false,
 			// WebView2 缺失/版本异常/崩溃时的提示。
@@ -569,6 +585,64 @@ func runWails(app *options.App) error {
 		return errWebView2Unavailable
 	}
 	return err
+}
+
+// confirmUpdateHealthy 在窗口起来之后确认"新版本真的能跑"，然后才允许
+// 下一次启动清理回退副本。
+//
+// 为什么等几秒而不是窗口一出现就确认：窗口出现只说明 WebView 建起来了，
+// 紧接着的初始化（首屏数据、定时器、库连接池）才更容易暴露"这个版本有问题"。
+// 等一小会儿的成本是几秒内多留一个 .old，收益是崩溃时不至于连回退副本都没了。
+//
+// 只清标记（顺带清 .failed），不删 .old：真正的删除交给下一次启动
+// （那时缓存的是"上一轮已确认"）。
+func confirmUpdateHealthy() {
+	go func() {
+		const settle = 5 * time.Second
+		time.Sleep(settle)
+		update.ConfirmHealthy()
+		log.Printf("update: 启动确认完成（稳定 %s），回退副本将在下次启动时清理", settle)
+	}()
+}
+
+// offerUpdateRollback 在启动失败时询问是否回退到上一版本。
+//
+// 只在**存在未确认标记**时才问：没有标记说明这次故障与更新无关（例如数据库根本没开），
+// 回退旧版本同样起不来，只会多折腾一次。
+//
+// 返回 true 表示用户选择回退且旧版本已被启动，调用方应当直接退出。
+func offerUpdateRollback(reason error) bool {
+	pending, err := update.ReadPending()
+	if err != nil {
+		log.Printf("update: 读取更新标记失败，不提供回退: %v", err)
+		return false
+	}
+	if pending == nil {
+		return false
+	}
+	// 先确认旧版本还在，再问用户 —— 问了却没得回退比不问更糟。
+	if !update.HasRollbackCopy() {
+		log.Printf("update: 标记存在但没有回退副本，不提供回退")
+		return false
+	}
+	msg := "新版本启动失败：\n" + reason.Error() + "\n\n" +
+		"是否回退到更新前的版本？\n" +
+		"点「是」立即回退并重新启动（当前版本会保留为 RFERP.exe.failed 以便排查）。\n" +
+		"点「否」退出，之后再手工处理。"
+	if !winmsg.Confirm("RFERP 无法启动", msg) {
+		return false
+	}
+	if _, rbErr := update.Rollback(); rbErr != nil {
+		log.Printf("update: 回退失败: %v", rbErr)
+		winmsg.Error("回退失败", rbErr.Error())
+		return false
+	}
+	if err := update.RestartApp(); err != nil {
+		log.Printf("update: 回退后重启失败: %v", err)
+		winmsg.Error("回退后无法启动上一版本", err.Error()+"\n\n请手工运行安装目录下的 RFERP.exe。")
+		return false
+	}
+	return true
 }
 
 // newStartupToken 生成 24 字节随机 token（192 位），同机其它进程猜不到。

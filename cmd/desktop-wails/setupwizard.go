@@ -485,7 +485,13 @@ func runFirstRunSetup(base *config.Config) {
 		Height:      620,
 		AssetServer: &assetserver.Options{Handler: proxy.proxyHandler()},
 		Windows:     &windows.Options{Messages: webviewMessages()},
-		OnStartup:   func(ctx context.Context) { setupCtx = ctx },
+		// 配置向导也是一个"窗口起来了"的健康信号：更新后的首次启动若落到向导
+		// （配置丢失/损坏），标记同样需要被确认，否则下一次启动会一直以为
+		// 有一次未确认的更新，永远不清 .old。
+		OnStartup: func(ctx context.Context) {
+			setupCtx = ctx
+			confirmUpdateHealthy()
+		},
 	})
 }
 

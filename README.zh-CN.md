@@ -30,7 +30,12 @@
 2. 下载 `Setup-RFERP-x.y.z.exe`
 3. 双击安装（中文界面，可自选安装路径）
 
-> 系统要求：**Windows 10 / 11（64 位）**
+> 系统要求：**Windows 10 / 11（64 位）**，以及 **Microsoft Edge WebView2 运行时**。
+> Windows 11 与带 Edge 的 Windows 10 已预装；若缺失，程序会在首次启动时自动下载安装
+> （装好后继续启动，不用重启），失败则给出手动下载页。
+
+部署与运维说明（单实例、重启即登出、跨机走 VPN、更新与回退行为）见
+[docs/deployment.md](docs/deployment.md)。
 
 ## 存储方式
 
@@ -99,7 +104,8 @@
 | Wails CLI | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0` |
 | Inno Setup | 6（仅在打安装包时需要） |
 
-> 这些工具**只有构建者需要**；**最终用户既不需要 Go 也不需要 GCC**（发布物自带运行时）。
+> 这些工具**只有构建者需要**；**最终用户既不需要 Go、GCC，也不需要 Node**（发布物自带运行时）。
+> 但最终用户需要 **WebView2 运行时** —— 缺失时程序会在首次启动时引导安装。
 
 ### 构建应用
 
@@ -129,7 +135,7 @@ cd cmd\desktop-wails && wails build -s
 
 ```
 cmd/
-  desktop/       程序入口
+  desktop-wails/ Wails 程序入口（窗口与无头 -serve 两种形态）
   keygen/        生成更新签名密钥对
   signmanifest/  生成并签名更新清单
 internal/
@@ -140,11 +146,15 @@ internal/
   repository/    数据访问
   service/       业务逻辑
   migrate/       版本化数据库迁移
-  update/        自动更新
+  update/        自动更新、未确认标记与回退
   winappid/      Windows 任务栏 AppUserModelID
   nativefiledialog/  原生文件夹选择器
-  ui/            界面（含登录、用户管理）
+  ui/            旧的 Fyne 界面（已不再使用，待移除）
   ...
+web/             React + TypeScript 前端，构建时嵌入
+docs/decisions/  决策记录（D-xxx）
+docs/plans/      迁移计划与进度
+docs/deployment.md  部署与运维说明
 docs/decisions/  决策记录（D-xxx）
 docs/plans/      迁移计划与进度
 ```

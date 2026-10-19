@@ -1328,12 +1328,15 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
       `go build ./cmd/desktop` 一并删除；`update.CleanupOld` 失去唯一调用点后
       也删掉了。GUI 可执行文件的构建由发版链的 `wails build` 负责，
       它需要 Node 且会重新生成绑定、真的运行一次应用，不适合放进 verify job。）
-- [ ] 此时方可按 §7 的「条件性表格」核对依赖树与漏洞告警是否真的收敛
-      （**尚未**：`internal/ui`（37 文件 / 7168 行，纯 Fyne）目前只剩它自己，
-      但仍在树里，因此 `fyne.io/fyne/v2` 仍是直接依赖。删掉它并 `go mod tidy`
-      之后这条才能勾选。）
-- [ ] Fyne 版仅作为历史版本存档
-      （v1.3.0 的安装包与 zip 已挂在 Release 页；源码在 git 历史里）
+- [x] 此时方可按 §7 的「条件性表格」核对依赖树与漏洞告警是否真的收敛
+      （**2026-10-19 完成**：删除 `internal/ui`（37 文件 / 7168 行，纯 Fyne）并
+      `go mod tidy`。`fyne.io/fyne/v2` 及其 `systray` / `glfw` / `gl-js` 一整套
+      间接依赖全部消失：`go.sum` 少 630 行，`go.mod` 少 24 行；当前共 137 个模块，
+      直接依赖只剩 sqlx / mysql 驱动 / sqlmock / wails / go-webview2 / x/sys /
+      modernc sqlite。）
+- [x] Fyne 版仅作为历史版本存档
+      （v1.3.0 的安装包与 zip 挂在 Release 页作为用户可自行下载的降级通道；
+      Fyne 源码保留在 git 历史中，不再存在于当前树）
 
 ### Round 10 · 国际化（i18n）— 最后做
 

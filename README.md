@@ -30,7 +30,13 @@ Built with **Go + Fyne**; data is stored in **MySQL 8** or in a local **SQLite**
 2. Download `Setup-RFERP-x.y.z.exe`
 3. Run it (Chinese UI, custom install path supported)
 
-> Requires **Windows 10 / 11 (64-bit)**
+> Requires **Windows 10 / 11 (64-bit)** and the **Microsoft Edge WebView2 runtime**.
+> WebView2 is preinstalled on Windows 11 and on Windows 10 with Edge; if it is
+> missing, the app offers to download and install it on first launch (no restart
+> needed) and falls back to a manual download page if that fails.
+
+Deployment and operations notes (single instance, sessions on restart, remote
+access over VPN, update/rollback behaviour): see [docs/deployment.md](docs/deployment.md).
 
 ## Storage
 
@@ -99,7 +105,9 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 | Wails CLI | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0` |
 | Inno Setup | 6 (only to build the installer) |
 
-> These tools are needed by **builders only**; **end users need neither Go nor GCC** (releases bundle their runtime).
+> These tools are needed by **builders only**; **end users need neither Go nor GCC
+> nor Node** (releases bundle their runtime). End users do need the **WebView2
+> runtime**, which the app can install for them on first launch.
 
 ### Build the application
 
@@ -132,7 +140,7 @@ Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 
 ```
 cmd/
-  desktop/       application entry point
+  desktop-wails/  Wails application entry point (window and headless -serve)
   keygen/        generate the update signing keypair
   signmanifest/  generate and sign the update manifest
 internal/
@@ -143,13 +151,15 @@ internal/
   repository/    data access
   service/       business logic
   migrate/       versioned database migrations
-  update/        auto-update
+  update/        auto-update, pending marker and rollback
   winappid/      Windows taskbar AppUserModelID
   nativefiledialog/  native folder picker
-  ui/            interface (incl. login, user management)
+  ui/            legacy Fyne UI (unused; pending removal)
   ...
+web/             React + TypeScript frontend, embedded at build time
 docs/decisions/  decision records (D-xxx)
 docs/plans/      migration plan and progress
+docs/deployment.md  deployment and operations notes
 ```
 
 ## License

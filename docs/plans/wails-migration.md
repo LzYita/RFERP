@@ -1304,10 +1304,12 @@ PR 页面那个红叉写「38 new alerts」是「本 PR 改动行范围内」的
 - [x] 服务用 `embed` 托管前端 dist：Round 1 就已落地——
       `internal/webassets/webassets.go` 的 `//go:embed all:dist` +
       `api.WithStaticFS`，`cmd/desktop-wails` 的窗口与 `-serve` 两种形态共用
-- [ ] 部署文档：单实例 / 重启即全员登出 / 跨机需 VPN / 不暴露公网
-      （`docs/` 下目前没有部署文档；相关约定散在本文档 §2 与 decisions 里）
-- [ ] README 更新（构建者需 Node；**端用户无需 Node/Go 工具链**，但需 WebView2）
-      （现状：两份 README 都没有 Node / WebView2 字样）
+- [x] 部署文档：单实例 / 重启即全员登出 / 跨机需 VPN / 不暴露公网
+      （**2026-10-19 完成**：新建 `docs/deployment.md`，另含运行环境、WebView2、
+      数据/备份位置、更新与回退行为、升级前检查清单）
+- [x] README 更新（构建者需 Node；**端用户无需 Node/Go 工具链**，但需 WebView2）
+      （**2026-10-19 完成**：两份 README 都补上 WebView2 要求、构建工具仅限构建者、
+      目录结构改为 `cmd/desktop-wails` + `web/`，并链接到 `docs/deployment.md`）
 - [x] **保留 Fyne 版安装包（v1.3.0）**挂在 Release 页作为**用户可自行下载的降级通道**
       （v1.3.0 的资产已含 `RFERP-1.3.0.zip` 与 `Setup-RFERP-1.3.0.exe`）
 - [x] 保留 `cmd/desktop` 与其构建脚本（代码不删，便于紧急修复时回退）

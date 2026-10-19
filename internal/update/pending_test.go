@@ -66,8 +66,8 @@ func TestPendingRoundTrip(t *testing.T) {
 	}
 }
 
-// 核心断言：有标记时 CleanupStale 绝不能删 .old。
-func TestCleanupStaleKeepsRollbackWhilePending(t *testing.T) {
+// 核心断言：有标记时 PrepareStart 绝不能删 .old，并且要提出"该问用户了"。
+func TestPrepareStartKeepsRollbackAndOffersWhilePending(t *testing.T) {
 	_, exe := withExeDir(t)
 	oldPath := exe + oldSuffix
 	if err := os.WriteFile(oldPath, []byte("previous"), 0o644); err != nil {
@@ -77,41 +77,109 @@ func TestCleanupStaleKeepsRollbackWhilePending(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	CleanupStale()
+	d := PrepareStart()
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("有未确认标记时 .old 被删了 —— 新版本若起不来就没有回退副本了")
 	}
+	if !d.Copy || !d.Unconfirmed {
+		t.Errorf("应当报告「有副本、未确认」，实际 %+v", d)
+	}
+	if !d.OfferRollback {
+		t.Error("上一轮始终没走到界面可用，这次启动就该问用户要不要回退")
+	}
 }
 
-// 没有标记时才算"上一轮已确认"，此时清理 .old 才是安全的。
-func TestCleanupStaleRemovesWhenConfirmed(t *testing.T) {
+// 跨架构升级：1.3.0（Fyne）的 ApplyAndRestart 只做重命名、不写标记。
+// 这种「有 .old、无标记」必须被认成待确认并补记，否则最需要回退的那次升级
+// 会在第一次启动就把回退副本当成过期文件清掉。
+func TestPrepareStartAdoptsMarkerFromLegacyUpgrade(t *testing.T) {
+	_, exe := withExeDir(t)
+	oldPath := exe + oldSuffix
+	if err := os.WriteFile(oldPath, []byte("fyne 1.3.0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 刻意不写标记 —— 这正是 1.3.0 升上来时的样子。
+
+	d := PrepareStart()
+
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("补记之后 .old 必须保留")
+	}
+	p, err := ReadPending()
+	if err != nil || p == nil {
+		t.Fatalf("应当补记标记: p=%+v err=%v", p, err)
+	}
+	if d.OfferRollback {
+		t.Error("刚补记标记的这一次启动不该问 —— 还没有任何失败证据，" +
+			"否则每次跨架构升级都先吓用户一跳")
+	}
+}
+
+// 确认健康即删 .old：标记一清，回退副本就再也不会被 offerUpdateRollback 指到，
+// 留着只是 18 MB 死文件；删掉它也让「补记」天然只发生一次。
+func TestConfirmHealthyRemovesRollbackCopy(t *testing.T) {
 	_, exe := withExeDir(t)
 	oldPath := exe + oldSuffix
 	if err := os.WriteFile(oldPath, []byte("previous"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := writePending(exe); err != nil {
+		t.Fatal(err)
+	}
 
-	CleanupStale()
+	ConfirmHealthy()
 
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Errorf("没有标记时 %s 应当被清理，实际 err=%v", filepath.Base(oldPath), err)
+		t.Errorf("健康确认之后 %s 应当被清理，实际 err=%v", filepath.Base(oldPath), err)
 	}
 }
 
-// .failed 不归 CleanupStale 管：它是回退时的诊断材料，下一次启动不该把它删掉，
-// 否则"留作排查"这句话就是假的（演练时真踩到了：回退后重启的进程把它清了）。
-func TestCleanupStaleKeepsFailedForDiagnosis(t *testing.T) {
+// 确认之后再启动一次：既不该再问，也不该补记（没有 .old 就没什么可补的）。
+func TestPrepareStartAfterHealthyConfirmIsQuiet(t *testing.T) {
+	_, exe := withExeDir(t)
+	if err := os.WriteFile(exe+oldSuffix, []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(exe); err != nil {
+		t.Fatal(err)
+	}
+	ConfirmHealthy()
+
+	d := PrepareStart()
+
+	if d.OfferRollback || d.Unconfirmed || d.Copy {
+		t.Errorf("确认健康之后不该有任何残留动作，实际 %+v", d)
+	}
+	if p, _ := ReadPending(); p != nil {
+		t.Error("确认健康之后不该又有标记")
+	}
+}
+
+// 没有 .old 就什么都不该做：没有副本可指，标记是空壳。
+func TestPrepareStartWithoutCopyDoesNothing(t *testing.T) {
+	withExeDir(t)
+
+	d := PrepareStart()
+
+	if d.Copy || d.Unconfirmed || d.OfferRollback {
+		t.Errorf("没有回退副本时不该报告任何待办，实际 %+v", d)
+	}
+}
+
+// .failed 不归 PrepareStart 管：它是回退时的诊断材料，确认健康之前不该删，
+// 否则「留作排查」这句话就是假的（演练时真踩到了：回退后重启的进程把它清了）。
+func TestPrepareStartKeepsFailedForDiagnosis(t *testing.T) {
 	_, exe := withExeDir(t)
 	failedPath := exe + failedSuffix
 	if err := os.WriteFile(failedPath, []byte("broken"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	CleanupStale()
+	PrepareStart()
 
 	if _, err := os.Stat(failedPath); err != nil {
-		t.Fatal("没有标记时删掉了 .failed —— 回退之后就没有坏版本可排查了")
+		t.Fatal("PrepareStart 删掉了 .failed —— 回退之后就没有坏版本可排查了")
 	}
 
 	// 真正该清它的是健康确认：一个能跑的版本已经在运行。
@@ -121,8 +189,9 @@ func TestCleanupStaleKeepsFailedForDiagnosis(t *testing.T) {
 	}
 }
 
-// 标记文件损坏时不能当成"没有标记"：那样会删掉唯一的回退副本。
-func TestCleanupStaleKeepsRollbackOnCorruptMarker(t *testing.T) {
+// 标记文件损坏时不能当成"没有标记"：那是删掉唯一回退副本的最好借口。
+// 但也不主动问 —— 不知道上一轮到底有没有真的启动过。
+func TestPrepareStartKeepsRollbackOnCorruptMarker(t *testing.T) {
 	_, exe := withExeDir(t)
 	oldPath := exe + oldSuffix
 	if err := os.WriteFile(oldPath, []byte("previous"), 0o644); err != nil {
@@ -140,10 +209,16 @@ func TestCleanupStaleKeepsRollbackOnCorruptMarker(t *testing.T) {
 		t.Error("损坏时也应当返回非 nil，表示「有标记但内容不可读」")
 	}
 
-	CleanupStale()
+	d := PrepareStart()
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("标记损坏时删掉了 .old —— 这正是最需要保守的情况")
+	}
+	if !d.Unconfirmed {
+		t.Error("标记损坏时应当仍按「未确认」处理")
+	}
+	if d.OfferRollback {
+		t.Error("标记损坏时不该主动询问：无法判断上一轮是否真的启动过")
 	}
 }
 

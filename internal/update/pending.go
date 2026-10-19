@@ -19,15 +19,22 @@ import (
 // 协议：
 //
 //	1. 换 exe 之前写标记（ApplyAndRestart 负责）；
-//	2. 新进程启动时看到标记 → 说明上一轮没确认过 → **不删** .old；
-//	3. 窗口起来并稳定一段时间后删标记（只删标记）；
-//	4. 下一次启动若没有标记 → 说明上一轮确认过了 → 这时才删 .old。
-//
-// 也就是说 .old 至少活过一次完整启动。最坏情况（新 exe 根本起不来）下它一直在，
-// 用户或支持人员可以把 .old 改名回 RFERP.exe 恢复。
+//	2. 新进程启动时 PrepareStart 看到 .old 与标记 → 保留 .old；
+//	3. **界面真的挂载起来**之后调 ConfirmHealthy：清标记、清 .old、清 .failed；
+//	4. 标记在、.old 也在，说明上一轮始终没走到界面可用 → 这次启动主动问用户要不要回退。
 //
 // 标记放在 exe 同目录：更新能成功替换 exe 就说明该目录可写，不需要另找位置；
 // 而且回退是"相对这个 exe"的事，放一起才不会走散。
+//
+// **为什么确认条件是"界面挂载"而不是"进程活着"**：新版最典型的坏法就是前端资源
+// 出问题——窗口照开、进程照活，用户看到的是一片空白。拿"进程跑了 5 秒"当健康，
+// 正好把这种情况判成健康，从此再也不会有人被问起回退。所以健康由前端主动上报
+// （POST /api/startup/ui-ready），上报不到就一直不确认。
+//
+// **为什么 1.3.0 升上来也要能回退**：1.3.0（Fyne）的 ApplyAndRestart 只做重命名，
+// 不写标记（那时还没有这套协议）。于是"有 .old、无标记"不是"没有待确认的更新"，
+// 而是"从不会写标记的旧版升上来的"——那恰恰是最需要回退的一次跨越。PrepareStart
+// 见到这种组合就补记标记。
 
 const (
 	// pendingFile 是标记文件名，与 exe 同目录。
@@ -108,52 +115,83 @@ func ClearPending() error {
 	return nil
 }
 
-// ConfirmHealthy 表示"新版本确实起来了"：清掉标记，并清理回退时留下的坏版本。
+// ConfirmHealthy 表示"新版本确实把界面显示出来了"：清标记，清回退副本，
+// 清回退时留下的坏版本。
 //
-// 只清标记、不删 .old 是刻意的：此刻程序才刚起来，多留一次启动的回退余地
-// 比省 18 MB 值得。而 .failed 可以删 —— 一个能跑起来的版本已经在运行，
-// 被换下来的坏版本只在回退后那段时间内有排查价值。
+// **确认就删 .old**，而不是"留到下一次启动再删"。理由是标记已清零之后 .old 就没有
+// 任何用途了：offerUpdateRollback 要先读到标记才会问，标记没了就永远问不到它 ——
+// 那份 18 MB 只是一块谁也不会再被指到的死文件。删掉它同时让"补记标记"这件事
+// 天然只发生一次：没有 .old 就没有可补记的东西。
 func ConfirmHealthy() {
 	if err := ClearPending(); err != nil {
 		log.Printf("update: 清除更新标记失败: %v", err)
-	}
-	if exe, err := exePath(); err == nil {
-		if rmErr := os.Remove(exe + failedSuffix); rmErr == nil {
-			log.Printf("update: 已清理回退时留下的 %s", filepath.Base(exe+failedSuffix))
-		} else if !os.IsNotExist(rmErr) {
-			log.Printf("update: 清理 %s 失败: %v", filepath.Base(exe+failedSuffix), rmErr)
-		}
-	}
-}
-
-// CleanupStale 清理上一次更新留下的过期回退副本（.old）。
-//
-// **只有在没有标记时才该调用**：有标记说明当前 exe 还没被确认过，.old 是唯一
-// 的回退副本，删掉就等于放弃回退。这条约束由调用方保证，这里再挡一道。
-//
-// 不管 .failed：它是回退时的诊断材料，什么时候清由 ConfirmHealthy 决定 ——
-// 一个能跑起来的版本出现之后才不需要它。
-func CleanupStale() {
-	p, err := ReadPending()
-	if err != nil {
-		// 标记读不出来/坏了：保守保留，不清理。
-		log.Printf("update: 更新标记不可读，跳过清理（保留回退副本）: %v", err)
-		return
-	}
-	if p != nil {
-		log.Printf("update: 上次更新尚未确认（%s），保留回退副本", p.At.Format(time.RFC3339))
-		return
 	}
 	exe, err := exePath()
 	if err != nil {
 		return
 	}
-	path := exe + oldSuffix
-	if err := os.Remove(path); err == nil {
-		log.Printf("update: 已清理过期的 %s", filepath.Base(path))
-	} else if !os.IsNotExist(err) {
-		log.Printf("update: 清理 %s 失败: %v", filepath.Base(path), err)
+	for _, p := range []string{exe + oldSuffix, exe + failedSuffix} {
+		if rmErr := os.Remove(p); rmErr == nil {
+			log.Printf("update: 已清理 %s", filepath.Base(p))
+		} else if !os.IsNotExist(rmErr) {
+			log.Printf("update: 清理 %s 失败: %v", filepath.Base(p), rmErr)
+		}
 	}
+}
+
+// StartDecision 是 PrepareStart 的结论：这次启动该怎么处理上一轮的残留。
+type StartDecision struct {
+	// Copy 表示磁盘上有 .old 可回退。
+	Copy bool
+	// Unconfirmed 表示当前 exe 还没被证明界面可用（标记在，或刚被补记）。
+	Unconfirmed bool
+	// OfferRollback 表示**现在就**该问用户要不要回退。
+	//
+	// 只有"上一轮已经启动过、却始终没走到界面可用"才为真。刚从旧版升上来
+	// （标记是这次补记的）**不算**——那还没有任何失败证据，此时问等于
+	// 每次跨架构升级都先吓用户一跳。
+	OfferRollback bool
+}
+
+// PrepareStart 在启动早期处理上一轮更新的残留，并给出这次该怎么办。
+//
+// 三种情况：
+//  1. 没有 .old → 没有可回退的东西，什么也不做（残留的标记是空壳：没有副本
+//     可指，offerUpdateRollback 会因 HasRollbackCopy 为假而不问）；
+//  2. 有 .old、没有标记 → 从不会写标记的旧版升上来的，**补记**标记；
+//  3. 有 .old、有标记 → 上一轮始终没走到界面可用 → 该问用户了。
+//
+// 标记读不出来时保留 .old 但不主动问：不知道上一轮到底有没有真的启动过，
+// 贸然问会打扰用得好好的用户；真起不来时，失败路径自己会问。
+func PrepareStart() StartDecision {
+	exe, err := exePath()
+	if err != nil {
+		log.Printf("update: 无法定位 exe，保留回退副本: %v", err)
+		return StartDecision{}
+	}
+	oldPath := exe + oldSuffix
+	if _, err := os.Stat(oldPath); err != nil {
+		return StartDecision{}
+	}
+	d := StartDecision{Copy: true, Unconfirmed: true}
+
+	p, err := ReadPending()
+	if err != nil {
+		log.Printf("update: 更新标记不可读，保留回退副本且不主动询问: %v", err)
+		return d
+	}
+	if p != nil {
+		log.Printf("update: 上次更新自 %s 起始终未被确认，保留回退副本", p.At.Format(time.RFC3339))
+		d.OfferRollback = true
+		return d
+	}
+	// 有 .old 却无标记：1.3.0 那样的旧版升上来的第一次启动。
+	if err := writePending(exe); err != nil {
+		log.Printf("update: 补记更新标记失败（仍保留回退副本）: %v", err)
+		return d
+	}
+	log.Printf("update: 发现 %s 但没有更新标记，按跨架构升级补记", filepath.Base(oldPath))
+	return d
 }
 
 // HasRollbackCopy 报告 .old 是否存在：先确认有得回退，再问用户要不要回退。

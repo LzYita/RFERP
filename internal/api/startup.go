@@ -71,6 +71,36 @@ func StartupGate(tok string, next http.Handler) http.Handler {
 	})
 }
 
+// WithUIReadyHook 注册"界面已经挂载起来了"的回调。
+//
+// 存在的理由：更新后的回退判据必须是"界面能用"，而**只有前端知道这件事**。
+// 窗口开着、进程活着都不能作数——新版最典型的坏法就是前端资源有问题，
+// 那种情况下窗口照开、进程照活，用户看到的是一片空白。
+//
+// 端点挂在启动凭据闸门之内，不需要登录：首屏就要报到，那时还没有会话。
+func WithUIReadyHook(hook func()) Option {
+	return func(s *Server) { s.uiReady = hook }
+}
+
+// HandleUIReady 返回"界面已挂载"端点的处理器，供 cmd 侧自建的 mux 复用。
+//
+// 首启向导的 handler 不经过 Server.Handler()（它自己建 mux），所以那条路上
+// 也得挂同一个端点，否则更新后的首次启动若落到向导就永远收不到健康信号、
+// 标记永远不清、.old 永远留着。
+func HandleUIReady(hook func()) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if hook != nil {
+			hook()
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"uiReady": "ok"})
+	}
+}
+
+// handleUIReady 是 Server 自己的挂法。
+func (s *Server) handleUIReady(w http.ResponseWriter, r *http.Request) {
+	HandleUIReady(s.uiReady)(w, r)
+}
+
 // withStartupGate 包住整个服务。
 //
 // 页面与 /api/ 一并受保护：只锁 API 会出现「页面进不去但接口能打」这种

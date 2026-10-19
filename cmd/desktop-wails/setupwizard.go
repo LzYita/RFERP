@@ -69,6 +69,12 @@ func newSetupHandler(base *config.Config, applied func()) http.Handler {
 	notify := func() { once.Do(applied) }
 
 	mux := http.NewServeMux()
+	// 首启向导的页面同样要能上报"界面挂载好了"。
+	//
+	// 更新后的首次启动若落到向导（配置丢失/损坏），这一版的健康判据就靠它：
+	// 收不到信号就永远不确认，标记与 .old 会一直留着。向导的 mux 是自建的、
+	// 不经过 Server.Handler()，所以这里必须单独挂一次。
+	mux.HandleFunc("POST /api/startup/ui-ready", api.HandleUIReady(notifyUIReady))
 	// 目录浏览：调起系统原生文件夹选择框。
 	//
 	// 配置页是普通 HTML，没有 Wails 的运行时绑定，拿不到前端 API；
@@ -806,6 +812,8 @@ $('f').onsubmit=async e=>{
   // 后端会在创建成功后切换到业务服务，这里刷新即可
   setTimeout(()=>location.reload(),800);
 };
+// 同上：向导第二页也要报到"界面可用"。
+fetch('/api/startup/ui-ready',{method:'POST'}).catch(()=>{});
 </script></body></html>`
 
 // setupPageHTML 是一次性配置表单。
@@ -998,4 +1006,8 @@ $('go').onclick=async()=>{
     $('go').disabled=false;$('go').textContent='保存并继续';
   }
 };
+// 页面能跑起来本身就是"这一版界面可用"的证据，向后端报到一次。
+// 收不到这个信号，更新后的首次启动若落到本页就永远不会被判定为健康，
+// 回退副本也会一直留着（详见 internal/update/pending.go）。
+fetch('/api/startup/ui-ready',{method:'POST'}).catch(()=>{});
 </script></body></html>`

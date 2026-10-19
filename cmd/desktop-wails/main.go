@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -109,14 +110,23 @@ func main() {
 	if !cfg.AutoUpdate {
 		updateURL = ""
 	}
-	// 上一次更新留下的回退副本 .old：只有在"没有未确认标记"时才清理。
+	// 上一次更新留下的回退副本 .old：处理残留，并判断这次该不该问用户。
 	//
 	// 原先这里是无条件 update.CleanupOld()，而它删掉的正是新版本起不来时唯一的
-	// 回退副本 —— 判据只是"进程跑到了这一行"。现在改为：
-	//   有标记（上一轮没确认）→ 保留 .old，等这次启动确认后再清；
-	//   无标记（上一轮确认过）→ 过期文件，删掉。
+	// 回退副本 —— 判据只是"进程跑到了这一行"。现在交给 PrepareStart：
+	//   有 .old、无标记 → 判定为"从 1.3.0 那样不写标记的旧版升上来"，补记标记；
+	//   有 .old、有标记 → 上一轮始终没走到界面可用，这次启动就问要不要回退。
 	// 详见 internal/update/pending.go。
-	update.CleanupStale()
+	//
+	// 注意它**不受 updateURL 是否为空影响**：关掉自动更新只是不再去检查更新，
+	// 不该让"上一轮更新没确认"这件事失去回退机会。
+	startDecision := update.PrepareStart()
+	if startDecision.OfferRollback {
+		reason := errors.New("上一个版本的程序始终没有把界面显示出来")
+		if offerUpdateRollback(reason) {
+			return
+		}
+	}
 	if err := logging.Init(filepath.Join(paths.DataDir(), "日志")); err != nil {
 		log.Printf("init log file failed: %v", err)
 	}
@@ -218,6 +228,10 @@ func main() {
 		// 用户已经在对话框里看过说明（或主动选了退出），这里安静退出，
 		// 让上面注册的 defer 正常收尾（关库、停内嵌服务）。
 		if errors.Is(err, errWebView2Unavailable) {
+			// 界面出不来本身就是"这一版在这台机器上不可用"。若还留着上一版，
+			// 就该告诉用户可以回去 —— 尤其从 1.3.0 升上来时，旧版（Fyne）
+			// 根本不需要 WebView2，回去立刻就能用。
+			offerUpdateRollback(errors.New("缺少 Microsoft Edge WebView2 运行时，界面无法显示"))
 			return
 		}
 		log.Printf("wails exited with error: %v", err)
@@ -377,6 +391,8 @@ func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker
 	apiSrv := api.New(apps,
 		api.WithVersion(version),
 		api.WithStartupToken(tok),
+		// 前端挂载成功后报到：更新后的回退判据靠它，见 notifyUIReady。
+		api.WithUIReadyHook(notifyUIReady),
 		// 软件更新：只桌面形态启用。更新会替换用户正在运行的 exe，
 		// 那是单机行为，不该在 cmd/server 上被触发。
 		api.WithUpdate(updateURL, version),
@@ -587,21 +603,26 @@ func runWails(app *options.App) error {
 	return err
 }
 
-// confirmUpdateHealthy 在窗口起来之后确认"新版本真的能跑"，然后才允许
-// 下一次启动清理回退副本。
+// uiReady 在前端第一次挂载成功时被关闭。
 //
-// 为什么等几秒而不是窗口一出现就确认：窗口出现只说明 WebView 建起来了，
-// 紧接着的初始化（首屏数据、定时器、库连接池）才更容易暴露"这个版本有问题"。
-// 等一小会儿的成本是几秒内多留一个 .old，收益是崩溃时不至于连回退副本都没了。
+// 它是"这一版能不能用"的唯一可信证据：窗口开着、进程活着都不算 —— 前端资源
+// 坏掉时正是那样运行，用户看到一片空白。所以确认更新必须等这个信号，
+// 收不到就一直不确认，标记与 .old 一直留着，下一次启动会问用户要不要回退。
+var uiReady = make(chan struct{})
+
+var uiReadyOnce sync.Once
+
+func notifyUIReady() { uiReadyOnce.Do(func() { close(uiReady) }) }
+
+// confirmUpdateHealthy 在**界面挂载成功**之后确认"新版本确实能用"。
 //
-// 只清标记（顺带清 .failed），不删 .old：真正的删除交给下一次启动
-// （那时缓存的是"上一轮已确认"）。
+// 原来的判据是"窗口起来 5 秒后还活着"，那把"前端资源坏了、界面一片空白"
+// 当成了健康：标记一清、.old 一删，从此再没有人会被问起回退。
 func confirmUpdateHealthy() {
 	go func() {
-		const settle = 5 * time.Second
-		time.Sleep(settle)
+		<-uiReady
 		update.ConfirmHealthy()
-		log.Printf("update: 启动确认完成（稳定 %s），回退副本将在下次启动时清理", settle)
+		log.Printf("update: 界面已挂载，确认本次更新，清除标记与回退副本")
 	}()
 }
 
@@ -610,7 +631,12 @@ func confirmUpdateHealthy() {
 // 只在**存在未确认标记**时才问：没有标记说明这次故障与更新无关（例如数据库根本没开），
 // 回退旧版本同样起不来，只会多折腾一次。
 //
-// 返回 true 表示用户选择回退且旧版本已被启动，调用方应当直接退出。
+// 返回 true 表示**回退已经落到磁盘上**，调用方必须直接退出。
+//
+// 注意判断依据是"回退成功"，不是"旧版本重启成功"：磁盘上已经是旧版本之后，
+// 继续跑着当前这个进程等于让用户接着用一版已经被判定为不可用的程序，而且它随后
+// 还会把这一版当成"界面正常"确认掉（ConfirmHealthy），把刚恢复的状态又搅乱。
+// 重启失败时用户已经拿到了手工恢复的说明，这时退出才是对的。
 func offerUpdateRollback(reason error) bool {
 	pending, err := update.ReadPending()
 	if err != nil {
@@ -639,8 +665,8 @@ func offerUpdateRollback(reason error) bool {
 	}
 	if err := update.RestartApp(); err != nil {
 		log.Printf("update: 回退后重启失败: %v", err)
-		winmsg.Error("回退后无法启动上一版本", err.Error()+"\n\n请手工运行安装目录下的 RFERP.exe。")
-		return false
+		winmsg.Error("回退后无法启动上一版本",
+			err.Error()+"\n\n已经回退完成，但无法自动重新启动。\n请手工运行安装目录下的 RFERP.exe。")
 	}
 	return true
 }

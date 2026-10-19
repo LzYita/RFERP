@@ -44,6 +44,19 @@ export default function App() {
   const [refreshToken, setRefreshToken] = useState(0)
   const { modules, reload } = usePermissions()
 
+  // 向后端报到「界面挂载好了」。
+  //
+  // 程序更新后能不能回退，判据就是这一条：窗口开着、进程活着都不算——
+  // 前端资源坏掉时正是那样运行，用户只看到一片空白。这个信号收不到，
+  // 后端就永远不确认这一版健康，回退副本也会一直留着，下次启动会问用户
+  // 要不要回退（见 internal/update/pending.go）。
+  //
+  // 失败不重试也不上报：报到只是健康证据，缺了它走的是"保守保留"那条路，
+  // 不会把用户的文件删掉。
+  useEffect(() => {
+    api.post('/api/startup/ui-ready').catch(() => undefined)
+  }, [])
+
   // 登录态成立后查一次更新（手动登录与「记住登录」自动恢复两条路都覆盖到）——
   // 时机与 Fyne 1.3.0 一致，都是登录之后。有新版时在这里弹窗。
   const { pending: pendingUpdate, dismiss: dismissUpdate } = useUpdateCheckOnLogin(me)

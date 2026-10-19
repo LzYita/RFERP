@@ -53,6 +53,10 @@ type Server struct {
 	// cmd/server 留空，走 Bearer + 网络边界。
 	startupToken string
 
+	// uiReady 在前端首次挂载成功时被调用一次，为 nil 表示没人关心。
+	// 更新后的回退判据靠它：界面显示不出来就不算这一版健康。
+	uiReady func()
+
 	// updater 承载软件更新。url 为空表示未配置更新源，此时不检查、不提示、
 	// 也不发任何网络请求（本地部署不需要联网）。
 	updater updateChecker
@@ -285,6 +289,10 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// 前端挂载成功后报到一次。更新后的回退判据是"界面能用"而不是"进程活着"，
+	// 而只有前端知道这件事 —— 资源坏掉时窗口照开、进程照活，用户只看到空白。
+	// 挂在启动凭据闸门内即可，不必登录：报到发生在首屏，那时还没有会话。
+	mux.HandleFunc("POST /api/startup/ui-ready", s.handleUIReady)
 	// 未登录可读的服务端自描述（D-016）：供"接入服务器"预检使用。
 	// 只暴露版本与数据库身份，不含任何业务数据。
 	mux.HandleFunc("GET /api/v1/serverinfo", s.handleServerInfo)

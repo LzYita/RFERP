@@ -58,6 +58,13 @@ Step 3 is the one that has broken before: the in-app changelog page and the
 guide header both ship inside the binary, so accumulating after the build leaves
 the release one version behind. Keep it before step 4.
 
+Another value has drifted before: `cmd/desktop-wails/wails.json` carries
+`info.productVersion`, and Wails writes it into the executable's **file version
+resource** (what Explorer's Properties → Details shows). It is independent of
+`main.version`, so a build can report the right version in the app and a stale one
+in the file properties - exactly what happened before 2.0.0 (the resource said
+1.3.0). Update it with the release version before step 4.
+
 A build must never run against a live configuration: `wails build` executes the
 application while generating bindings, and the application opens whatever
 database its configuration points at. The release tooling therefore builds with

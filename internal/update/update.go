@@ -413,19 +413,6 @@ func ApplyAndRestart(zipPath string) error {
 	return nil
 }
 
-// CleanupOld removes the leftover previous executable after a successful update.
-//
-// Deprecated: 它无条件删除 .old，而"更新是否成功"在新进程启动前无法判断，
-// 这正是先决项④的缺陷。新代码用 CleanupStale（有未确认标记时保留 .old）。
-// 保留此函数只因为 Fyne 旧版入口仍在使用。
-func CleanupOld() {
-	exe, err := os.Executable()
-	if err != nil {
-		return
-	}
-	os.Remove(exe + ".old")
-}
-
 // RestartApp launches a new instance of the current executable and returns.
 // The caller should os.Exit immediately afterwards so DB handles are released
 // before the new process opens the same files (used after SQLite restore).

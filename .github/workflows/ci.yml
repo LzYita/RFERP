@@ -154,7 +154,10 @@ jobs:
       - name: Build all packages
         shell: pwsh
         run: |
-          # Compile every package (cmd/desktop, cmd/server, keygen, signmanifest, internal/...)
+          # Compile every package (cmd/desktop-wails, cmd/server, keygen, signmanifest, internal/...)
+          # No GUI executable step: the shipped exe is produced by `wails build`, which
+          # needs Node and regenerates bindings (and would run the app), so it belongs to
+          # the release pipeline, not to this verify job.
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -170,14 +173,3 @@ jobs:
         run: |
           go test -race ./... -count=1 -shuffle=on -timeout 10m
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Build Windows GUI executable
-        shell: pwsh
-        run: |
-          $output = Join-Path $env:RUNNER_TEMP 'RFERP.exe'
-          go build -ldflags="-linkmode=internal -H windowsgui -X main.version=ci-${{ github.sha }}" -o $output ./cmd/desktop
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path $output)) {
-            throw "Build output was not created at $output"
-          }
-          Get-Item $output | Select-Object FullName, Length, LastWriteTime

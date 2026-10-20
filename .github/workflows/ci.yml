@@ -166,6 +166,14 @@ jobs:
           go build ./...
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Build Wails production and dev variants
+        shell: pwsh
+        run: |
+          go build -tags production ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -tags dev ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test
         shell: pwsh
         run: |

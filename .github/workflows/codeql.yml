@@ -64,6 +64,16 @@ jobs:
           CODEQL_BIN: ${{ steps.codeql.outputs.codeql-path }}
         run: bash .github/codeql/verify-path-models.sh
 
+      - name: Check Linux CGO server vulnerability reachability
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+          GOBIN: ${{ runner.temp }}/rferp-govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          go env GOOS GOARCH CGO_ENABLED
+          "$GOBIN/govulncheck" -show version ./cmd/server
+
       - name: Upload SARIF for triage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

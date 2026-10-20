@@ -257,6 +257,9 @@ func TestMaybeAutoBackupPrunesOnlyAutoDir(t *testing.T) {
 		}
 	}
 	before := len(autoFiles(t))
+	if before <= paths.AutoBackupKeep {
+		t.Fatalf("前置条件不成立：只造了 %d 份", before)
+	}
 
 	if _, err := svc.MaybeAutoBackup(base); err != nil {
 		t.Fatal(err)
@@ -265,9 +268,6 @@ func TestMaybeAutoBackupPrunesOnlyAutoDir(t *testing.T) {
 	after := len(autoFiles(t))
 	if after > paths.AutoBackupKeep {
 		t.Errorf("自动备份 %d 份，超过保留上限 %d", after, paths.AutoBackupKeep)
-	}
-	if before <= paths.AutoBackupKeep {
-		t.Skipf("前置条件不成立：只造了 %d 份", before)
 	}
 	if after >= before {
 		t.Errorf("应清掉旧的：%d -> %d", before, after)

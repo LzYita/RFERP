@@ -41,7 +41,7 @@ jobs:
           cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -68,6 +68,11 @@ jobs:
         run: |
           npm run test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Lint frontend
+        shell: pwsh
+        working-directory: web
+        run: npm run lint
 
       - name: Set up MSYS2 UCRT64 GCC
         id: msys2
@@ -154,7 +159,7 @@ jobs:
       - name: Build all packages
         shell: pwsh
         run: |
-          # Compile every package (cmd/desktop-wails, cmd/server, keygen, signmanifest, internal/...)
+          # Compile every package (cmd/desktop-wails, cmd/server, internal/...)
           # No GUI executable step: the shipped exe is produced by `wails build`, which
           # needs Node and regenerates bindings (and would run the app), so it belongs to
           # the release pipeline, not to this verify job.
@@ -164,7 +169,7 @@ jobs:
       - name: Test
         shell: pwsh
         run: |
-          # Integration tests skip without RFERP_TEST_DSN (local isolated MySQL); CI stays mock-only.
+          # MySQL integration tests skip without RFERP_TEST_DSN; isolated SQLite tests still run.
           go test ./... -count=1 -shuffle=on -timeout 5m
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

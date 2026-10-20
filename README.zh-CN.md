@@ -7,7 +7,7 @@
 
 面向小微生产的**进销存与批次追溯**桌面应用，覆盖产品、零件、BOM、生产批次、库存、操作记录与数据备份导出。
 
-使用 **Go + Fyne** 构建，数据存储于 **MySQL 8** 或本机 **SQLite** 文件，支持一键安装与自动更新。
+使用 **Wails v2**（Go 后端）与 **React + TypeScript** 前端构建，数据存储于 **MySQL 8** 或本机 **SQLite** 文件，支持一键安装与自动更新。
 
 ## 界面预览
 
@@ -123,8 +123,9 @@ cd cmd\desktop-wails && wails build -s
 
 | 层 | 技术 |
 |---|---|
-| 语言 | Go |
-| 桌面 UI | Fyne v2 |
+| 语言 | Go 1.26 |
+| 桌面外壳 | Wails v2.16（Microsoft Edge WebView2） |
+| 前端 | React 19、TypeScript 6、Vite 8 |
 | 数据库 | MySQL 8.0，或内嵌 SQLite（`modernc.org/sqlite`，纯 Go、无 CGO） |
 | 密码哈希 | PBKDF2-SHA256 |
 | 凭据保护 | Windows DPAPI |
@@ -149,14 +150,11 @@ internal/
   update/        自动更新、未确认标记与回退
   winappid/      Windows 任务栏 AppUserModelID
   nativefiledialog/  原生文件夹选择器
-  ui/            旧的 Fyne 界面（已不再使用，待移除）
   ...
 web/             React + TypeScript 前端，构建时嵌入
 docs/decisions/  决策记录（D-xxx）
 docs/plans/      迁移计划与进度
 docs/deployment.md  部署与运维说明
-docs/decisions/  决策记录（D-xxx）
-docs/plans/      迁移计划与进度
 ```
 
 ## 许可证

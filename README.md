@@ -7,7 +7,7 @@
 
 A desktop **inventory & batch-traceability** application for small manufacturing — covering products, parts, BOM, production batches, stock, operation logs and data backup/export.
 
-Built with **Go + Fyne**; data is stored in **MySQL 8** or in a local **SQLite** file; supports one-click install and auto-update.
+Built with **Wails v2** (Go backend) and a **React + TypeScript** frontend; data is stored in **MySQL 8** or in a local **SQLite** file; supports one-click install and auto-update.
 
 ## Preview
 
@@ -128,8 +128,9 @@ Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 
 | Layer | Technology |
 |---|---|
-| Language | Go |
-| Desktop UI | Fyne v2 |
+| Language | Go 1.26 |
+| Desktop shell | Wails v2.16 (Microsoft Edge WebView2) |
+| Frontend | React 19, TypeScript 6, Vite 8 |
 | Database | MySQL 8.0, or embedded SQLite (`modernc.org/sqlite`, pure Go, no CGO) |
 | Password hashing | PBKDF2-SHA256 |
 | Credential protection | Windows DPAPI |
@@ -154,7 +155,6 @@ internal/
   update/        auto-update, pending marker and rollback
   winappid/      Windows taskbar AppUserModelID
   nativefiledialog/  native folder picker
-  ui/            legacy Fyne UI (unused; pending removal)
   ...
 web/             React + TypeScript frontend, embedded at build time
 docs/decisions/  decision records (D-xxx)

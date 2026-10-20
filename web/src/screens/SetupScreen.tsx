@@ -18,7 +18,7 @@ import { EyeIcon } from '../components/form'
  * 免得两边规则漂移。
  */
 export function SetupScreen({
-  version = '1.3.0',
+  version = '',
   onDone,
 }: {
   version?: string

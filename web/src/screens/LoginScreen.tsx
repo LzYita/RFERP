@@ -40,7 +40,7 @@ export function LoginScreen({
 
   onLoggedIn,
 
-  version = '1.3.0',
+  version = '',
 
   notice = '',
 

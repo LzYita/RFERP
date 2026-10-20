@@ -17,8 +17,6 @@ import {
 import { useUpdateCheckOnLogin } from './lib/useUpdateCheck'
 import { UpdatePromptModal } from './screens/updatePromptModal'
 
-const VERSION = '1.3.0'
-
 /**
  * 启动态有三态而不是两态。
  *
@@ -43,6 +41,10 @@ export default function App() {
   // 每次 +1 就让当前屏重挂载，实现「刷新」
   const [refreshToken, setRefreshToken] = useState(0)
   const { modules, reload } = usePermissions()
+  // 版本号以后端为准（ldflags 注入的 main.version）。此前这里是写死的
+  // '1.3.0'，发 2.0.0 时登录页与右上角仍显示旧版本。
+  const [version, setVersion] = useState('')
+  const [versionReady, setVersionReady] = useState(false)
 
   // 向后端报到「界面挂载好了」。
   //
@@ -54,6 +56,14 @@ export default function App() {
   // **要重试**：只发一次的话，一次瞬时失败（代理抖动、后端刚好在关）就会被
   // 当成"界面没起来"，让一个完全正常的新版本在下次启动时被问要不要回退。
   // 三次足够，间隔拉长；仍然失败就走"保守保留"那条路，不会删用户的文件。
+  useEffect(() => {
+    api
+      .get<{ appVersion: string }>('/api/v1/serverinfo')
+      .then((info) => setVersion(info.appVersion))
+      .catch(() => undefined)
+      .finally(() => setVersionReady(true))
+  }, [])
+
   useEffect(() => {
     let alive = true
     const report = (attempt: number) => {
@@ -163,17 +173,17 @@ export default function App() {
     setSessionNotice('登录状态已失效，请重新登录')
   }, [])
 
-  if (!ready) {
+    if (!ready || !versionReady) {
     return <div className="grid h-full place-items-center text-[13px] text-[var(--color-fg-muted)]">正在加载…</div>
   }
 
   // 向导优先于登录：还没有账号时，登录页是没有意义的。
   if (needsSetup && !me) {
-    return <SetupScreen version={VERSION} onDone={onSetupDone} />
+    return <SetupScreen version={version} onDone={onSetupDone} />
   }
 
   if (screen.kind !== 'shell' || !me) {
-    return <LoginScreen onLoggedIn={onLoggedIn} version={VERSION} notice={sessionNotice} />
+    return <LoginScreen onLoggedIn={onLoggedIn} version={version} notice={sessionNotice} />
   }
 
   const activeKey = screen.key
@@ -202,7 +212,7 @@ export default function App() {
         me={me}
         modules={modules}
         active={activeKey}
-        version={VERSION}
+        version={version}
         onNavigate={(key) => setScreen({ kind: 'shell', key })}
         onLogout={onLogout}
         onRefresh={() => setRefreshToken((n) => n + 1)}

@@ -155,8 +155,6 @@ web/             React + TypeScript 前端，构建时嵌入
 docs/decisions/  决策记录（D-xxx）
 docs/plans/      迁移计划与进度
 docs/deployment.md  部署与运维说明
-docs/decisions/  决策记录（D-xxx）
-docs/plans/      迁移计划与进度
 ```
 
 ## 许可证

@@ -131,26 +131,37 @@ func TestLoginClosedLoop(t *testing.T) {
 func TestPermissionsEndpointReflectsAuthMatrix(t *testing.T) {
 	base := startWithDB(t)
 
-	_, _ = doJSON(t, "POST", base+"/api/bootstrap-admin", "",
-		map[string]string{"username": "admin", "password": "admin12345"})
-	_, body := doJSON(t, "POST", base+"/api/login", "",
+	if code, body := doJSON(t, "POST", base+"/api/bootstrap-admin", "",
+		map[string]string{"username": "admin", "password": "admin12345"}); code != http.StatusOK {
+		t.Fatalf("bootstrap-admin = %d, body=%v", code, body)
+	}
+	code, body := doJSON(t, "POST", base+"/api/login", "",
 		map[string]string{"username": "admin", "password": "admin12345"})
 	adminTok, _ := body["token"].(string)
+	if code != http.StatusOK || adminTok == "" {
+		t.Fatalf("管理员登录 = %d, token missing=%t", code, adminTok == "")
+	}
 
 	// 建一个只读用户并登录。
 	if code, _ := doJSON(t, "POST", base+"/api/users", adminTok,
 		map[string]any{"username": "viewer1", "password": "viewer12345", "role": "viewer"}); code != http.StatusOK {
-		t.Skipf("建只读用户失败，跳过（code=%d）", code)
+		t.Fatalf("建只读用户失败（code=%d）", code)
 	}
-	_, vbody := doJSON(t, "POST", base+"/api/login", "",
+	code, vbody := doJSON(t, "POST", base+"/api/login", "",
 		map[string]string{"username": "viewer1", "password": "viewer12345"})
 	viewerTok, _ := vbody["token"].(string)
-	if viewerTok == "" {
-		t.Skip("只读用户登录失败，跳过")
+	if code != http.StatusOK || viewerTok == "" {
+		t.Fatalf("只读用户登录 = %d, token missing=%t", code, viewerTok == "")
 	}
 
-	_, adm := doJSON(t, "GET", base+"/api/me/permissions", adminTok, nil)
-	_, vw := doJSON(t, "GET", base+"/api/me/permissions", viewerTok, nil)
+	code, adm := doJSON(t, "GET", base+"/api/me/permissions", adminTok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("管理员权限端点 = %d", code)
+	}
+	code, vw := doJSON(t, "GET", base+"/api/me/permissions", viewerTok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("只读用户权限端点 = %d", code)
+	}
 	am, _ := adm["modules"].(map[string]any)
 	vm, _ := vw["modules"].(map[string]any)
 

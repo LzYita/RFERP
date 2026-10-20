@@ -1,13 +1,16 @@
 package main
 
 import (
-	"io"
+	"io/fs"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"app/internal/api"
+	"app/internal/webassets"
 )
 
 // 用一份假的构建产物验证「页面由内嵌服务同源提供」这条链路。
@@ -47,26 +50,26 @@ func TestStaticAssetsServedFromEmbeddedFS(t *testing.T) {
 	}
 }
 
-// 前端未构建时（只有 .gitkeep），必须给出可执行的指引。
+// 本地未构建前端时可跳过；CI 必须验证真实构建产物。
 //
 // 这条同时守住 build:embed 的正确性：如果某次构建把产物写错了地方，
 // 这里会立刻暴露，而不是发布一个「能打开但是空白页」的 exe。
 func TestRealBuildOutputIsEmbedded(t *testing.T) {
+	if _, err := fs.Stat(webassets.FS(), webassets.Dir+"/index.html"); err != nil {
+		if os.IsNotExist(err) && os.Getenv("CI") == "" {
+			t.Skip("前端尚未构建；执行 cd web && npm run build:embed 后重跑本用例")
+		}
+		t.Fatalf("内嵌 index.html 不可用（CI 必须先运行 npm run build:embed）: %v", err)
+	}
 	_, _, proxy := startEmbedded(t)
 
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 
-	body, _ := io.ReadAll(w.Result().Body)
-	html := string(body)
-
-	// 未构建时 serveStatic 回的是 JSON 错误而不是页面。按内容判断而不是
-	// 匹配提示文案：文案一改，这个跳过分支就会失效并把「没构建」误报成
-	// 「构建产物不对」。
-	if strings.HasPrefix(strings.TrimSpace(html), "{") {
-		t.Skip("前端尚未构建（internal/webassets/dist 里只有 .gitkeep）；" +
-			"执行 cd web && npm run build:embed 后重跑本用例")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, body=%s", w.Code, w.Body.String())
 	}
+	html := w.Body.String()
 	if !strings.Contains(html, `id="root"`) {
 		t.Fatalf("内嵌的 index.html 不是前端构建产物:\n%s", html)
 	}

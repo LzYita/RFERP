@@ -20,7 +20,7 @@ func (a *userMutationApps) UpdateUser(in usecase.UpdateUserInput) error { return
 func (a *userMutationApps) DeleteUser(id int64) error                   { return a.err }
 
 func TestUserMutationRevokesCredentials(t *testing.T) {
-	for _, mutation := range []string{"disable", "delete", "role", "edit"} {
+	for _, mutation := range []string{"disable", "disable-zero", "delete", "role", "edit"} {
 		for _, failed := range []bool{false, true} {
 			name := mutation + "/success"
 			if failed {
@@ -46,6 +46,9 @@ func TestUserMutationRevokesCredentials(t *testing.T) {
 				body := map[string]any{"id": u.ID, "role": u.Role, "status": 1, "displayName": "updated"}
 				if mutation == "disable" {
 					body["status"] = 2
+				}
+				if mutation == "disable-zero" {
+					body["status"] = 0
 				}
 				if mutation == "role" {
 					body["role"] = "warehouse"

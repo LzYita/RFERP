@@ -69,7 +69,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if in.Status == 2 || (prevRole != "" && prevRole != in.Role) {
+	if in.Status != 1 || (prevRole != "" && prevRole != in.Role) {
 		if n := s.RevokeUserSessions(in.ID); n > 0 {
 			log.Printf("access changed for user %d (%s -> %s): 强制下线 %d 个会话",
 				in.ID, prevRole, in.Role, n)

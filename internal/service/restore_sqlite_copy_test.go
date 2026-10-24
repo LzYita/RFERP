@@ -40,6 +40,9 @@ func TestRestoreSQLiteSafetyCopyIsAUsableSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if res.Statements != 0 {
+		t.Fatalf("file replacement reported %d INSERTs", res.Statements)
+	}
 	if !strings.HasPrefix(filepath.Base(res.PreRestore), "pre_restore_") || filepath.Ext(res.PreRestore) != ".db" {
 		t.Fatalf("safety copy is not selectable: %s", res.PreRestore)
 	}

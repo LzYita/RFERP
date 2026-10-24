@@ -41,6 +41,7 @@ import {
 import { Btn, Field, Panel, ScreenError, classifyLoadError } from '../components/ui'
 import { ConfirmDialog, Modal } from '../components/form'
 import { OutcomeDialog, type OutcomeView } from './backupOutcome'
+import { RestoreRestart } from './restoreRestart'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -95,6 +96,7 @@ export function BackupScreen() {
   const [dropText, setDropText] = useState('')
   const [outcome, setOutcome] = useState<OutcomeView | null>(null)
   const [restored, setRestored] = useState<RestoreResult | null>(null)
+  const [restartUncertain, setRestartUncertain] = useState(false)
   const [cleared, setCleared] = useState<ClearResult | null>(null)
 
   // 导出
@@ -299,8 +301,13 @@ export function BackupScreen() {
       const res = await backupApi.restore(pickedFile.name)
       setRestored(res)
       setTokenInput(null)
-      await reload()
+      if (!res.requiresRestart) await reload()
     } catch (e) {
+      if (e instanceof ApiError && e.status === 503) {
+        setRestored({ statements: 0, requiresRestart: true })
+        setRestartUncertain(true)
+        return
+      }
       // 副本文件名只有成功路径才有；失败时从服务端文案之外拿不到，
       // 所以这里不传 safetyCopy，让用户到备份列表里看时间最近的 pre_restore_*。
       onDestructiveError('整库恢复', e)
@@ -822,7 +829,7 @@ export function BackupScreen() {
       ) : null}
 
       {/* 成功结果 */}
-      {restored ? (
+      {restored?.requiresRestart ? <RestoreRestart uncertain={restartUncertain} /> : restored ? (
         <Modal title="恢复完成" onClose={() => setRestored(null)} width={520}>
           <p className="text-[12.5px]">{restoreSummary(restored)}</p>
           {restored.tableCounts && Object.keys(restored.tableCounts).length > 0 ? (

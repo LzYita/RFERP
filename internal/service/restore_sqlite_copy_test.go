@@ -40,6 +40,9 @@ func TestRestoreSQLiteSafetyCopyIsAUsableSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !res.RequiresRestart {
+		t.Fatal("SQLite restore must require a fresh process")
+	}
 	if res.Statements != 0 {
 		t.Fatalf("file replacement reported %d INSERTs", res.Statements)
 	}

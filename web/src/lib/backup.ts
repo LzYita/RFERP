@@ -120,6 +120,7 @@ export interface DataDirInfo {
 }
 
 export interface RestoreResult {
+  requiresRestart?: boolean
   format?: 'sqlite' | 'mysql'
   statements: number
   tableCounts?: Record<string, number>

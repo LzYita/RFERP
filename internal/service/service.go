@@ -1093,12 +1093,19 @@ func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 }
 
 func (s *Service) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
-	return nil, fmt.Errorf("not implemented yet")
+	batchNo = strings.TrimSpace(batchNo)
+	if batchNo == "" {
+		return nil, fmt.Errorf("请输入产品批次号")
+	}
+	return s.repo.TraceByProduct(batchNo)
 }
 
 func (s *Service) TraceByPart(partCode string) ([]model.BatchTrace, error) {
-	// 查某零件被哪些批次使用过 — "反向追溯"
-	return nil, fmt.Errorf("not implemented yet")
+	partCode = strings.TrimSpace(partCode)
+	if partCode == "" {
+		return nil, fmt.Errorf("请输入零件编码")
+	}
+	return s.repo.TraceByPart(partCode)
 }
 
 // ---- 审计 ----

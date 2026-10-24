@@ -195,9 +195,9 @@ export function UsersScreen({ meId }: { meId: number }) {
     try {
       await users.update({
         id: roleChange.id,
-        displayName: roleChange.display_name ?? '',
+        displayName: draft.displayName.trim(),
         role: draft.role,
-        status: roleChange.status,
+        status: draft.status,
       })
       setRoleChange(null)
       setFormOpen(false)

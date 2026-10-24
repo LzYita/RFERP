@@ -12,6 +12,7 @@
 import { ApiError, api, saveBlob, type OperationState } from './api'
 
 export interface BackupFile {
+  format?: 'sqlite' | 'mysql'
   name: string
   size: number
   modified: string
@@ -120,10 +121,29 @@ export interface DataDirInfo {
 
 export interface RestoreResult {
   requiresRestart?: boolean
+  format?: 'sqlite' | 'mysql'
   statements: number
   tableCounts?: Record<string, number>
   /** 操作前副本的**文件名**（不是路径） */
   preRestore?: string
+}
+
+export function restoreConsequences(format?: 'sqlite' | 'mysql'): string[] {
+  if (format === 'sqlite') return [
+    '整个 SQLite 数据库文件会被替换；账号、表结构、迁移记录和数据库身份均随快照回退',
+    '这不是事务回灌；恢复后必须退出并重新打开程序，使用快照中的账号登录',
+  ]
+  if (format === 'mysql') return [
+    '账号、迁移记录与数据库身份不会被覆盖，账号保持现状',
+    '回灌在单个事务内完成；如提交结果不明或提交后核验失败，须先核对数据再重试',
+  ]
+  return ['备份类型尚未确认：SQLite 会回退整个文件（含账号与身份），并需重开程序；MySQL 仅回灌业务表、保留账号与身份。请先核对备份类型。']
+}
+
+export function restoreSummary(result: RestoreResult): string {
+  return result.format === 'sqlite'
+    ? 'SQLite 整库快照已替换；请退出并重新打开程序。'
+    : `整库恢复完成，共执行 ${result.statements} 条 INSERT。`
 }
 
 export interface ClearResult {

@@ -878,6 +878,58 @@ async function settingsGate(page) {
 
 // ---------------------------------------------------------------- 主流程
 
+/**
+ * 统计屏排名：长名字必须被裁剪在名称列里，完整名字留在 title 上。
+ *
+ * 页级 overflow 检查抓不到这个缺陷：页面没有横向溢出，是 `white-space: nowrap` +
+ * `table-layout: fixed` 让文字直接画到隔壁的条形图与数量列上。所以这里对**每一个
+ * 实际溢出单元格**断言它确实被裁剪（overflow 非 visible + ellipsis），并在 960 / 1440
+ * 两个宽度各验一次——只断言"页级不溢出"是假绿。
+ */
+async function statsRankGate(page, longName) {
+  await page.click('text=统计分析')
+  await sleep(1000)
+
+  for (const width of [960, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    await sleep(400)
+    const tables = page.locator('table.data-table.is-compact')
+    const overflowed = []
+    const problems = []
+    const tableCount = await tables.count()
+    for (let t = 0; t < tableCount; t++) {
+      const rows = tables.nth(t).locator('tbody tr')
+      const rowCount = await rows.count()
+      for (let i = 0; i < rowCount; i++) {
+        const name = rows.nth(i).locator('td').nth(1)
+        if (!(await name.count())) continue
+        const text = (await name.innerText()).trim()
+        const m = await name.evaluate((el) => {
+          const cs = getComputedStyle(el)
+          return {
+            scrollWidth: el.scrollWidth,
+            clientWidth: el.clientWidth,
+            overflowX: cs.overflowX,
+            textOverflow: cs.textOverflow,
+            title: el.getAttribute('title') ?? '',
+          }
+        })
+        const overflows = m.scrollWidth > m.clientWidth + 1
+        if (!overflows) continue
+        overflowed.push(text)
+        if (m.overflowX === 'visible' || m.textOverflow !== 'ellipsis') {
+          problems.push(`${text.slice(0, 10)}… 溢出未被裁剪（overflow-x=${m.overflowX}, text-overflow=${m.textOverflow}）`)
+        }
+        if (m.title !== text) problems.push(`${text.slice(0, 10)}… 没有 title 保留完整名字`)
+      }
+    }
+    const seen = overflowed.some((s) => s.startsWith(longName.slice(0, 8)))
+    check(`长名字真的进了排名（${width}px）`, seen,
+      `没有溢出单元格里出现长名字，本断言会空转；溢出过的名字：${overflowed.slice(0, 3).join('、') || '无'}`)
+    check(`排名长名字被裁剪且保留全名（${width}px）`, problems.length === 0, problems.slice(0, 3).join('；'))
+  }
+}
+
 let browser
 try {
   sweepStaleRuns()
@@ -898,7 +950,20 @@ try {
   await seedPart(auth, 'P-0001', '测试零件', '电子', { spec: '10x10' })
   await seedPart(auth, 'P-8001', '五金验证件', '五金', { spec: 'M3' })
   await seedPart(auth, 'P-8002', '塑料验证件', '塑料', { spec: 'ABS' })
-  ok('装配管理员与零件（电子/五金/塑料）')
+  // 统计排名的长名字回归要用的数据。必须在这里造：浏览器一登录，脚本侧 token 就作废了。
+  const LONG_PART = '超长零件名称回归验证件（含密封圈与铜套总成）ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  await seedPart(auth, 'P-LONG', LONG_PART, '电子', { stock_qty: 0 })
+  const seededParts = await api('/api/parts', { headers: auth })
+  const seededRows = Array.isArray(seededParts.body) ? seededParts.body : seededParts.body?.items
+  const longPart = Array.isArray(seededRows) ? seededRows.find((p) => p.code === 'P-LONG') : undefined
+  if (!longPart) throw new Error(`长名字零件没有回读成功：${seededParts.text.slice(0, 120)}`)
+  const stockIn = await api('/api/parts/stock-in', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ part_id: longPart.id, qty: 9999 }),
+  })
+  if (stockIn.code !== 200) throw new Error(`长名字零件入库失败 ${stockIn.code} ${stockIn.text.slice(0, 120)}`)
+  ok('装配管理员与零件（电子/五金/塑料/长名字）')
 
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
@@ -947,11 +1012,14 @@ try {
   // 备份屏：四道门与能力门控（不执行破坏性操作）
   await backupGate(page)
 
-  // 设置屏：三页签、版本取自服务端、离线帮助内容
-  await settingsGate(page)
+    // 设置屏：三页签、版本取自服务端、离线帮助内容
+    await settingsGate(page)
 
-  // 接口回读放最后：重新登录会作废浏览器会话
-  await verifyPersisted()
+    // 统计屏：排名长名字必须被裁剪（页级 overflow 检查抓不到）
+    await statsRankGate(page, LONG_PART)
+
+    // 接口回读放最后：重新登录会作废浏览器会话
+    await verifyPersisted()
 } catch (e) {
   bad('流程中断', e.message.split('\n')[0])
   if (browser) {

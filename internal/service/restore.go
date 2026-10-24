@@ -83,7 +83,6 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 			// is intact without inspecting the on-disk state.
 			return res, &usecase.OperationError{State: usecase.OperationUnknown, Err: rerr}
 		}
-		res.Statements = 1
 		return res, nil
 	}
 	if sqliteBackend {

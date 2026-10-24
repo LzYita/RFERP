@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"app/internal/backuplayout"
+	"app/internal/dbfile"
 	"app/internal/paths"
 	"app/internal/usecase"
 )
@@ -32,6 +33,7 @@ import (
 // 后三个字段是「预检结论」，可缺失：宿主没实现 usecase.BackupInspector 时整段省略，
 // 前端据此显示「无法确认」而不是假装覆盖度没问题。
 type backupEntry struct {
+	Format   string `json:"format,omitempty"`
 	Name     string `json:"name"`
 	Size     int64  `json:"size"`
 	Modified string `json:"modified"`
@@ -74,6 +76,12 @@ func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
 			Modified: e.ModTime.Format("2006-01-02 15:04:05"),
 			Category: string(e.Category),
 			Legacy:   e.Legacy,
+		}
+		if target, err := backuplayout.Resolve(e.Name); err == nil {
+			entry.Format = "mysql"
+			if dbfile.IsSQLiteSnapshot(target) {
+				entry.Format = "sqlite"
+			}
 		}
 		// 预检是增强：宿主没实现这个端口就跳过，界面按「无法确认」处理。
 		if insp, ok := s.apps.(usecase.BackupInspector); ok {
@@ -171,6 +179,7 @@ func (s *Server) handleRestoreDatabase(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"requiresRestart": res.RequiresRestart,
+		"format":          map[bool]string{true: "sqlite", false: "mysql"}[dbfile.IsSQLiteSnapshot(target)],
 		"statements":      res.Statements,
 		"tableCounts":     res.TableCounts,
 		// 只给文件名：用户要退回时从备份列表里选它。

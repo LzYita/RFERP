@@ -29,6 +29,8 @@ import {
   groupByCategory,
   isDirPickUnavailable,
   restoreTokenFor,
+  restoreConsequences,
+  restoreSummary,
   tablesLostOnRestore,
   type AutoBackupSchedule,
   type BackupFile,
@@ -778,11 +780,7 @@ export function BackupScreen() {
               <ol className="mt-1 list-decimal pl-4">
                 <li>当前业务数据会被完全覆盖（不是追加导入）</li>
                 <li>操作前会自动生成一份完整副本，可用整库恢复退回</li>
-                <li>SQLite 快照恢复后必须退出并重新打开程序，当前会话不能继续操作</li>
-                <li>账号、迁移记录与数据库身份不会被覆盖，账号保持现状</li>
-                <li>
-                  回灌在单个事务内完成；如提交结果不明或提交后核验失败，须先核对数据再重试
-                </li>
+                {restoreConsequences(pickedFile?.format).map((text) => <li key={text}>{text}</li>)}
               </ol>
               {/* 覆盖度预检：把「这张表的数据回不来」摆进后果清单里。
                   不硬拦——回滚到某个历史时刻是正当需求，替用户决定不合适；
@@ -833,7 +831,7 @@ export function BackupScreen() {
       {/* 成功结果 */}
       {restored?.requiresRestart ? <RestoreRestart uncertain={restartUncertain} /> : restored ? (
         <Modal title="恢复完成" onClose={() => setRestored(null)} width={520}>
-          <p className="text-[12.5px]">整库恢复完成，共执行 {restored.statements} 条 INSERT。</p>
+          <p className="text-[12.5px]">{restoreSummary(restored)}</p>
           {restored.tableCounts && Object.keys(restored.tableCounts).length > 0 ? (
             <pre className="mt-2 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] p-2 text-[11px]">
               {Object.keys(restored.tableCounts)

@@ -227,7 +227,7 @@ function RankPanel({ title, rows, unit }: { title: string; rows: [string, number
               {rows.map(([name, v], i) => (
                 <tr key={name + i}>
                   <td className="mid" style={{ width: 28, color: 'var(--color-fg-subtle)' }}>{i + 1}</td>
-                  <td>{name}</td>
+                  <td className="truncate" title={name}>{name}</td>
                   <td style={{ width: '38%' }}>
                     <span
                       className="block h-[7px] rounded-full bg-[var(--color-primary)]"

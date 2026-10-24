@@ -119,6 +119,7 @@ export interface DataDirInfo {
 }
 
 export interface RestoreResult {
+  requiresRestart?: boolean
   statements: number
   tableCounts?: Record<string, number>
   /** 操作前副本的**文件名**（不是路径） */

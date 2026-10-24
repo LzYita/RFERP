@@ -40,6 +40,9 @@ func TestRestoreSQLiteSafetyCopyIsAUsableSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !res.RequiresRestart {
+		t.Fatal("SQLite restore must require a fresh process")
+	}
 	if !strings.HasPrefix(filepath.Base(res.PreRestore), "pre_restore_") || filepath.Ext(res.PreRestore) != ".db" {
 		t.Fatalf("safety copy is not selectable: %s", res.PreRestore)
 	}

@@ -173,9 +173,7 @@ func TestRestoreSQLiteCreatesSelectableSafetyCopyBeforeReplacingFile(t *testing.
 	port := &fakeSnapshotPort{kind: "sqlite"}
 	svc := NewWithSnapshot(nil, port, nil)
 	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
-	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	seedRestoreSQLite(t, path)
 
 	res, err := svc.RestoreDatabase(path)
 	if err != nil {
@@ -197,9 +195,7 @@ func TestRestoreSQLiteStopsBeforeReplacingFileWhenSafetyCopyFails(t *testing.T) 
 	port := &fakeSnapshotPort{kind: "sqlite", destructive: true}
 	svc := NewWithSnapshot(nil, port, nil)
 	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
-	if err := os.WriteFile(path, []byte("SQLite format 3\x00"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	seedRestoreSQLite(t, path)
 
 	if _, err := svc.RestoreDatabase(path); err == nil {
 		t.Fatal("SQLite restore proceeded without a safety copy")

@@ -118,7 +118,7 @@ export const parts = {
 }
 
 export const bom = {
-  list: (product_id: number) => api.get<BOMItem[]>(`/api/bom?product_id=${product_id}`),
+  list: async (product_id: number) => (await api.get<BOMItem[] | null>(`/api/bom?product_id=${product_id}`)) ?? [],
   add: (b: {
     product_id: number
     part_id: number

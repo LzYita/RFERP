@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"app/internal/auth"
 	"app/internal/model"
@@ -20,7 +22,8 @@ import (
 
 // Server 暴露同一套用例的 HTTP 面（C1–C3）。
 type Server struct {
-	apps usecase.Applications
+	restoreRequiresRestart atomic.Bool
+	apps                   usecase.Applications
 
 	// desc 供 /api/v1/serverinfo 使用。默认与 apps 相同，单独成字段是为了让该
 	// 端点只依赖 ServerDescriptor —— 便于测试替换，也明确它不碰业务数据。
@@ -407,6 +410,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/backup/autoschedule", s.auth(s.handleGetAutoBackup, "Backup.DataDir"))
 	mux.HandleFunc("POST /api/datadir", s.auth(s.handleSetDataDir, "Backup.SetDataDir"))
 	mux.HandleFunc("POST /api/restore", s.auth(s.handleRestoreDatabase, "Backup.RestoreDatabase"))
+	mux.HandleFunc("POST /api/restore/exit", s.auth(s.handleExitAfterRestore, "Backup.RestoreDatabase"))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClearDatabase, "Backup.ClearDatabase"))
 
 	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
@@ -414,7 +418,13 @@ func (s *Server) Handler() http.Handler {
 	if s.staticFS != nil {
 		mux.Handle("/", serveStatic(s.staticFS, s.staticDir))
 	}
-	return s.withStartupGate(mux)
+	return s.withStartupGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.restoreRequiresRestart.Load() && strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/restore/exit" {
+			writeErr(w, http.StatusServiceUnavailable, "SQLite 恢复后必须退出并重新打开程序；请关闭当前窗口后重新启动")
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 }
 
 type apiUser struct {

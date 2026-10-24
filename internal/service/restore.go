@@ -64,6 +64,9 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 		if !sqliteBackend {
 			return res, fmt.Errorf("当前使用 MySQL 存储，无法应用 SQLite 整库快照（.db）；请导入 .sql 备份")
 		}
+		if err := repository.VerifySQLiteFile(filePath); err != nil {
+			return res, err
+		}
 		// D-014: full snapshot rollback via file replace (no merge). Keep a
 		// selectable backup in the backup directory before closing DB handles.
 		pre, err := s.safetyCopy(prefixPreRestore)
@@ -73,13 +76,13 @@ func (s *Service) RestoreDatabase(filePath string) (RestoreResult, error) {
 		res.PreRestore = pre
 		// Restore also keeps its own sidecar file for low-level replacement
 		// recovery; the backup-directory copy is the UI's rollback path.
+		res.RequiresRestart = true
 		_, rerr := s.snapshots.Restore(filePath)
 		if rerr != nil {
 			// File replacement may have started; never promise the old database
 			// is intact without inspecting the on-disk state.
 			return res, &usecase.OperationError{State: usecase.OperationUnknown, Err: rerr}
 		}
-		res.Statements = 1
 		return res, nil
 	}
 	if sqliteBackend {

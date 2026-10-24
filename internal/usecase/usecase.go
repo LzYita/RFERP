@@ -110,6 +110,7 @@ type Backup interface {
 
 // RestoreResult 一次整库恢复的结果（#26）。
 type RestoreResult struct {
+	RequiresRestart bool `json:"requiresRestart,omitempty"`
 	// Statements 实际执行的 INSERT 语句数。
 	Statements int `json:"statements"`
 	// PreRestore 恢复前自动生成的完整副本路径，可用于回退。

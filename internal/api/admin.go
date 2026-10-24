@@ -69,9 +69,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if prevRole != "" && prevRole != in.Role {
+	if in.Status == 2 || (prevRole != "" && prevRole != in.Role) {
 		if n := s.RevokeUserSessions(in.ID); n > 0 {
-			log.Printf("role changed for user %d (%s -> %s): 强制下线 %d 个会话",
+			log.Printf("access changed for user %d (%s -> %s): 强制下线 %d 个会话",
 				in.ID, prevRole, in.Role, n)
 		}
 		// 凭证里存的是角色快照，不踢就会按旧角色继续放行。
@@ -134,6 +134,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.RevokeUserSessions(id)
+	s.revokeRememberForUser(id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

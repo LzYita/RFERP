@@ -29,6 +29,8 @@ import {
   groupByCategory,
   isDirPickUnavailable,
   restoreTokenFor,
+  restoreConsequences,
+  restoreSummary,
   tablesLostOnRestore,
   type AutoBackupSchedule,
   type BackupFile,
@@ -39,6 +41,7 @@ import {
 import { Btn, Field, Panel, ScreenError, classifyLoadError } from '../components/ui'
 import { ConfirmDialog, Modal } from '../components/form'
 import { OutcomeDialog, type OutcomeView } from './backupOutcome'
+import { RestoreRestart } from './restoreRestart'
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -93,6 +96,7 @@ export function BackupScreen() {
   const [dropText, setDropText] = useState('')
   const [outcome, setOutcome] = useState<OutcomeView | null>(null)
   const [restored, setRestored] = useState<RestoreResult | null>(null)
+  const [restartUncertain, setRestartUncertain] = useState(false)
   const [cleared, setCleared] = useState<ClearResult | null>(null)
 
   // 导出
@@ -297,8 +301,13 @@ export function BackupScreen() {
       const res = await backupApi.restore(pickedFile.name)
       setRestored(res)
       setTokenInput(null)
-      await reload()
+      if (!res.requiresRestart) await reload()
     } catch (e) {
+      if (e instanceof ApiError && e.status === 503) {
+        setRestored({ statements: 0, requiresRestart: true })
+        setRestartUncertain(true)
+        return
+      }
       // 副本文件名只有成功路径才有；失败时从服务端文案之外拿不到，
       // 所以这里不传 safetyCopy，让用户到备份列表里看时间最近的 pre_restore_*。
       onDestructiveError('整库恢复', e)
@@ -771,10 +780,7 @@ export function BackupScreen() {
               <ol className="mt-1 list-decimal pl-4">
                 <li>当前业务数据会被完全覆盖（不是追加导入）</li>
                 <li>操作前会自动生成一份完整副本，可用整库恢复退回</li>
-                <li>账号、迁移记录与数据库身份不会被覆盖，账号保持现状</li>
-                <li>
-                  回灌在单个事务内完成；如提交结果不明或提交后核验失败，须先核对数据再重试
-                </li>
+                {restoreConsequences(pickedFile?.format).map((text) => <li key={text}>{text}</li>)}
               </ol>
               {/* 覆盖度预检：把「这张表的数据回不来」摆进后果清单里。
                   不硬拦——回滚到某个历史时刻是正当需求，替用户决定不合适；
@@ -823,9 +829,9 @@ export function BackupScreen() {
       ) : null}
 
       {/* 成功结果 */}
-      {restored ? (
+      {restored?.requiresRestart ? <RestoreRestart uncertain={restartUncertain} /> : restored ? (
         <Modal title="恢复完成" onClose={() => setRestored(null)} width={520}>
-          <p className="text-[12.5px]">整库恢复完成，共执行 {restored.statements} 条 INSERT。</p>
+          <p className="text-[12.5px]">{restoreSummary(restored)}</p>
           {restored.tableCounts && Object.keys(restored.tableCounts).length > 0 ? (
             <pre className="mt-2 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] p-2 text-[11px]">
               {Object.keys(restored.tableCounts)

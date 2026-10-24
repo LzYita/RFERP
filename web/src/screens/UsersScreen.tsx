@@ -30,11 +30,7 @@ import { ROLES, passwordTooShort, roleLabel, users, type User } from '../lib/use
  *    全部会话与「记住登录」凭证（admin.go:67-74）。这是对的语义，但界面上
  *    不说，用户会以为改坏了别人的账号。
  *
- * **一处不打算修的**（记录在此，避免以后当成 bug 重新发现）：停用或删除一个
- * **正在使用**的用户时，后端**不**撤销其会话（admin.go:67 只在角色变化时撤销，
- * delete 处理器压根没调 RevokeUserSessions）。被停用的人要等到 4 小时空闲超时
- * 才会真正踢出。修它要动 `handleDeleteUser` 与 status 分支，属于后端改动，
- * 不是本轮范围。
+ * 停用或删除后的会话与记住登录撤销由后端处理，不依赖页面主动登出。
  */
 
 type Draft = {

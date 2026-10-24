@@ -71,6 +71,8 @@ type Store interface {
 	GetAllSkippedParts() ([]SkipPartRow, error)
 	CreateTrace(t *model.BatchTrace) (int64, error)
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
+	TraceByProduct(batchNo string) ([]model.BatchTrace, error)
+	TraceByPart(partCode string) ([]model.BatchTrace, error)
 
 	ListStockLogsByDate(start, end time.Time, actions []string) ([]model.AuditLog, error)
 	ListAuditLogsByDate(start, end time.Time) ([]model.AuditLog, error)

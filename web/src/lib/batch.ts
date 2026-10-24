@@ -243,6 +243,10 @@ export const batches = {
 }
 
 export const traces = {
+  byProduct: async (batchNo: string): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(`/api/traces/by-product?batch_no=${encodeURIComponent(batchNo)}`)) ?? [],
+  byPart: async (partCode: string): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(`/api/traces/by-part?part_code=${encodeURIComponent(partCode)}`)) ?? [],
   byBatch: async (batchId: number): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
 

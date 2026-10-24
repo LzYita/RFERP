@@ -3,6 +3,7 @@ import { Badge, Btn, ScreenError, classifyLoadError, shortTime } from '../compon
 import { ConfirmDialog } from '../components/form'
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
+import { TraceQuery } from './traceQuery'
 import { parts as partsApi, products as productsApi, bom as bomApi } from '../lib/catalog'
 import type { Part, Product } from '../lib/catalog'
 import {
@@ -40,6 +41,7 @@ import {
  */
 
 export function BatchScreen() {
+  const [queryOpen, setQueryOpen] = useState(false)
   const [list, setList] = useState<Batch[] | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [parts, setParts] = useState<Part[]>([])
@@ -328,6 +330,7 @@ export function BatchScreen() {
     <>
       <div className="flex items-center gap-2.5">
         <h1 className="text-[15px] font-bold">批次追溯</h1>
+        <Btn onClick={() => setQueryOpen(true)}>双向查询</Btn>
         <div className="ml-auto flex gap-2">
           {canEdit ? (
             <>
@@ -452,6 +455,7 @@ export function BatchScreen() {
         </div>
       </section>
 
+      {queryOpen ? <TraceQuery batches={list ?? []} parts={parts} onClose={() => setQueryOpen(false)} /> : null}
       {/* 投料追溯 */}
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)]">
         <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">

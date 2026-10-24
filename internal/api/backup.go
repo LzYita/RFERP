@@ -153,16 +153,41 @@ func (s *Server) handleRestoreDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.apps.RestoreDatabase(target)
+	if res.RequiresRestart {
+		s.restoreRequiresRestart.Store(true)
+		// 整文件回退也回退账号身份，旧的记住登录不能跨库继续使用。
+		s.remember.mu.Lock()
+		clear(s.remember.byID)
+		s.remember.mu.Unlock()
+		s.remember.clearDisk()
+	}
 	if err != nil {
+		if res.RequiresRestart {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "SQLite 恢复结果未确认，请退出并重新打开程序后核对数据，勿直接重试", "state": "unknown"})
+			return
+		}
 		writeDestructiveErr(w, "restore", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"statements":  res.Statements,
-		"tableCounts": res.TableCounts,
+		"requiresRestart": res.RequiresRestart,
+		"statements":      res.Statements,
+		"tableCounts":     res.TableCounts,
 		// 只给文件名：用户要退回时从备份列表里选它。
 		"preRestore": safetyCopyName(res.PreRestore),
 	})
+}
+
+func (s *Server) handleExitAfterRestore(w http.ResponseWriter, r *http.Request) {
+	if !s.requireHostOperations(w, "恢复后退出") {
+		return
+	}
+	if !s.restoreRequiresRestart.Load() {
+		writeErr(w, http.StatusConflict, "没有需要重启的恢复操作")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "exiting"})
+	s.exitAfterRestart()
 }
 
 // handleClearDatabase 清空业务数据（账号、迁移记录与数据库身份保留）。

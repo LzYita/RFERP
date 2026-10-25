@@ -23,7 +23,6 @@ import {
   PartFormModal,
   draftToWrite,
   emptyPartDraft,
-  partToDraft,
   validatePartDraft,
   type PartDraft,
 } from './partForm'
@@ -83,6 +82,13 @@ interface Draft {
   remark: string
 }
 
+/** 行内编辑的草稿：只有这三个字段（与 PUT /api/bom 的契约一致）。 */
+interface EditDraft {
+  useMode: string
+  qty: string
+  loss: string
+}
+
 const emptyDraft = (): Draft => ({
   part: null,
   partText: '',
@@ -121,12 +127,17 @@ export function BOMScreen() {
   // 树的折叠状态：key 是分类名。换产品即重置（新树没有理由继承旧树的折叠）。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  // 零件主数据表单（新增 / 编辑共用一个弹窗）
+  // 零件主数据表单（只用于新增；编辑一条明细不碰零件主数据）
   const [partFormOpen, setPartFormOpen] = useState(false)
-  const [partEditing, setPartEditing] = useState<Part | null>(null)
   const [partDraft, setPartDraft] = useState<PartDraft>(emptyPartDraft())
   const [partFormErr, setPartFormErr] = useState('')
   const [partBusy, setPartBusy] = useState(false)
+
+  // 编辑一条 BOM 明细：只有用量、用量模式、损耗率三个字段。
+  const [editItem, setEditItem] = useState<BOMItem | null>(null)
+  const [editDraft, setEditDraft] = useState<EditDraft>({ useMode: '0', qty: '1', loss: '0' })
+  const [editErr, setEditErr] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
 
   const { modules } = usePermissions()
   const canEdit = canWrite(modules, 'bom')
@@ -275,21 +286,13 @@ export function BOMScreen() {
   }
 
   function openPartCreate() {
-    setPartEditing(null)
     setPartDraft(emptyPartDraft())
     setPartFormErr('')
     setPartFormOpen(true)
   }
 
-  function openPartEdit(p: Part) {
-    setPartEditing(p)
-    setPartDraft(partToDraft(p))
-    setPartFormErr('')
-    setPartFormOpen(true)
-  }
-
   async function submitPart() {
-    const v = validatePartDraft(partDraft, partEditing !== null)
+    const v = validatePartDraft(partDraft, false)
     if (!v.ok) {
       setPartFormErr(v.msg)
       return
@@ -297,18 +300,69 @@ export function BOMScreen() {
     setPartBusy(true)
     setPartFormErr('')
     try {
-      const body = draftToWrite(partDraft, partEditing !== null, partEditing ?? undefined)
-      if (partEditing) await partsApi.update(body as never)
-      else await partsApi.create(body)
+      await partsApi.create(draftToWrite(partDraft, false))
       setPartFormOpen(false)
-      // 两份冗余都要刷新：allParts 承担树的分组与编辑入口，明细行上的
-      // part_code/part_name 是后端反序列化进 BOMItem 的，改完名字不重拉
-      // 树会立刻对、行却还显示旧名。
-      await Promise.all([reloadParts(), reload()])
+      // 新零件要进选择器与树的分类映射，所以零件列表必须重拉。
+      await reloadParts()
     } catch (e) {
       setPartFormErr(e instanceof Error ? e.message : '保存失败')
     } finally {
       setPartBusy(false)
+    }
+  }
+
+  function openEditItem(item: BOMItem) {
+    setEditItem(item)
+    setEditDraft({
+      useMode: String(item.use_mode),
+      qty: String(item.quantity),
+      loss: String(item.loss_rate),
+    })
+    setEditErr('')
+  }
+
+  /**
+   * 保存明细的用量/模式/损耗率。
+   *
+   * 只提交这三个字段 + id + version：服务端 DisallowUnknownFields，多传
+   * 零件归属会被 400 拒绝。校验口径与新增保持一致（后端同一套规则）。
+   */
+  async function submitEditItem() {
+    if (!editItem) return
+    const q = Number(editDraft.qty)
+    const l = Number(editDraft.loss)
+    if (!Number.isFinite(q)) {
+      setEditErr('用量必须是有效数值')
+      return
+    }
+    if (q <= 0) {
+      setEditErr('BOM用量必须大于0')
+      return
+    }
+    if (!Number.isFinite(l)) {
+      setEditErr('损耗率必须是有效数值')
+      return
+    }
+    if (l < 0 || l > 100) {
+      setEditErr('损耗率必须在0到100之间')
+      return
+    }
+    setEditBusy(true)
+    setEditErr('')
+    try {
+      await bomApi.update({
+        id: editItem.id,
+        quantity: q,
+        loss_rate: l,
+        use_mode: Number(editDraft.useMode),
+        version: editItem.version,
+      })
+      setEditItem(null)
+      await reload()
+    } catch (e) {
+      setEditErr(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setEditBusy(false)
     }
   }
 
@@ -372,9 +426,9 @@ export function BOMScreen() {
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
   const sel = (items ?? []).find((i) => i.id === selectedRow) ?? null
-  // 表格总列数：操作列（编辑零件）只在有 parts 写权限时存在，
+  // 表格总列数：操作列（编辑明细的用量）跟随 bom 写权限，
   // 根行 / 分类行 / 空态行的 colSpan 都跟随它
-  const COLS = canEditParts ? 9 : 8
+  const COLS = canEdit ? 9 : 8
 
   return (
     <>
@@ -508,7 +562,7 @@ export function BOMScreen() {
                 <col style={{ width: 80 }} />
                 <col style={{ width: 84 }} />
                 <col />
-                {canEditParts ? <col style={{ width: 64 }} /> : null}
+                {canEdit ? <col style={{ width: 64 }} /> : null}
               </colgroup>
               <thead>
                 <tr>
@@ -520,7 +574,7 @@ export function BOMScreen() {
                   <th className="num">损耗率</th>
                   <th className="mid">可替换</th>
                   <th>备注</th>
-                  {canEditParts ? (
+                  {canEdit ? (
                     <th className="mid col-fix" style={{ width: 64 }}>
                       操作
                     </th>
@@ -554,7 +608,7 @@ export function BOMScreen() {
                       </td>
                     </tr>
                     {!collapsed.has(g.name) &&
-                      g.leaves.map(({ item, part }) => (
+                      g.leaves.map(({ item }) => (
                         <tr
                           key={item.id}
                           data-selected={selectedRow === item.id}
@@ -592,22 +646,18 @@ export function BOMScreen() {
                             )}
                           </td>
                           <td>{item.remark ?? ''}</td>
-                          {canEditParts ? (
+                          {canEdit ? (
                             <td className="mid col-fix">
-                              {part ? (
-                                /* 行本身点击是选中（供删除），编辑按钮要拦住冒泡 */
-                                <button
-                                  className="text-[var(--color-primary)]"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    openPartEdit(part)
-                                  }}
-                                >
-                                  编辑
-                                </button>
-                              ) : (
-                                <span className="text-[var(--color-fg-subtle)]">—</span>
-                              )}
+                              {/* 行本身点击是选中（供删除），编辑按钮要拦住冒泡 */}
+                              <button
+                                className="text-[var(--color-primary)]"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openEditItem(item)
+                                }}
+                              >
+                                编辑
+                              </button>
                             </td>
                           ) : null}
                         </tr>
@@ -692,6 +742,57 @@ export function BOMScreen() {
         </Modal>
       ) : null}
 
+      {editItem ? (
+        <Modal
+          title="编辑 BOM 明细"
+          onClose={() => setEditItem(null)}
+          width={420}
+          footer={
+            <>
+              <Btn onClick={() => setEditItem(null)}>取消</Btn>
+              <Btn primary disabled={editBusy} onClick={submitEditItem}>
+                {editBusy ? '保存中…' : '保存'}
+              </Btn>
+            </>
+          }
+        >
+          <FormError text={editErr} />
+          {/* 只读展示这一行挂的是什么零件：编辑范围不含零件归属，
+              标出来才不会让人以为可以在这里换件（换件 = 删掉再加一行）。 */}
+          <FormRow label="零件">
+            <div className="flex h-[26px] items-center text-[11.5px]">
+              <span style={{ fontFamily: 'Consolas, monospace' }}>{editItem.part_code ?? '—'}</span>
+              <span className="ml-2 text-[var(--color-fg-muted)]">{editItem.part_name ?? ''}</span>
+            </div>
+          </FormRow>
+          <FormRow label="用量模式">
+            <select
+              className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
+              value={editDraft.useMode}
+              onChange={(e) => setEditDraft({ ...editDraft, useMode: e.target.value })}
+            >
+              {USE_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label={editDraft.useMode === '1' ? '每多少台用1个(M)' : '每台用量(个)'}>
+            <NumberInput
+              value={editDraft.qty}
+              onChange={(v) => setEditDraft({ ...editDraft, qty: v })}
+            />
+          </FormRow>
+          <FormRow label="损耗率%">
+            <NumberInput
+              value={editDraft.loss}
+              onChange={(v) => setEditDraft({ ...editDraft, loss: v })}
+            />
+          </FormRow>
+        </Modal>
+      ) : null}
+
       {deleting ? (
         <ConfirmDialog
           title="确认删除"
@@ -707,8 +808,7 @@ export function BOMScreen() {
         <PartFormModal
           draft={partDraft}
           setDraft={setPartDraft}
-          editing={partEditing !== null}
-          orig={partEditing ?? undefined}
+          editing={false}
           busy={partBusy}
           err={partFormErr}
           onSubmit={submitPart}

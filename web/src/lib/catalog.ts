@@ -128,6 +128,20 @@ export const bom = {
     replaceable: number
     use_mode: number
   }) => api.post<BOMItem>('/api/bom', b),
+  /**
+   * 编辑一条 BOM 明细。**只有三个字段可改**：用量、用量模式、损耗率。
+   *
+   * 服务端用 DisallowUnknownFields，多传 product_id/part_id/remark 会 400 而不是
+   * 被忽略——把「改数量」与「换零件」分成两种操作，是这个约束存在的意义。
+   * version 取自 GET 读回的那一行（乐观锁）。
+   */
+  update: (b: {
+    id: number
+    quantity: number
+    loss_rate: number
+    use_mode: number
+    version: number
+  }) => api.put<BOMItem>('/api/bom', b),
   remove: (id: number) => api.del(`/api/bom?id=${id}`),
   validate: (product_id: number) =>
     api.get<{ valid: boolean }>(`/api/bom/validate?product_id=${product_id}`),

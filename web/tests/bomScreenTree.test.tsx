@@ -99,7 +99,7 @@ it('collapses and re-expands a category group', async () => {
   expect(screen.getByText('M-001')).toBeTruthy()
 })
 
-it('edits a part from a leaf row and refreshes both the tree and the BOM rows', async () => {
+it('edits only quantity, use mode and loss rate on a BOM line', async () => {
   const fetch = stubFetch()
   const u = userEvent.setup()
   render(<BOMScreen />)
@@ -108,26 +108,55 @@ it('edits a part from a leaf row and refreshes both the tree and the BOM rows', 
   // 两行明细各有「编辑」，点 M-001 那行的
   const row = (await screen.findByText('M-001')).closest('tr')!
   await u.click(within(row).getByRole('button', { name: '编辑' }))
-  const dialog = within(await screen.findByRole('dialog', { name: '编辑零件' }))
-  const code = dialog.getByPlaceholderText('零件编码') as HTMLInputElement
-  expect(code.value).toBe('M-001')
+  const dialog = within(await screen.findByRole('dialog', { name: '编辑 BOM 明细' }))
 
-  // 改分类 → 提交 → PUT 必须带 GET 读回的 version（catalog.ts 的约定 2）
-  await u.type(dialog.getByPlaceholderText('规格型号（选填）'), 'X')
+  // 零件归属只读展示：编辑范围里没有换零件这回事
+  expect(dialog.getByText('M-001')).toBeTruthy()
+  expect(dialog.queryByPlaceholderText('零件编码')).toBeNull()
+
+  // 改数量与损耗率 → 提交
+  const qty = dialog.getByLabelText(/每台用量/) as HTMLInputElement
+  await u.clear(qty)
+  await u.type(qty, '8')
+  const loss = dialog.getByLabelText('损耗率%') as HTMLInputElement
+  await u.clear(loss)
+  await u.type(loss, '2.5')
   await u.click(dialog.getByRole('button', { name: '保存' }))
 
   const put = fetch.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT')
   expect(put).toBeTruthy()
-  const init = put![1] as RequestInit
-  const body = JSON.parse(String(init.body))
-  expect(body.id).toBe(7)
-  expect(body.version).toBe(2)
+  expect(String(put?.[0])).toBe('/api/bom')
+  const body = JSON.parse(String((put![1] as RequestInit).body))
+  // 请求体只有 id/version + 三个业务字段：服务端 DisallowUnknownFields，
+  // 多带 part_id 之类会被 400，所以这里逐键核对，不是只看前两个值。
+  expect(Object.keys(body).sort()).toEqual(['id', 'loss_rate', 'quantity', 'use_mode', 'version'])
+  expect(body.id).toBe(11)
+  expect(body.version).toBe(1)
+  expect(body.quantity).toBe(8)
+  expect(body.loss_rate).toBe(2.5)
+  expect(body.use_mode).toBe(0)
 
-  // 明细与零件列表都被重拉（allParts 分组 + BOM 行冗余字段）
-  const partsGets = fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/parts'))
-  expect(partsGets.length).toBeGreaterThanOrEqual(2)
+  // 保存后重拉明细，树随之更新
   const bomGets = fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/bom?'))
   expect(bomGets.length).toBeGreaterThanOrEqual(2)
+})
+
+it('refuses a non-positive quantity before sending', async () => {
+  const fetch = stubFetch()
+  const u = userEvent.setup()
+  render(<BOMScreen />)
+  await pickProduct(u)
+
+  const row = (await screen.findByText('M-001')).closest('tr')!
+  await u.click(within(row).getByRole('button', { name: '编辑' }))
+  const dialog = within(await screen.findByRole('dialog', { name: '编辑 BOM 明细' }))
+  const qty = dialog.getByLabelText(/每台用量/) as HTMLInputElement
+  await u.clear(qty)
+  await u.type(qty, '0')
+  await u.click(dialog.getByRole('button', { name: '保存' }))
+
+  expect(await dialog.findByText('BOM用量必须大于0')).toBeTruthy()
+  expect(fetch.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false)
 })
 
 it('creates a new part from the BOM screen', async () => {

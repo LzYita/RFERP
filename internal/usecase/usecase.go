@@ -54,6 +54,7 @@ type Catalog interface {
 	DeletePart(id int64, operator string) error
 
 	AddBOMItem(b *model.BOMItem) (*model.BOMItem, error)
+	UpdateBOMItem(b *model.BOMItem) (*model.BOMItem, error)
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	RemoveBOMItem(id int64, operator string) error
 	ValidateBOM(productID int64) (bool, error)

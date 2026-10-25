@@ -38,6 +38,10 @@ type TxOps interface {
 
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	CreateBOMItem(b *model.BOMItem) (int64, error)
+	// GetBOMItemForUpdate 读一行 BOM 明细并加行锁，用于更新前的存在性与审计基线。
+	GetBOMItemForUpdate(id int64) (*model.BOMItem, error)
+	// UpdateBOMItem 只改用量、用量模式与损耗率；version 用作乐观锁。
+	UpdateBOMItem(b *model.BOMItem) (int64, error)
 	DeleteBOMItem(id int64) error
 	// BOMProductsForPart 列出 BOM 里引用了该零件的产品，用于删除前的拒绝提示。
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)

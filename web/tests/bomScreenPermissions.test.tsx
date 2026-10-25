@@ -39,7 +39,7 @@ async function pickProduct(u: ReturnType<typeof userEvent.setup>) {
   await u.selectOptions(screen.getByLabelText('编码'), 'P-001')
 }
 
-it('bom-only write: BOM buttons stay, part-master buttons and the action column hide', async () => {
+it('bom-only write: BOM buttons and the edit column stay, part-master create hides', async () => {
   vi.doMock('../src/lib/api', async (original) => ({
     ...(await original<typeof import('../src/lib/api')>()),
     usePermissions: () => ({ modules: { bom: 'write' } }),
@@ -53,12 +53,14 @@ it('bom-only write: BOM buttons stay, part-master buttons and the action column 
   await screen.findByText('M-001')
   expect(screen.getByRole('button', { name: '+ 添加 BOM 零件' })).toBeTruthy()
   expect(screen.getByRole('button', { name: '删除' })).toBeTruthy()
+  // 编辑明细属于 BOM 档位：bom 可写就能改用量
+  expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy()
+  expect(screen.getByText('操作')).toBeTruthy()
+  // 建零件主数据属于 parts 档位
   expect(screen.queryByRole('button', { name: '+ 新增零件' })).toBeNull()
-  expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
-  expect(screen.queryByText('操作')).toBeNull()
 })
 
-it('parts-only write: part-master buttons stay, BOM buttons hide', async () => {
+it('parts-only write: create-part stays, BOM actions and the edit column hide', async () => {
   vi.doMock('../src/lib/api', async (original) => ({
     ...(await original<typeof import('../src/lib/api')>()),
     usePermissions: () => ({ modules: { parts: 'write' } }),
@@ -71,8 +73,8 @@ it('parts-only write: part-master buttons stay, BOM buttons hide', async () => {
 
   await screen.findByText('M-001')
   expect(screen.getByRole('button', { name: '+ 新增零件' })).toBeTruthy()
-  expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy()
-  expect(screen.getByText('操作')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
+  expect(screen.queryByText('操作')).toBeNull()
   expect(screen.queryByRole('button', { name: '+ 添加 BOM 零件' })).toBeNull()
   expect(screen.queryByRole('button', { name: '删除' })).toBeNull()
 })

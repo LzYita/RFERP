@@ -192,6 +192,28 @@ func (s *Server) handleAddBOM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *Server) handleUpdateBOM(w http.ResponseWriter, r *http.Request) {
+	in, ok := decodeBOMUpdate(w, r)
+	if !ok {
+		return
+	}
+	u, _ := s.userFromRequest(r)
+	name := operatorName(u)
+	out, err := s.apps.UpdateBOMItem(&model.BOMItem{
+		ID:       in.ID,
+		Quantity: in.Quantity,
+		LossRate: in.LossRate,
+		UseMode:  in.UseMode,
+		Version:  in.Version,
+		Operator: &name,
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handleRemoveBOM(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 	if err != nil {

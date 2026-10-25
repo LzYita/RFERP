@@ -991,6 +991,33 @@ async function bomTreeGate(page, product) {
   const afterExpand = await page.locator('table').last().innerText()
   check('再次点击恢复展开', afterExpand.includes('P-0001'), 'P-0001 没有回来')
 
+  // 树形层级靠缩进与底色区分，这些都是 CSS 计算值：jsdom 不跑布局，
+  // 只有真浏览器能证明"叶子确实比分类行更缩进、底色确实不同"。
+  const treeStyle = await page.evaluate(() => {
+    const table = [...document.querySelectorAll('table')].pop()
+    const group = table.querySelector('tbody tr.tree-group td')
+    const leaf = table.querySelector('tbody tr.tree-leaf td')
+    if (!group || !leaf) return null
+    const gs = getComputedStyle(group)
+    const ls = getComputedStyle(leaf)
+    return {
+      groupPad: parseFloat(gs.paddingLeft),
+      leafPad: parseFloat(ls.paddingLeft),
+      groupBg: gs.backgroundColor,
+      leafBg: ls.backgroundColor,
+      leafRail: getComputedStyle(leaf, '::before').borderLeftStyle,
+    }
+  })
+  check('树形：叶子比分类行更缩进',
+    treeStyle !== null && treeStyle.leafPad > treeStyle.groupPad,
+    treeStyle ? `分类 ${treeStyle.groupPad}px / 叶子 ${treeStyle.leafPad}px` : '找不到树行')
+  check('树形：分类行底色与明细行不同',
+    treeStyle !== null && treeStyle.groupBg !== treeStyle.leafBg,
+    treeStyle ? `分类 ${treeStyle.groupBg} / 叶子 ${treeStyle.leafBg}` : '找不到树行')
+  check('树形：叶子左侧画出连接线',
+    treeStyle !== null && treeStyle.leafRail === 'solid',
+    treeStyle ? `::before border-left-style=${treeStyle.leafRail}` : '找不到树行')
+
   // 树行用 colSpan 跨列，新增的「操作」列让总列数变化过：表头与数据列
   // 必须在同一纵向位置。jsdom 量不到坐标，只有真浏览器能证伪。
   const align = await page.evaluate(() => {
@@ -1050,6 +1077,21 @@ async function bomTreeGate(page, product) {
   await again.getByRole('checkbox', { name: /该零件可被替换/ }).click()
   await again.locator('button', { hasText: '保存' }).click()
   await sleep(1000)
+
+  // 离开本屏再回来，应当仍选着上次的产品（模块级记忆，不必重新点级联）。
+  // 这是真实导航：屏幕组件会被卸载再挂载，jsdom 里只能手动 unmount 模拟。
+  await page.click('text=工作台')
+  await sleep(800)
+  await page.click('text=BOM管理')
+  await sleep(1200)
+  const restoredRoot = page.locator('tr[data-tree-root]')
+  const restoredText = (await restoredRoot.count()) > 0 ? await restoredRoot.first().innerText() : ''
+  check('离开再回来仍保留上次选中的产品',
+    restoredText.includes(product.code) && restoredText.includes(product.name),
+    restoredText ? `根行：${restoredText.replace(/\s*\n\s*/g, ' | ')}` : '没有恢复选中，树是空的')
+  check('恢复后明细也已重新加载',
+    (await page.locator('table').last().innerText()).includes('P-0001'),
+    '恢复的产品没有加载出 BOM 明细')
 
   // 需要肉眼核对布局时：GATE_SHOTS=<目录> 跑一遍，留下这一步的截图。
   // 默认不留文件——关口每跑一次都往仓库/临时目录堆图是噪音。

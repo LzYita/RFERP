@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BOMScreen } from '../src/screens/BOMScreen'
+import { clearBomSelection, recallBomSelection } from '../src/lib/bomSelection'
 
 vi.mock('../src/lib/api', async (original) => ({
   ...(await original<typeof import('../src/lib/api')>()),
@@ -18,6 +19,8 @@ vi.mock('../src/lib/api', async (original) => ({
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  // 选择记忆是模块级的，用例之间必须清掉，否则后一个用例会"自动选中"前一个的产品
+  clearBomSelection()
 })
 
 const product = { id: 3, code: 'P-001', name: '智能电水壶', unit: '个', status: 1, version: 5 }
@@ -168,6 +171,52 @@ it('refuses a non-positive quantity before sending', async () => {
 
   expect(await dialog.findByText('BOM用量必须大于0')).toBeTruthy()
   expect(fetch.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false)
+})
+
+it('restores the last selected product after leaving and re-entering the screen', async () => {
+  stubFetch()
+  const u = userEvent.setup()
+  const first = render(<BOMScreen />)
+  await pickProduct(u)
+  await screen.findByText('M-001')
+
+  // 导航到别的界面（卸载）再回来（重新挂载）：不需要再点名称→编码→规格
+  first.unmount()
+  render(<BOMScreen />)
+
+  expect(await screen.findByText('M-001')).toBeTruthy()
+  expect((screen.getByLabelText('名称') as HTMLSelectElement).value).toBe('智能电水壶')
+  expect((screen.getByLabelText('编码') as HTMLSelectElement).value).toBe('P-001')
+  // 级联与搜索框都要恢复，否则界面显示已选、active 却是空的
+  const search = screen.getByPlaceholderText('输入编码/名称查询') as HTMLInputElement
+  expect(search.value).toContain('P-001')
+  expect(search.value).toContain('智能电水壶')
+})
+
+it('forgets a remembered product that no longer exists', async () => {
+  stubFetch()
+  const u = userEvent.setup()
+  const first = render(<BOMScreen />)
+  await pickProduct(u)
+  await screen.findByText('M-001')
+  first.unmount()
+
+  // 该产品在产品列表里已不存在（被删 / 被停用后不可见）
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.startsWith('/api/products')) return new Response(JSON.stringify([]))
+      if (url.startsWith('/api/parts')) return new Response(JSON.stringify([electronic]))
+      if (url.startsWith('/api/bom?')) return new Response(JSON.stringify(bomItems))
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  render(<BOMScreen />)
+
+  await screen.findByText('请先选择产品')
+  expect((screen.getByLabelText('名称') as HTMLSelectElement).value).toBe('')
+  // 记忆必须被清掉：否则每次进来都会恢复到一个不存在的产品上
+  expect(recallBomSelection()).toBeNull()
 })
 
 it('offers no way to create part master data from this screen', async () => {

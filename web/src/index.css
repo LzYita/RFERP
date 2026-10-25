@@ -159,6 +159,86 @@
   .data-table tbody tr[data-selected='true'] td.col-fix {
     background: var(--color-primary-subtle);
   }
+
+  /*
+   * BOM 明细的树形层级。
+   *
+   * 用背景、缩进与左侧连接线区分三层，而不是只靠 ▼ 图标：斑马纹会让
+   * 「分类行」和「明细行」看起来是同一层，扫一眼分不清哪几行属于同一类。
+   * 这几条规则必须写在斑马纹之后——tr:nth-child(even) 的权重更高，
+   * 写前面会被偶数行的底色盖掉。
+   */
+  .data-table tbody tr.tree-root td {
+    background: var(--color-canvas);
+    border-bottom: 1px solid var(--color-border);
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+  .data-table tbody tr.tree-group td {
+    background: #eaf1ef;
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-top: 1px solid var(--color-border-subtle);
+    padding-top: 4px;
+    padding-bottom: 4px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .data-table tbody tr.tree-group:hover td {
+    background: #e1ebe8;
+  }
+  /* 折叠时淡化分类行文字，暗示这一组被收起了 */
+  .data-table tbody tr.tree-group[data-collapsed='true'] td {
+    color: var(--color-fg-muted);
+  }
+  /* 叶子：第一列画出 └ 连接线，与分类行左侧对齐 */
+  .data-table tbody tr.tree-leaf td:first-child {
+    position: relative;
+    padding-left: 34px;
+  }
+  .data-table tbody tr.tree-leaf td:first-child::before {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 0;
+    bottom: 0;
+    border-left: 1px solid var(--color-border);
+  }
+  .data-table tbody tr.tree-leaf td:first-child::after {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    width: 9px;
+    border-top: 1px solid var(--color-border);
+  }
+  /* 同组最后一行把竖线收在中间，视觉上形成收口 */
+  .data-table tbody tr.tree-leaf.is-group-end td:first-child::before {
+    bottom: 50%;
+  }
+  /* 折叠三角放在固定宽度的盒子里，展开/折叠时文字不左右跳 */
+  .tree-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--color-fg-muted);
+  }
+  /* 根行的产品标识 */
+  .tree-root-tag {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 5px;
+    border-radius: 3px;
+    background: var(--color-primary-subtle);
+    color: var(--color-primary);
+    font-size: 10px;
+    font-weight: 600;
+    vertical-align: 1px;
+  }
 }
 
 html,

@@ -19,6 +19,7 @@ import {
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { buildBomGroups } from '../lib/bomTree'
+import { recallBomSelection, rememberBomSelection } from '../lib/bomSelection'
 import {
   bom as bomApi,
   parts as partsApi,
@@ -103,12 +104,26 @@ export function BOMScreen() {
   const [items, setItems] = useState<BOMItem[] | null>(null)
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
 
+  // 上一次的选择（模块级短期记忆）：离开本屏再回来时直接恢复，
+  // 不必重新点名称→编码→规格。重开应用即回到空选择。
+  const [restored] = useState(() => recallBomSelection())
+
   // 级联三级
-  const [cName, setCName] = useState('')
-  const [cCode, setCCode] = useState('')
-  const [cSpec, setCSpec] = useState('')
+  const [cName, setCName] = useState(restored?.name ?? '')
+  const [cCode, setCCode] = useState(restored?.code ?? '')
+  const [cSpec, setCSpec] = useState(restored?.spec ?? '')
   // 搜索框
-  const [searchPick, setSearchPick] = useState<Picker | null>(null)
+  const [searchPick, setSearchPick] = useState<Picker | null>(() =>
+    restored
+      ? {
+          id: restored.id,
+          code: restored.code,
+          name: restored.name,
+          spec: restored.spec,
+          label: pickLabel(restored.code, restored.name, restored.spec),
+        }
+      : null,
+  )
 
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -120,7 +135,6 @@ export function BOMScreen() {
   // 树的折叠状态：key 是分类名。换产品即重置（新树没有理由继承旧树的折叠）。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
-  // 零件主数据表单（只用于新增；编辑一条明细不碰零件主数据）
   // 编辑一条 BOM 明细：只有用量、用量模式、损耗率、可替换四个字段。
   const [editItem, setEditItem] = useState<BOMItem | null>(null)
   const [editDraft, setEditDraft] = useState<EditDraft>({
@@ -141,6 +155,14 @@ export function BOMScreen() {
       .then(([ps, pts]) => {
         if (!alive) return
         setProducts(ps)
+        // 记忆里的产品可能已被删除：清掉，避免每次都恢复到一条不存在的产品上。
+        if (restored && !ps.some((p) => p.id === restored.id)) {
+          rememberBomSelection(null)
+          setSearchPick(null)
+          setCName('')
+          setCCode('')
+          setCSpec('')
+        }
         // 零件列表加载期间零件选择器是空的；用空数组而不是 null，
         // 否则 resolvePick 会拿到 null.all 直接抛。
         setAllParts(pts)
@@ -152,6 +174,9 @@ export function BOMScreen() {
     return () => {
       alive = false
     }
+    // restored 是挂载时的快照，刻意不进依赖：产品列表只该拉一次，
+    // 把它放进去会让每次恢复变化都重拉两份列表。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const pickers = useMemo(() => (products ?? []).map(toPicker), [products])
@@ -218,6 +243,22 @@ export function BOMScreen() {
 
   // 搜索框优先，其次级联 —— 对应 Fyne 的 resolveProductID
   const active = searchPick ?? cascadePick
+
+  // 记住当前产品：离开本屏再回来时由 recallBomSelection 恢复。
+  // 清空选择时一并清掉记忆——用户主动清空，回来不该又冒出一个产品。
+  useEffect(() => {
+    if (!active) {
+      rememberBomSelection(null)
+      return
+    }
+    rememberBomSelection({
+      id: active.id,
+      code: active.code,
+      name: active.name,
+      spec: active.spec,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id])
 
   // 选了搜索框就把级联填上（Fyne: syncCascadeFromPicker）
   function pickFromSearch(v: Picker | null) {
@@ -537,12 +578,13 @@ export function BOMScreen() {
               </thead>
               <tbody>
                 {/* 根：产品。树的第一层，永远展开、不可折叠 */}
-                <tr data-tree-root>
-                  <td colSpan={COLS}>
+                <tr data-tree-root className="tree-root">
+                  <td colSpan={COLS} style={{ paddingLeft: 14 }}>
+                    <span className="tree-root-tag">产品</span>
                     <span className="font-semibold">
                       {active.code} {active.name}
                     </span>
-                    <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">
+                    <span className="ml-2 text-[11.5px] font-normal text-[var(--color-fg-subtle)]">
                       共 {(items ?? []).length} 个零件 · {groups.length} 类
                     </span>
                   </td>
@@ -550,9 +592,14 @@ export function BOMScreen() {
                 {groups.map((g) => (
                   <Fragment key={g.name}>
                     {/* 分类层：可折叠。点行切换，整行都是热区 */}
-                    <tr data-tree-group className="cursor-pointer" onClick={() => toggleGroup(g.name)}>
+                    <tr
+                      data-tree-group
+                      data-collapsed={collapsed.has(g.name)}
+                      className="tree-group"
+                      onClick={() => toggleGroup(g.name)}
+                    >
                       <td colSpan={COLS} style={{ paddingLeft: 14 }}>
-                        <span className="mr-1.5 inline-block w-3 text-center text-[10px] text-[var(--color-fg-muted)]">
+                        <span className="tree-toggle" aria-hidden>
                           {collapsed.has(g.name) ? '▶' : '▼'}
                         </span>
                         <span className="font-semibold">{g.name}</span>
@@ -562,13 +609,16 @@ export function BOMScreen() {
                       </td>
                     </tr>
                     {!collapsed.has(g.name) &&
-                      g.leaves.map(({ item }) => (
+                      g.leaves.map(({ item }, idx) => (
                         <tr
                           key={item.id}
+                          className={
+                            idx === g.leaves.length - 1 ? 'tree-leaf is-group-end' : 'tree-leaf'
+                          }
                           data-selected={selectedRow === item.id}
                           onClick={() => setSelectedRow(item.id === selectedRow ? null : item.id)}
                         >
-                          <td className="mid" style={{ paddingLeft: 30 }}>
+                          <td className="mid">
                             <input
                               type="checkbox"
                               checked={selectedRow === item.id}

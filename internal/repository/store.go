@@ -41,6 +41,8 @@ type TxOps interface {
 	DeleteBOMItem(id int64) error
 	// BOMProductsForPart 列出 BOM 里引用了该零件的产品，用于删除前的拒绝提示。
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)
+	// TracesForPart 按批次汇总该零件的生产投料记录，用于删除前的拒绝提示。
+	TracesForPart(partID int64) ([]model.PartTraceRef, error)
 
 	GetBatchForUpdate(id int64) (*model.ProductBatch, error)
 	CreateBatch(b *model.ProductBatch) (int64, error)
@@ -69,6 +71,8 @@ type Store interface {
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	// BOMProductsForPart 列出 BOM 里引用了该零件的产品（读侧；删除守卫在 TxOps 上走同一个查询）。
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)
+	// TracesForPart 按批次汇总该零件的生产投料记录（读侧；删除守卫在 TxOps 上走同一个查询）。
+	TracesForPart(partID int64) ([]model.PartTraceRef, error)
 
 	ListBatches() ([]model.ProductBatch, error)
 	GetSkippedParts(batchID int64) ([]int64, error)

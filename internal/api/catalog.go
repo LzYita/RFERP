@@ -144,6 +144,17 @@ func (s *Server) handleDeletePart(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// 追溯记录引用：同样的 409，但给的是「哪些批次、各几条」——
+		// 这些记录不能删，界面据此建议改「停用」。
+		var inTrace *usecase.PartInTraceError
+		if errors.As(err, &inTrace) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":   inTrace.Error(),
+				"batches": inTrace.Batches,
+				"records": inTrace.Records(),
+			})
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

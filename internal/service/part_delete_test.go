@@ -14,6 +14,7 @@ type partDeleteStore struct {
 	repository.Store
 	part    *model.Part
 	usedBy  []model.ProductRef
+	traces  []model.PartTraceRef
 	deleted bool
 }
 
@@ -30,6 +31,10 @@ func (t *partDeleteTx) GetPartForUpdate(int64) (*model.Part, error) { return t.s
 
 func (t *partDeleteTx) BOMProductsForPart(int64) ([]model.ProductRef, error) {
 	return t.store.usedBy, nil
+}
+
+func (t *partDeleteTx) TracesForPart(int64) ([]model.PartTraceRef, error) {
+	return t.store.traces, nil
 }
 
 func (t *partDeleteTx) DeletePart(int64) error {
@@ -95,5 +100,53 @@ func TestDeletePartProceedsWithoutBOMReferences(t *testing.T) {
 	}
 	if !store.deleted {
 		t.Fatal("没有被引用却没有删除")
+	}
+}
+
+// 被生产投料记录引用：拒绝删除，并说明涉及哪些批次、共几条。
+func TestDeletePartRefusesWhenReferencedByTraces(t *testing.T) {
+	store := &partDeleteStore{
+		part: &model.Part{ID: 7, Code: "M-003"},
+		traces: []model.PartTraceRef{
+			{BatchNo: "B-001", Records: 2},
+			{BatchNo: "B-002", Records: 1},
+		},
+	}
+	svc := NewWithSnapshot(store, nil, nil)
+
+	err := svc.DeletePart(7, "管理员")
+	var inTrace *usecase.PartInTraceError
+	if !errors.As(err, &inTrace) {
+		t.Fatalf("err = %v，期望 PartInTraceError", err)
+	}
+	if store.deleted {
+		t.Fatal("被追溯记录引用时仍执行了删除")
+	}
+	if inTrace.Records() != 3 || len(inTrace.Batches) != 2 {
+		t.Fatalf("汇总不对：records=%d batches=%+v", inTrace.Records(), inTrace.Batches)
+	}
+	for _, want := range []string{"M-003", "3 条", "2 个批次", "B-001"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("文案缺少 %q：%v", want, err)
+		}
+	}
+}
+
+// 两者同时存在时先报 BOM：那条是用户自己能解开的，先给可操作的建议。
+func TestDeletePartPrefersBOMOverTraces(t *testing.T) {
+	store := &partDeleteStore{
+		part:   &model.Part{ID: 7, Code: "M-004"},
+		usedBy: []model.ProductRef{{ID: 1, Code: "P-001", Name: "产品一"}},
+		traces: []model.PartTraceRef{{BatchNo: "B-001", Records: 1}},
+	}
+	svc := NewWithSnapshot(store, nil, nil)
+
+	err := svc.DeletePart(7, "管理员")
+	var inBOM *usecase.PartInBOMError
+	if !errors.As(err, &inBOM) {
+		t.Fatalf("err = %v，期望先报 PartInBOMError", err)
+	}
+	if store.deleted {
+		t.Fatal("被引用时仍执行了删除")
 	}
 }

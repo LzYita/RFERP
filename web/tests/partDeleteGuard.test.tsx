@@ -117,3 +117,40 @@ it('stops a batch delete at the first BOM-referenced part', async () => {
   expect(deletes).toHaveLength(1)
   expect(String(deletes[0][0])).toContain('id=7')
 })
+
+it('explains production traces and suggests deactivating instead', async () => {
+  stubFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          error: '零件 M-001 有 3 条生产投料记录（涉及 2 个批次：B-001、B-002），追溯记录不能删除',
+          batches: [
+            { batch_no: 'B-001', records: 2 },
+            { batch_no: 'B-002', records: 1 },
+          ],
+          records: 3,
+        }),
+        { status: 409 },
+      ),
+  )
+  const u = userEvent.setup()
+  render(<PartsScreen />)
+
+  await u.click(await screen.findByRole('button', { name: '删除' }))
+  const confirm = within(await screen.findByRole('dialog', { name: '确认删除' }))
+  await u.click(confirm.getByRole('button', { name: '确定' }))
+
+  const dialog = within(await screen.findByRole('dialog', { name: '无法删除零件' }))
+  // 不能说成「被 BOM 引用」：这里是生产历史，处理方式完全不同
+  expect(dialog.queryByRole('list', { name: '引用该零件的产品' })).toBeNull()
+  const list = dialog.getByRole('list', { name: '引用该零件的批次' })
+  expect(list.textContent).toContain('B-001')
+  expect(list.textContent).toContain('2 条')
+  expect(list.textContent).toContain('B-002')
+  // 数量是 <b>3</b>，文本被标签拆开，整段一起断言
+  const text = screen.getByRole('dialog', { name: '无法删除零件' }).textContent ?? ''
+  expect(text).toContain('3 条生产投料记录')
+  expect(text).toContain('2 个批次')
+  expect(text).toContain('改为「停用」')
+  expect(screen.getByText('共用零件')).toBeTruthy()
+})

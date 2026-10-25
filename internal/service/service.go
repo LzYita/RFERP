@@ -377,6 +377,15 @@ func (s *Service) DeletePart(id int64, operator string) error {
 		if len(usedBy) > 0 {
 			return &usecase.PartInBOMError{PartCode: old.Code, Products: usedBy}
 		}
+		// 第二道：追溯记录。同样是外键会拦（batch_trace.part_id），
+		// 但用户看到 FOREIGN KEY constraint failed 时不知道是哪个界面挡的。
+		traces, err := tx.TracesForPart(id)
+		if err != nil {
+			return fmt.Errorf("check production traces: %w", err)
+		}
+		if len(traces) > 0 {
+			return &usecase.PartInTraceError{PartCode: old.Code, Batches: traces}
+		}
 		if err := tx.DeletePart(id); err != nil {
 			return err
 		}

@@ -41,6 +41,14 @@ type ProductRef struct {
 	Name string `db:"name" json:"name"`
 }
 
+// PartTraceRef 是「删除零件被拒」时按批次汇总的投料记录数量。
+// 追溯记录是生产历史，不能按 BOM 那样让用户去删；这里只告诉他
+// 「哪些批次用过它、各用了多少条」，便于判断该怎么处理（通常是停用零件）。
+type PartTraceRef struct {
+	BatchNo string `db:"batch_no" json:"batch_no"`
+	Records int    `db:"records" json:"records"`
+}
+
 type BOMItem struct {
 	ID          int64     `db:"id" json:"id"`
 	ProductID   int64     `db:"product_id" json:"product_id"`

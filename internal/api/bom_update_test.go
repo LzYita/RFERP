@@ -24,12 +24,12 @@ func (a *bomUpdateApps) UpdateBOMItem(b *model.BOMItem) (*model.BOMItem, error) 
 	return &out, nil
 }
 
-// 编辑一条 BOM 明细：请求体只有三个业务字段，服务端原样转交。
-func TestUpdateBOMItemPassesThreeFields(t *testing.T) {
+// 编辑一条 BOM 明细：请求体只有四个业务字段，服务端原样转交。
+func TestUpdateBOMItemPassesEditableFields(t *testing.T) {
 	apps := &bomUpdateApps{}
 	s := New(apps)
 	w := postJSON(t, s, "PUT", "/api/bom", issueAdmin(t, s), map[string]any{
-		"id": 11, "quantity": 7, "loss_rate": 2.5, "use_mode": 1, "version": 4,
+		"id": 11, "quantity": 7, "loss_rate": 2.5, "use_mode": 1, "replaceable": 1, "version": 4,
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d：%s", w.Code, w.Body.String())
@@ -37,7 +37,8 @@ func TestUpdateBOMItemPassesThreeFields(t *testing.T) {
 	if apps.got == nil {
 		t.Fatal("服务层没被调用")
 	}
-	if apps.got.ID != 11 || apps.got.Quantity != 7 || apps.got.LossRate != 2.5 || apps.got.UseMode != 1 || apps.got.Version != 4 {
+	if apps.got.ID != 11 || apps.got.Quantity != 7 || apps.got.LossRate != 2.5 ||
+		apps.got.UseMode != 1 || apps.got.Replaceable != 1 || apps.got.Version != 4 {
 		t.Fatalf("转交的参数不对：%+v", apps.got)
 	}
 	if apps.got.Operator == nil || *apps.got.Operator == "" {
@@ -57,9 +58,9 @@ func TestUpdateBOMItemPassesThreeFields(t *testing.T) {
 func TestUpdateBOMItemRejectsFieldsOutsideTheEditScope(t *testing.T) {
 	apps := &bomUpdateApps{}
 	s := New(apps)
-	for _, field := range []string{"part_id", "product_id", "remark", "replaceable"} {
+	for _, field := range []string{"part_id", "product_id", "remark"} {
 		w := postJSON(t, s, "PUT", "/api/bom", issueAdmin(t, s), map[string]any{
-			"id": 11, "quantity": 1, "loss_rate": 0, "use_mode": 0, "version": 1, field: 1,
+			"id": 11, "quantity": 1, "loss_rate": 0, "use_mode": 0, "replaceable": 0, "version": 1, field: 1,
 		})
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("%s 应被拒绝，状态码 = %d：%s", field, w.Code, w.Body.String())
@@ -67,6 +68,21 @@ func TestUpdateBOMItemRejectsFieldsOutsideTheEditScope(t *testing.T) {
 	}
 	if apps.got != nil {
 		t.Fatal("非法请求不应到达服务层")
+	}
+}
+
+// replaceable 是枚举而不是任意整数：2 之类必须 400，不能悄悄落库。
+func TestUpdateBOMItemRejectsInvalidReplaceable(t *testing.T) {
+	apps := &bomUpdateApps{}
+	s := New(apps)
+	w := postJSON(t, s, "PUT", "/api/bom", issueAdmin(t, s), map[string]any{
+		"id": 11, "quantity": 1, "loss_rate": 0, "use_mode": 0, "replaceable": 2, "version": 1,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d，期望 400：%s", w.Code, w.Body.String())
+	}
+	if apps.got != nil {
+		t.Fatal("非法 replaceable 不应到达服务层")
 	}
 }
 

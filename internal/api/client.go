@@ -306,11 +306,12 @@ func (c *Client) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 
 func (c *Client) UpdateBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 	body := map[string]any{
-		"id":        b.ID,
-		"quantity":  b.Quantity,
-		"loss_rate": b.LossRate,
-		"use_mode":  b.UseMode,
-		"version":   b.Version,
+		"id":          b.ID,
+		"quantity":    b.Quantity,
+		"loss_rate":   b.LossRate,
+		"use_mode":    b.UseMode,
+		"replaceable": b.Replaceable,
+		"version":     b.Version,
 	}
 	var out model.BOMItem
 	if err := c.do(http.MethodPut, "/api/bom", body, &out); err != nil {

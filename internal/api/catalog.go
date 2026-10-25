@@ -200,12 +200,13 @@ func (s *Server) handleUpdateBOM(w http.ResponseWriter, r *http.Request) {
 	u, _ := s.userFromRequest(r)
 	name := operatorName(u)
 	out, err := s.apps.UpdateBOMItem(&model.BOMItem{
-		ID:       in.ID,
-		Quantity: in.Quantity,
-		LossRate: in.LossRate,
-		UseMode:  in.UseMode,
-		Version:  in.Version,
-		Operator: &name,
+		ID:          in.ID,
+		Quantity:    in.Quantity,
+		LossRate:    in.LossRate,
+		UseMode:     in.UseMode,
+		Replaceable: in.Replaceable,
+		Version:     in.Version,
+		Operator:    &name,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

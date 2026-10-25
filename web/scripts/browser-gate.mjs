@@ -1011,30 +1011,45 @@ async function bomTreeGate(page, product) {
   check('BOM 表头与数据列对齐', align !== null && skew.length === 0,
     align === null ? '找不到明细行' : `错位列：${JSON.stringify(skew)}`)
 
-  // 零件主数据入口（管理员两档权限都有）
+  // 本屏不提供零件主数据的新增：建零件在「零件管理」，两个动作放一起会被当成一件事
   const newPartBtn = page.locator('button', { hasText: '新增零件' })
-  check('BOM 屏有「新增零件」入口', (await newPartBtn.count()) > 0, '找不到按钮')
+  check('BOM 屏没有「新增零件」入口', (await newPartBtn.count()) === 0, '仍然渲染着新增零件按钮')
   const editBtn = page.locator('table').last().locator('button', { hasText: '编辑' })
   check('明细行有「编辑」入口', (await editBtn.count()) > 0, '找不到行内编辑按钮')
 
-  // 行内编辑只改用量/模式/损耗率：真浏览器走一次往返，确认弹窗只有这三项、
-  // 保存后表格里用量真的变了（jsdom 测的是请求体，这里测的是界面闭环）。
+  // 行内编辑只改用量/模式/损耗率/可替换：真浏览器走一次往返，确认弹窗就是这四项、
+  // 保存后表格里用量与「可替换」标记真的变了（jsdom 测的是请求体，这里测界面闭环）。
   await page.locator('table').last().locator('tr', { hasText: 'P-0001' })
     .locator('button', { hasText: '编辑' }).first().click()
   await sleep(600)
   const editModal = page.locator('div[class*="fixed"]').last()
   const editText = await editModal.innerText()
-  check('编辑弹窗只含三个可改项',
-    editText.includes('用量模式') && editText.includes('损耗率') &&
+  check('编辑弹窗只含四个可改项',
+    editText.includes('用量模式') && editText.includes('损耗率') && editText.includes('可替换') &&
     !editText.includes('零件编码') && !editText.includes('供应商'),
     `弹窗内容：${editText.replace(/\s*\n\s*/g, ' | ')}`)
   const qtyInput = editModal.getByLabel(/每台用量/)
   await qtyInput.fill('3')
+  const replBox = editModal.getByRole('checkbox', { name: /该零件可被替换/ })
+  const wasChecked = await replBox.isChecked()
+  await replBox.click()
   await editModal.locator('button', { hasText: '保存' }).click()
   await sleep(1200)
   const rowText = await page.locator('table').last().locator('tr', { hasText: 'P-0001' }).first().innerText()
   check('保存后列表显示新用量', rowText.includes('3.00个'),
     `行内容：${rowText.replace(/\s*\n\s*/g, ' | ')}`)
+  check('保存后「可替换」标记随勾选变化',
+    wasChecked ? !rowText.includes('可替换') : rowText.includes('可替换'),
+    `勾选前=${wasChecked}，行内容：${rowText.replace(/\s*\n\s*/g, ' | ')}`)
+  // 改回去，让后面的断言与重复运行不受影响
+  await page.locator('table').last().locator('tr', { hasText: 'P-0001' })
+    .locator('button', { hasText: '编辑' }).first().click()
+  await sleep(500)
+  const again = page.locator('div[class*="fixed"]').last()
+  await again.getByLabel(/每台用量/).fill('1')
+  await again.getByRole('checkbox', { name: /该零件可被替换/ }).click()
+  await again.locator('button', { hasText: '保存' }).click()
+  await sleep(1000)
 
   // 需要肉眼核对布局时：GATE_SHOTS=<目录> 跑一遍，留下这一步的截图。
   // 默认不留文件——关口每跑一次都往仓库/临时目录堆图是噪音。

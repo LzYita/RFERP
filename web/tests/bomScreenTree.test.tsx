@@ -99,7 +99,7 @@ it('collapses and re-expands a category group', async () => {
   expect(screen.getByText('M-001')).toBeTruthy()
 })
 
-it('edits only quantity, use mode and loss rate on a BOM line', async () => {
+it('edits quantity, use mode, loss rate and replaceable on a BOM line', async () => {
   const fetch = stubFetch()
   const u = userEvent.setup()
   render(<BOMScreen />)
@@ -114,27 +114,38 @@ it('edits only quantity, use mode and loss rate on a BOM line', async () => {
   expect(dialog.getByText('M-001')).toBeTruthy()
   expect(dialog.queryByPlaceholderText('零件编码')).toBeNull()
 
-  // 改数量与损耗率 → 提交
+  // 改数量、损耗率，并勾上「可替换」→ 提交
   const qty = dialog.getByLabelText(/每台用量/) as HTMLInputElement
   await u.clear(qty)
   await u.type(qty, '8')
   const loss = dialog.getByLabelText('损耗率%') as HTMLInputElement
   await u.clear(loss)
   await u.type(loss, '2.5')
+  const replaceable = dialog.getByRole('checkbox', { name: /该零件可被替换/ }) as HTMLInputElement
+  expect(replaceable.checked).toBe(false)
+  await u.click(replaceable)
   await u.click(dialog.getByRole('button', { name: '保存' }))
 
   const put = fetch.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT')
   expect(put).toBeTruthy()
   expect(String(put?.[0])).toBe('/api/bom')
   const body = JSON.parse(String((put![1] as RequestInit).body))
-  // 请求体只有 id/version + 三个业务字段：服务端 DisallowUnknownFields，
+  // 请求体只有 id/version + 四个业务字段：服务端 DisallowUnknownFields，
   // 多带 part_id 之类会被 400，所以这里逐键核对，不是只看前两个值。
-  expect(Object.keys(body).sort()).toEqual(['id', 'loss_rate', 'quantity', 'use_mode', 'version'])
+  expect(Object.keys(body).sort()).toEqual([
+    'id',
+    'loss_rate',
+    'quantity',
+    'replaceable',
+    'use_mode',
+    'version',
+  ])
   expect(body.id).toBe(11)
   expect(body.version).toBe(1)
   expect(body.quantity).toBe(8)
   expect(body.loss_rate).toBe(2.5)
   expect(body.use_mode).toBe(0)
+  expect(body.replaceable).toBe(1)
 
   // 保存后重拉明细，树随之更新
   const bomGets = fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/bom?'))
@@ -159,23 +170,14 @@ it('refuses a non-positive quantity before sending', async () => {
   expect(fetch.mock.calls.some(([, init]) => (init as RequestInit)?.method === 'PUT')).toBe(false)
 })
 
-it('creates a new part from the BOM screen', async () => {
-  const fetch = stubFetch()
+it('offers no way to create part master data from this screen', async () => {
+  stubFetch()
   const u = userEvent.setup()
   render(<BOMScreen />)
   await pickProduct(u)
 
-  await u.click(await screen.findByRole('button', { name: '+ 新增零件' }))
-  const dialog = within(await screen.findByRole('dialog', { name: '新增零件' }))
-  await u.type(dialog.getByPlaceholderText('零件编码'), 'M-100')
-  await u.type(dialog.getByPlaceholderText('零件名称'), '新零件')
-  await u.click(dialog.getByRole('button', { name: '保存' }))
-
-  const post = fetch.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'POST')
-  expect(post).toBeTruthy()
-  expect(String(post?.[0])).toBe('/api/parts')
-  const init = post![1] as RequestInit
-  const body = JSON.parse(String(init.body))
-  expect(body.code).toBe('M-100')
-  expect(body.name).toBe('新零件')
+  await screen.findByText('M-001')
+  // 建零件属于「零件管理」屏；这里出现入口会让人以为两个动作是一回事
+  expect(screen.queryByRole('button', { name: '+ 新增零件' })).toBeNull()
+  expect(screen.getByRole('button', { name: '+ 添加 BOM 零件' })).toBeTruthy()
 })

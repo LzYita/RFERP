@@ -20,13 +20,6 @@ import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { buildBomGroups } from '../lib/bomTree'
 import {
-  PartFormModal,
-  draftToWrite,
-  emptyPartDraft,
-  validatePartDraft,
-  type PartDraft,
-} from './partForm'
-import {
   bom as bomApi,
   parts as partsApi,
   products as productsApi,
@@ -58,10 +51,9 @@ import {
  * BOMItem 不冗余它，按 part_id 从 allParts 现查），叶子 = 明细行。
  * 分组是纯函数，在 lib/bomTree.ts，可单测。
  *
- * 零件主数据的新增 / 编辑也放在这一屏（PartFormModal 与零件管理屏共用）：
- * 配 BOM 时发现缺件、或分类/单位填错是高频路径，跳回「零件管理」再回来
- * 会丢掉已选的产品。两个动作的权限各管各的——动 BOM 看 bom 档位，
- * 动零件主数据看 parts 档位。
+ * 本屏只改**明细**：往 BOM 里挂零件、删明细、改用量/模式/损耗率/可替换。
+ * 零件主数据（编码、名称、分类、库存…）的新增与编辑留在「零件管理」屏——
+ * 这里是"这个产品用多少什么料"的地方，不是维护物料档案的地方。
  */
 
 type Picker = { id: number; label: string; code: string; name: string; spec: string }
@@ -82,11 +74,12 @@ interface Draft {
   remark: string
 }
 
-/** 行内编辑的草稿：只有这三个字段（与 PUT /api/bom 的契约一致）。 */
+/** 行内编辑的草稿：只有这四个字段（与 PUT /api/bom 的契约一致）。 */
 interface EditDraft {
   useMode: string
   qty: string
   loss: string
+  replaceable: boolean
 }
 
 const emptyDraft = (): Draft => ({
@@ -128,22 +121,19 @@ export function BOMScreen() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
 
   // 零件主数据表单（只用于新增；编辑一条明细不碰零件主数据）
-  const [partFormOpen, setPartFormOpen] = useState(false)
-  const [partDraft, setPartDraft] = useState<PartDraft>(emptyPartDraft())
-  const [partFormErr, setPartFormErr] = useState('')
-  const [partBusy, setPartBusy] = useState(false)
-
-  // 编辑一条 BOM 明细：只有用量、用量模式、损耗率三个字段。
+  // 编辑一条 BOM 明细：只有用量、用量模式、损耗率、可替换四个字段。
   const [editItem, setEditItem] = useState<BOMItem | null>(null)
-  const [editDraft, setEditDraft] = useState<EditDraft>({ useMode: '0', qty: '1', loss: '0' })
+  const [editDraft, setEditDraft] = useState<EditDraft>({
+    useMode: '0',
+    qty: '1',
+    loss: '0',
+    replaceable: false,
+  })
   const [editErr, setEditErr] = useState('')
   const [editBusy, setEditBusy] = useState(false)
 
   const { modules } = usePermissions()
   const canEdit = canWrite(modules, 'bom')
-  // 零件主数据的写权限与 bom 档位是两回事：仓库员两者都有，viewer 都没有，
-  // 而管理员/生产员之间的组合可能只占其一，所以分开判定、分开藏按钮。
-  const canEditParts = canWrite(modules, 'parts')
 
   useEffect(() => {
     let alive = true
@@ -281,42 +271,13 @@ export function BOMScreen() {
     setItems(await bomApi.list(active.id))
   }
 
-  async function reloadParts() {
-    setAllParts(await partsApi.list())
-  }
-
-  function openPartCreate() {
-    setPartDraft(emptyPartDraft())
-    setPartFormErr('')
-    setPartFormOpen(true)
-  }
-
-  async function submitPart() {
-    const v = validatePartDraft(partDraft, false)
-    if (!v.ok) {
-      setPartFormErr(v.msg)
-      return
-    }
-    setPartBusy(true)
-    setPartFormErr('')
-    try {
-      await partsApi.create(draftToWrite(partDraft, false))
-      setPartFormOpen(false)
-      // 新零件要进选择器与树的分类映射，所以零件列表必须重拉。
-      await reloadParts()
-    } catch (e) {
-      setPartFormErr(e instanceof Error ? e.message : '保存失败')
-    } finally {
-      setPartBusy(false)
-    }
-  }
-
   function openEditItem(item: BOMItem) {
     setEditItem(item)
     setEditDraft({
       useMode: String(item.use_mode),
       qty: String(item.quantity),
       loss: String(item.loss_rate),
+      replaceable: item.replaceable === 1,
     })
     setEditErr('')
   }
@@ -355,6 +316,7 @@ export function BOMScreen() {
         quantity: q,
         loss_rate: l,
         use_mode: Number(editDraft.useMode),
+        replaceable: editDraft.replaceable ? 1 : 0,
         version: editItem.version,
       })
       setEditItem(null)
@@ -507,31 +469,23 @@ export function BOMScreen() {
             />
           </div>
 
-          {canEdit || canEditParts ? (
+          {canEdit ? (
             <div className="ml-auto flex gap-2">
-              {canEditParts ? (
-                /* 新建零件主数据，与选没选产品无关，不随 active 置灰 */
-                <Btn onClick={openPartCreate}>+ 新增零件</Btn>
-              ) : null}
-              {canEdit ? (
-                <>
-                  {/* 按钮文案与弹窗标题一致，和左边的「新增零件」区分开：
-                      一个建主数据，一个把已有零件挂进 BOM */}
-                  <Btn
-                    disabled={!active}
-                    onClick={() => {
-                      setDraft(emptyDraft())
-                      setFormErr('')
-                      setFormOpen(true)
-                    }}
-                  >
-                    + 添加 BOM 零件
-                  </Btn>
-                  <Btn danger disabled={!sel} onClick={() => sel && setDeleting(sel)}>
-                    删除
-                  </Btn>
-                </>
-              ) : null}
+              {/* 本屏只往 BOM 里挂已有零件；零件主数据的新增在「零件管理」屏，
+                  两个动作放在同一行按钮里容易被当成同一件事。 */}
+              <Btn
+                disabled={!active}
+                onClick={() => {
+                  setDraft(emptyDraft())
+                  setFormErr('')
+                  setFormOpen(true)
+                }}
+              >
+                + 添加 BOM 零件
+              </Btn>
+              <Btn danger disabled={!sel} onClick={() => sel && setDeleting(sel)}>
+                删除
+              </Btn>
             </div>
           ) : null}
         </div>
@@ -790,6 +744,13 @@ export function BOMScreen() {
               onChange={(v) => setEditDraft({ ...editDraft, loss: v })}
             />
           </FormRow>
+          <FormRow label="可替换">
+            <Checkbox
+              checked={editDraft.replaceable}
+              onChange={(v) => setEditDraft({ ...editDraft, replaceable: v })}
+              label="该零件可被替换（跳过时不消耗库存）"
+            />
+          </FormRow>
         </Modal>
       ) : null}
 
@@ -804,17 +765,6 @@ export function BOMScreen() {
         />
       ) : null}
 
-      {partFormOpen ? (
-        <PartFormModal
-          draft={partDraft}
-          setDraft={setPartDraft}
-          editing={false}
-          busy={partBusy}
-          err={partFormErr}
-          onSubmit={submitPart}
-          onClose={() => setPartFormOpen(false)}
-        />
-      ) : null}
     </>
   )
 }

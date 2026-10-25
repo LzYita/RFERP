@@ -310,11 +310,11 @@ func (t *SQLiteTx) GetBOMItemForUpdate(id int64) (*model.BOMItem, error) {
 	return &b, nil
 }
 
-// 与 MySQL 侧同一口径：只写用量、模式、损耗率三个业务字段。
+// 与 MySQL 侧同一口径：只写用量、模式、损耗率、可替换四个业务字段。
 func (t *SQLiteTx) UpdateBOMItem(b *model.BOMItem) (int64, error) {
 	res, err := t.q.Exec(
-		`UPDATE bom_items SET quantity=?, loss_rate=?, use_mode=?, operator=?, version=version+1, updated_at=(strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=? AND version=?`,
-		b.Quantity, b.LossRate, b.UseMode, b.Operator, b.ID, b.Version,
+		`UPDATE bom_items SET quantity=?, loss_rate=?, use_mode=?, replaceable=?, operator=?, version=version+1, updated_at=(strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=? AND version=?`,
+		b.Quantity, b.LossRate, b.UseMode, b.Replaceable, b.Operator, b.ID, b.Version,
 	)
 	if err != nil {
 		return 0, TranslateError(err)

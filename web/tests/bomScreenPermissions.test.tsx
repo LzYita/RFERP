@@ -39,7 +39,7 @@ async function pickProduct(u: ReturnType<typeof userEvent.setup>) {
   await u.selectOptions(screen.getByLabelText('编码'), 'P-001')
 }
 
-it('bom-only write: BOM buttons and the edit column stay, part-master create hides', async () => {
+it('bom write: BOM actions and the edit column are shown', async () => {
   vi.doMock('../src/lib/api', async (original) => ({
     ...(await original<typeof import('../src/lib/api')>()),
     usePermissions: () => ({ modules: { bom: 'write' } }),
@@ -56,11 +56,9 @@ it('bom-only write: BOM buttons and the edit column stay, part-master create hid
   // 编辑明细属于 BOM 档位：bom 可写就能改用量
   expect(screen.getByRole('button', { name: '编辑' })).toBeTruthy()
   expect(screen.getByText('操作')).toBeTruthy()
-  // 建零件主数据属于 parts 档位
-  expect(screen.queryByRole('button', { name: '+ 新增零件' })).toBeNull()
 })
 
-it('parts-only write: create-part stays, BOM actions and the edit column hide', async () => {
+it('parts write without bom write: this screen stays read-only', async () => {
   vi.doMock('../src/lib/api', async (original) => ({
     ...(await original<typeof import('../src/lib/api')>()),
     usePermissions: () => ({ modules: { parts: 'write' } }),
@@ -72,9 +70,11 @@ it('parts-only write: create-part stays, BOM actions and the edit column hide', 
   await pickProduct(u)
 
   await screen.findByText('M-001')
-  expect(screen.getByRole('button', { name: '+ 新增零件' })).toBeTruthy()
+  // 能改零件主数据不等于能改别人的 BOM；本屏所有写入口都跟随 bom 档位
   expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
   expect(screen.queryByText('操作')).toBeNull()
   expect(screen.queryByRole('button', { name: '+ 添加 BOM 零件' })).toBeNull()
   expect(screen.queryByRole('button', { name: '删除' })).toBeNull()
+  // 零件主数据的新增也不在本屏
+  expect(screen.queryByRole('button', { name: '+ 新增零件' })).toBeNull()
 })

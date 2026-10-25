@@ -585,12 +585,12 @@ func (t *Tx) GetBOMItemForUpdate(id int64) (*model.BOMItem, error) {
 	return &b, nil
 }
 
-// UpdateBOMItem 有意只写三个业务字段：product_id/part_id、remark 与 replaceable
-// 都不在这里改——编辑一条明细的「用量/模式/损耗率」不该顺带改动它挂在哪个零件上。
+// UpdateBOMItem 有意只写四个业务字段：product_id/part_id 与 remark 不在这里改——
+// 编辑一条明细的用量/模式/损耗率/可替换，不该顺带改动它挂在哪个零件上。
 func (t *Tx) UpdateBOMItem(b *model.BOMItem) (int64, error) {
 	res, err := t.tx.Exec(
-		`UPDATE bom_items SET quantity=?, loss_rate=?, use_mode=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
-		b.Quantity, b.LossRate, b.UseMode, b.Operator, b.ID, b.Version,
+		`UPDATE bom_items SET quantity=?, loss_rate=?, use_mode=?, replaceable=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND version=?`,
+		b.Quantity, b.LossRate, b.UseMode, b.Replaceable, b.Operator, b.ID, b.Version,
 	)
 	if err != nil {
 		return 0, TranslateError(err)

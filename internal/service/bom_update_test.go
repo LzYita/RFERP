@@ -60,7 +60,7 @@ func TestUpdateBOMItemKeepsNonEditableFields(t *testing.T) {
 	svc := NewWithSnapshot(store, nil, nil)
 
 	out, err := svc.UpdateBOMItem(&model.BOMItem{
-		ID: 11, Quantity: 8, LossRate: 3, UseMode: 1, Version: 4,
+		ID: 11, Quantity: 8, LossRate: 3, UseMode: 1, Replaceable: 0, Version: 4,
 		Operator: ptr("admin"),
 	})
 	if err != nil {
@@ -72,11 +72,12 @@ func TestUpdateBOMItemKeepsNonEditableFields(t *testing.T) {
 	if store.updated.PartID != old.PartID || store.updated.ProductID != old.ProductID {
 		t.Fatalf("零件归属被改动：%+v", store.updated)
 	}
-	if store.updated.Remark == nil || *store.updated.Remark != *old.Remark || store.updated.Replaceable != 1 {
-		t.Fatalf("备注/可替换被改动：%+v", store.updated)
+	if store.updated.Remark == nil || *store.updated.Remark != *old.Remark {
+		t.Fatalf("备注被改动：%+v", store.updated)
 	}
-	if store.updated.Quantity != 8 || store.updated.LossRate != 3 || store.updated.UseMode != 1 {
-		t.Fatalf("三个字段没写进去：%+v", store.updated)
+	if store.updated.Quantity != 8 || store.updated.LossRate != 3 || store.updated.UseMode != 1 ||
+		store.updated.Replaceable != 0 {
+		t.Fatalf("四个字段没写进去：%+v", store.updated)
 	}
 	if out.Version != 5 {
 		t.Fatalf("返回的 version=%d，期望 5", out.Version)
@@ -105,6 +106,7 @@ func TestUpdateBOMItemRejectsInvalidValues(t *testing.T) {
 		{"loss above 100", &model.BOMItem{ID: 11, Quantity: 1, LossRate: 101, Version: 4}, "损耗率必须在0到100之间"},
 		{"negative loss", &model.BOMItem{ID: 11, Quantity: 1, LossRate: -0.1, Version: 4}, "损耗率必须在0到100之间"},
 		{"bad use mode", &model.BOMItem{ID: 11, Quantity: 1, UseMode: 2, Version: 4}, "BOM用量模式不合法"},
+		{"bad replaceable", &model.BOMItem{ID: 11, Quantity: 1, Replaceable: 2, Version: 4}, "BOM可替换标记不合法"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

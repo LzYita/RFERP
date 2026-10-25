@@ -82,14 +82,15 @@ func contractCases(t *testing.T, open storeFactory) {
 		}
 		cur := boms[0]
 
-		// 故意把 ProductID/PartID/Remark/Replaceable 改成别的值传进去：
-		// 仓储层只写三个字段，这些必须原样保留（调用方不该靠"记得不传"来保证）。
+		// 故意把 ProductID/PartID/Remark 改成别的值传进去：仓储层只写四个业务字段，
+		// 这些必须原样保留（调用方不该靠"记得不传"来保证）。
+		// Replaceable 反过来：它是可编辑字段，传 0 就必须写成 0。
 		other := "不该被写入"
 		changed, err := withTxRet(s, func(tx TxOps) (int64, error) {
 			return tx.UpdateBOMItem(&model.BOMItem{
 				ID: itemID, Version: cur.Version,
-				Quantity: 5, LossRate: 7.5, UseMode: 1,
-				ProductID: 999, PartID: partB, Remark: &other, Replaceable: 0,
+				Quantity: 5, LossRate: 7.5, UseMode: 1, Replaceable: 0,
+				ProductID: 999, PartID: partB, Remark: &other,
 			})
 		})
 		if err != nil || changed != 1 {
@@ -103,9 +104,11 @@ func contractCases(t *testing.T, open storeFactory) {
 		if got.Quantity != 5 || got.LossRate != 7.5 || got.UseMode != 1 {
 			t.Fatalf("three fields not updated: %+v", got)
 		}
-		if got.ProductID != pid || got.PartID != partA || got.Replaceable != 1 {
-			t.Fatalf("non-editable fields changed: product=%d part=%d replaceable=%d",
-				got.ProductID, got.PartID, got.Replaceable)
+		if got.ProductID != pid || got.PartID != partA {
+			t.Fatalf("non-editable fields changed: product=%d part=%d", got.ProductID, got.PartID)
+		}
+		if got.Replaceable != 0 {
+			t.Fatalf("replaceable 应被更新为 0，实际 %d", got.Replaceable)
 		}
 		if got.Remark == nil || *got.Remark != remark {
 			t.Fatalf("remark changed: %v", got.Remark)

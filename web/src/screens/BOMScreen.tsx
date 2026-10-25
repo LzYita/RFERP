@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   Badge,
   Btn,
@@ -18,6 +18,15 @@ import {
 } from '../components/form'
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
+import { buildBomGroups } from '../lib/bomTree'
+import {
+  PartFormModal,
+  draftToWrite,
+  emptyPartDraft,
+  partToDraft,
+  validatePartDraft,
+  type PartDraft,
+} from './partForm'
 import {
   bom as bomApi,
   parts as partsApi,
@@ -45,6 +54,15 @@ import {
  *
  * 用产品列表直接做一个下拉是不够的：产品重名与同系列不同规格是这套数据里
  * 真实存在的形态，只有级联才区分得开。
+ *
+ * 明细表是树状：根 = 产品，子层 = 零件分类（零件主数据的 part_type——
+ * BOMItem 不冗余它，按 part_id 从 allParts 现查），叶子 = 明细行。
+ * 分组是纯函数，在 lib/bomTree.ts，可单测。
+ *
+ * 零件主数据的新增 / 编辑也放在这一屏（PartFormModal 与零件管理屏共用）：
+ * 配 BOM 时发现缺件、或分类/单位填错是高频路径，跳回「零件管理」再回来
+ * 会丢掉已选的产品。两个动作的权限各管各的——动 BOM 看 bom 档位，
+ * 动零件主数据看 parts 档位。
  */
 
 type Picker = { id: number; label: string; code: string; name: string; spec: string }
@@ -100,8 +118,21 @@ export function BOMScreen() {
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<BOMItem | null>(null)
 
+  // 树的折叠状态：key 是分类名。换产品即重置（新树没有理由继承旧树的折叠）。
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  // 零件主数据表单（新增 / 编辑共用一个弹窗）
+  const [partFormOpen, setPartFormOpen] = useState(false)
+  const [partEditing, setPartEditing] = useState<Part | null>(null)
+  const [partDraft, setPartDraft] = useState<PartDraft>(emptyPartDraft())
+  const [partFormErr, setPartFormErr] = useState('')
+  const [partBusy, setPartBusy] = useState(false)
+
   const { modules } = usePermissions()
   const canEdit = canWrite(modules, 'bom')
+  // 零件主数据的写权限与 bom 档位是两回事：仓库员两者都有，viewer 都没有，
+  // 而管理员/生产员之间的组合可能只占其一，所以分开判定、分开藏按钮。
+  const canEditParts = canWrite(modules, 'parts')
 
   useEffect(() => {
     let alive = true
@@ -127,6 +158,22 @@ export function BOMScreen() {
     () => (allParts ?? []).map((p) => ({ id: p.id, label: pickLabel(p.code, p.name, p.spec) })),
     [allParts],
   )
+
+  // 树：分类分组由纯函数完成；零件主数据或明细变化都自动重新分组
+  // （比如把某零件的分类从「电子」改成「五金」，树应立刻搬家）。
+  const groups = useMemo(
+    () => buildBomGroups(items ?? [], allParts ?? []),
+    [items, allParts],
+  )
+
+  function toggleGroup(name: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
 
   // 级联的候选：名称 → 编码 → 规格，逐级收窄
   const codesForName = useMemo(() => {
@@ -196,6 +243,7 @@ export function BOMScreen() {
     if (!active) {
       setItems(null)
       setSelectedRow(null)
+      setCollapsed(new Set())
       return
     }
     let alive = true
@@ -205,6 +253,7 @@ export function BOMScreen() {
         if (alive) {
           setItems(r)
           setSelectedRow(null)
+          setCollapsed(new Set())
         }
       })
       .catch((e) => {
@@ -219,6 +268,48 @@ export function BOMScreen() {
   async function reload() {
     if (!active) return
     setItems(await bomApi.list(active.id))
+  }
+
+  async function reloadParts() {
+    setAllParts(await partsApi.list())
+  }
+
+  function openPartCreate() {
+    setPartEditing(null)
+    setPartDraft(emptyPartDraft())
+    setPartFormErr('')
+    setPartFormOpen(true)
+  }
+
+  function openPartEdit(p: Part) {
+    setPartEditing(p)
+    setPartDraft(partToDraft(p))
+    setPartFormErr('')
+    setPartFormOpen(true)
+  }
+
+  async function submitPart() {
+    const v = validatePartDraft(partDraft, partEditing !== null)
+    if (!v.ok) {
+      setPartFormErr(v.msg)
+      return
+    }
+    setPartBusy(true)
+    setPartFormErr('')
+    try {
+      const body = draftToWrite(partDraft, partEditing !== null, partEditing ?? undefined)
+      if (partEditing) await partsApi.update(body as never)
+      else await partsApi.create(body)
+      setPartFormOpen(false)
+      // 两份冗余都要刷新：allParts 承担树的分组与编辑入口，明细行上的
+      // part_code/part_name 是后端反序列化进 BOMItem 的，改完名字不重拉
+      // 树会立刻对、行却还显示旧名。
+      await Promise.all([reloadParts(), reload()])
+    } catch (e) {
+      setPartFormErr(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setPartBusy(false)
+    }
   }
 
   async function submit() {
@@ -281,6 +372,9 @@ export function BOMScreen() {
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
   const sel = (items ?? []).find((i) => i.id === selectedRow) ?? null
+  // 表格总列数：操作列（编辑零件）只在有 parts 写权限时存在，
+  // 根行 / 分类行 / 空态行的 colSpan 都跟随它
+  const COLS = canEditParts ? 9 : 8
 
   return (
     <>
@@ -359,21 +453,31 @@ export function BOMScreen() {
             />
           </div>
 
-          {canEdit ? (
+          {canEdit || canEditParts ? (
             <div className="ml-auto flex gap-2">
-              <Btn
-                disabled={!active}
-                onClick={() => {
-                  setDraft(emptyDraft())
-                  setFormErr('')
-                  setFormOpen(true)
-                }}
-              >
-                + 添加零件
-              </Btn>
-              <Btn danger disabled={!sel} onClick={() => sel && setDeleting(sel)}>
-                删除
-              </Btn>
+              {canEditParts ? (
+                /* 新建零件主数据，与选没选产品无关，不随 active 置灰 */
+                <Btn onClick={openPartCreate}>+ 新增零件</Btn>
+              ) : null}
+              {canEdit ? (
+                <>
+                  {/* 按钮文案与弹窗标题一致，和左边的「新增零件」区分开：
+                      一个建主数据，一个把已有零件挂进 BOM */}
+                  <Btn
+                    disabled={!active}
+                    onClick={() => {
+                      setDraft(emptyDraft())
+                      setFormErr('')
+                      setFormOpen(true)
+                    }}
+                  >
+                    + 添加 BOM 零件
+                  </Btn>
+                  <Btn danger disabled={!sel} onClick={() => sel && setDeleting(sel)}>
+                    删除
+                  </Btn>
+                </>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -404,6 +508,7 @@ export function BOMScreen() {
                 <col style={{ width: 80 }} />
                 <col style={{ width: 84 }} />
                 <col />
+                {canEditParts ? <col style={{ width: 64 }} /> : null}
               </colgroup>
               <thead>
                 <tr>
@@ -415,50 +520,103 @@ export function BOMScreen() {
                   <th className="num">损耗率</th>
                   <th className="mid">可替换</th>
                   <th>备注</th>
+                  {canEditParts ? (
+                    <th className="mid col-fix" style={{ width: 64 }}>
+                      操作
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody>
-                {(items ?? []).map((it) => (
-                  <tr
-                    key={it.id}
-                    data-selected={selectedRow === it.id}
-                    onClick={() => setSelectedRow(it.id === selectedRow ? null : it.id)}
-                  >
-                    <td className="mid">
-                      <input
-                        type="checkbox"
-                        checked={selectedRow === it.id}
-                        onChange={() => setSelectedRow(it.id === selectedRow ? null : it.id)}
-                        aria-label={`选择 ${it.part_code ?? it.id}`}
-                      />
-                    </td>
-                    <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                      {it.part_code ?? '—'}
-                    </td>
-                    <td>{it.part_name ?? '—'}</td>
-                    <td>
-                      <Badge kind={it.use_mode === 1 ? 'neutral' : 'ok'}>
-                        {it.use_mode === 1 ? '每M台用1个' : '每台用N个'}
-                      </Badge>
-                    </td>
-                    {/* 两种模式的单位不同：前者是台，后者是个 */}
-                    <td className="num">
-                      {it.use_mode === 1 ? `${Number(it.quantity).toFixed(0)}台` : `${Number(it.quantity).toFixed(2)}个`}
-                    </td>
-                    <td className="num">{Number(it.loss_rate).toFixed(1)}%</td>
-                    <td className="mid">
-                      {it.replaceable === 1 ? (
-                        <Badge kind="warn">可替换</Badge>
-                      ) : (
-                        <span className="text-[var(--color-fg-subtle)]">—</span>
-                      )}
-                    </td>
-                    <td>{it.remark ?? ''}</td>
-                  </tr>
+                {/* 根：产品。树的第一层，永远展开、不可折叠 */}
+                <tr data-tree-root>
+                  <td colSpan={COLS}>
+                    <span className="font-semibold">
+                      {active.code} {active.name}
+                    </span>
+                    <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">
+                      共 {(items ?? []).length} 个零件 · {groups.length} 类
+                    </span>
+                  </td>
+                </tr>
+                {groups.map((g) => (
+                  <Fragment key={g.name}>
+                    {/* 分类层：可折叠。点行切换，整行都是热区 */}
+                    <tr data-tree-group className="cursor-pointer" onClick={() => toggleGroup(g.name)}>
+                      <td colSpan={COLS} style={{ paddingLeft: 14 }}>
+                        <span className="mr-1.5 inline-block w-3 text-center text-[10px] text-[var(--color-fg-muted)]">
+                          {collapsed.has(g.name) ? '▶' : '▼'}
+                        </span>
+                        <span className="font-semibold">{g.name}</span>
+                        <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">
+                          {g.leaves.length} 项
+                        </span>
+                      </td>
+                    </tr>
+                    {!collapsed.has(g.name) &&
+                      g.leaves.map(({ item, part }) => (
+                        <tr
+                          key={item.id}
+                          data-selected={selectedRow === item.id}
+                          onClick={() => setSelectedRow(item.id === selectedRow ? null : item.id)}
+                        >
+                          <td className="mid" style={{ paddingLeft: 30 }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedRow === item.id}
+                              onChange={() => setSelectedRow(item.id === selectedRow ? null : item.id)}
+                              aria-label={`选择 ${item.part_code ?? item.id}`}
+                            />
+                          </td>
+                          <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
+                            {item.part_code ?? '—'}
+                          </td>
+                          <td>{item.part_name ?? '—'}</td>
+                          <td>
+                            <Badge kind={item.use_mode === 1 ? 'neutral' : 'ok'}>
+                              {item.use_mode === 1 ? '每M台用1个' : '每台用N个'}
+                            </Badge>
+                          </td>
+                          {/* 两种模式的单位不同：前者是台，后者是个 */}
+                          <td className="num">
+                            {item.use_mode === 1
+                              ? `${Number(item.quantity).toFixed(0)}台`
+                              : `${Number(item.quantity).toFixed(2)}个`}
+                          </td>
+                          <td className="num">{Number(item.loss_rate).toFixed(1)}%</td>
+                          <td className="mid">
+                            {item.replaceable === 1 ? (
+                              <Badge kind="warn">可替换</Badge>
+                            ) : (
+                              <span className="text-[var(--color-fg-subtle)]">—</span>
+                            )}
+                          </td>
+                          <td>{item.remark ?? ''}</td>
+                          {canEditParts ? (
+                            <td className="mid col-fix">
+                              {part ? (
+                                /* 行本身点击是选中（供删除），编辑按钮要拦住冒泡 */
+                                <button
+                                  className="text-[var(--color-primary)]"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    openPartEdit(part)
+                                  }}
+                                >
+                                  编辑
+                                </button>
+                              ) : (
+                                <span className="text-[var(--color-fg-subtle)]">—</span>
+                              )}
+                            </td>
+                          ) : null}
+                        </tr>
+                      ))}
+                  </Fragment>
                 ))}
                 {(items ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                    <td colSpan={COLS} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                       该产品还没有 BOM 明细
                     </td>
                   </tr>
@@ -542,6 +700,19 @@ export function BOMScreen() {
           message="确定从BOM中移除该零件？"
           onConfirm={doRemove}
           onCancel={() => setDeleting(null)}
+        />
+      ) : null}
+
+      {partFormOpen ? (
+        <PartFormModal
+          draft={partDraft}
+          setDraft={setPartDraft}
+          editing={partEditing !== null}
+          orig={partEditing ?? undefined}
+          busy={partBusy}
+          err={partFormErr}
+          onSubmit={submitPart}
+          onClose={() => setPartFormOpen(false)}
         />
       ) : null}
     </>

@@ -930,6 +930,102 @@ async function statsRankGate(page, longName) {
   }
 }
 
+/**
+ * BOM 屏：树状明细（根 = 产品，子层 = 零件分类，叶子 = 明细行）。
+ *
+ * 分组是**客户端**按零件主数据的分类算的，接口里没有这层结构——
+ * 只查 /api/bom 永远证明不了「分类从哪来、空分类去哪了」。所以这里
+ * 读真实渲染出来的层级，并验证折叠确实把叶子收走。
+ */
+async function bomTreeGate(page, product) {
+  // 侧栏标签是「BOM管理」，屏内标题是「BOM 管理」（nav.ts:35）——别混用
+  await page.click('text=BOM管理')
+  await sleep(1200)
+
+  // 级联选中产品：名称 → 编码。级联是这一屏既有的两套选择机制之一，
+  // 用它而不是搜索框，顺带确认改动没有把级联弄坏。
+  const nameSel = page.locator('label:has-text("名称") select').first()
+  const codeSel = page.locator('label:has-text("编码") select').first()
+  if (!(await nameSel.count()) || !(await codeSel.count())) {
+    bad('BOM 屏有级联选择器', '找不到名称/编码下拉')
+    return
+  }
+  await nameSel.selectOption(product.name)
+  await sleep(300)
+  await codeSel.selectOption(product.code)
+  await sleep(300)
+  // 第三级「规格」：该编码下存在规格时它是必填的，不选则解析不出产品
+  // （BOMScreen.tsx 的 cascadePick）。种子产品带规格，正好把三级都走一遍。
+  const specSel = page.locator('label:has-text("规格") select').first()
+  if ((await specSel.count()) > 0) await specSel.selectOption(product.spec)
+  await sleep(1200)
+
+  const root = page.locator('tr[data-tree-root]')
+  const rootText = (await root.count()) > 0 ? await root.first().innerText() : ''
+  check('BOM 树根是产品', rootText.includes(product.code) && rootText.includes(product.name),
+    rootText ? `根行：${rootText.replace(/\s*\n\s*/g, ' | ')}` : '没有 data-tree-root 行')
+
+  const groupTexts = await page.locator('tr[data-tree-group]').allInnerTexts()
+  const groups = groupTexts.map((t) => t.replace(/\s+/g, ' ').trim())
+  check('分类子层有三组（电子/五金/未分类）',
+    groups.some((t) => t.includes('电子')) && groups.some((t) => t.includes('五金')) && groups.some((t) => t.includes('未分类')),
+    `实际分组：${groups.join(' / ') || '无'}`)
+  // 未分类必须殿后：它是兜底桶，不是业务分类
+  check('「未分类」排在最后', groups.length > 0 && groups[groups.length - 1].includes('未分类'),
+    `实际分组：${groups.join(' / ')}`)
+
+  const tableText = (await page.locator('table').last().innerText())
+  check('叶子是明细零件', ['P-0001', 'P-8001', 'P-9002'].every((c) => tableText.includes(c)),
+    `表内没有全部零件编码`)
+
+  // 折叠：点「电子」组行，该组叶子必须从 DOM 里消失（不是只换图标）
+  const electronicGroup = page.locator('tr[data-tree-group]', { hasText: '电子' }).first()
+  await electronicGroup.click()
+  await sleep(400)
+  const afterCollapse = await page.locator('table').last().innerText()
+  check('折叠分类后其叶子消失', !afterCollapse.includes('P-0001'),
+    '仍然渲染着 P-0001')
+  check('折叠不影响其它分类', afterCollapse.includes('P-8001'), '五金组被连带收起')
+  await electronicGroup.click()
+  await sleep(400)
+  const afterExpand = await page.locator('table').last().innerText()
+  check('再次点击恢复展开', afterExpand.includes('P-0001'), 'P-0001 没有回来')
+
+  // 树行用 colSpan 跨列，新增的「操作」列让总列数变化过：表头与数据列
+  // 必须在同一纵向位置。jsdom 量不到坐标，只有真浏览器能证伪。
+  const align = await page.evaluate(() => {
+    const table = [...document.querySelectorAll('table')].pop()
+    const ths = [...table.querySelectorAll('thead th')]
+    const leaf = [...table.querySelectorAll('tbody tr')].find(
+      (tr) => tr.querySelector('input[type="checkbox"]') && tr.children.length > 1,
+    )
+    if (!leaf) return null
+    const tds = [...leaf.children]
+    return ths.map((th, i) => ({
+      i,
+      th: Math.round(th.getBoundingClientRect().right),
+      td: tds[i] ? Math.round(tds[i].getBoundingClientRect().right) : null,
+    }))
+  })
+  const skew = (align ?? []).filter((c) => c.td === null || Math.abs(c.th - c.td) > 2)
+  check('BOM 表头与数据列对齐', align !== null && skew.length === 0,
+    align === null ? '找不到明细行' : `错位列：${JSON.stringify(skew)}`)
+
+  // 零件主数据入口（管理员两档权限都有）
+  const newPartBtn = page.locator('button', { hasText: '新增零件' })
+  check('BOM 屏有「新增零件」入口', (await newPartBtn.count()) > 0, '找不到按钮')
+  const editBtn = page.locator('table').last().locator('button', { hasText: '编辑' })
+  check('明细行有「编辑」零件入口', (await editBtn.count()) > 0, '找不到行内编辑按钮')
+
+  // 需要肉眼核对布局时：GATE_SHOTS=<目录> 跑一遍，留下这一步的截图。
+  // 默认不留文件——关口每跑一次都往仓库/临时目录堆图是噪音。
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'bom-tree.png')
+    await page.screenshot({ path: shot })
+    ok(`BOM 树状屏截图 ${shot}`)
+  }
+}
+
 let browser
 try {
   sweepStaleRuns()
@@ -964,6 +1060,33 @@ try {
   })
   if (stockIn.code !== 200) throw new Error(`长名字零件入库失败 ${stockIn.code} ${stockIn.text.slice(0, 120)}`)
   ok('装配管理员与零件（电子/五金/塑料/长名字）')
+
+  // BOM 树状屏：一个产品挂三种分类，其中一条零件故意不填分类。
+  // 与零件同理，必须在浏览器登录**之前**造好（单用户单会话）。
+  await seedPart(auth, 'P-9002', '未分类验证件', '')
+  const seededAll = await api('/api/parts', { headers: auth })
+  const allPartRows = Array.isArray(seededAll.body) ? seededAll.body : seededAll.body?.items
+  const partByCode = (code) => (Array.isArray(allPartRows) ? allPartRows.find((p) => p.code === code) : undefined)
+  const BOM_PRODUCT = { code: 'P-BOM-1', name: 'BOM树验证产品', spec: 'A' }
+  const createdProduct = await api('/api/products', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ ...BOM_PRODUCT, unit: '台', spec: 'A' }),
+  })
+  if (createdProduct.code !== 200) {
+    throw new Error(`预置产品失败 ${createdProduct.code} ${createdProduct.text.slice(0, 120)}`)
+  }
+  for (const code of ['P-0001', 'P-8001', 'P-9002']) {
+    const p = partByCode(code)
+    if (!p) throw new Error(`预置 BOM 用的零件 ${code} 不存在`)
+    const r = await api('/api/bom', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ product_id: createdProduct.body.id, part_id: p.id, quantity: 1, loss_rate: 0, replaceable: 0, use_mode: 0 }),
+    })
+    if (r.code !== 200) throw new Error(`预置 BOM 明细 ${code} 失败 ${r.code} ${r.text.slice(0, 120)}`)
+  }
+  ok('装配产品与 BOM 明细（电子/五金/未分类）')
 
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
@@ -1017,6 +1140,9 @@ try {
 
     // 统计屏：排名长名字必须被裁剪（页级 overflow 检查抓不到）
     await statsRankGate(page, LONG_PART)
+
+    // BOM 屏：树状层级与零件主数据入口
+    await bomTreeGate(page, BOM_PRODUCT)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

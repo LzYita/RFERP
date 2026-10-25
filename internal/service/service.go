@@ -367,6 +367,25 @@ func (s *Service) DeletePart(id int64, operator string) error {
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
+		// 先查 BOM 引用：被引用就拒绝，并把「哪些产品用了它」带回界面。
+		// 放在 DeletePart 之前而不是靠外键报错，是因为外键只会给出
+		// "FOREIGN KEY constraint failed"，用户不知道去改哪个产品的 BOM。
+		usedBy, err := tx.BOMProductsForPart(id)
+		if err != nil {
+			return fmt.Errorf("check BOM usage: %w", err)
+		}
+		if len(usedBy) > 0 {
+			return &usecase.PartInBOMError{PartCode: old.Code, Products: usedBy}
+		}
+		// 第二道：追溯记录。同样是外键会拦（batch_trace.part_id），
+		// 但用户看到 FOREIGN KEY constraint failed 时不知道是哪个界面挡的。
+		traces, err := tx.TracesForPart(id)
+		if err != nil {
+			return fmt.Errorf("check production traces: %w", err)
+		}
+		if len(traces) > 0 {
+			return &usecase.PartInTraceError{PartCode: old.Code, Batches: traces}
+		}
 		if err := tx.DeletePart(id); err != nil {
 			return err
 		}

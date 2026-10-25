@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { usePermissions } from '../lib/api'
+import { ApiError, usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { isStockAlert, stockLevel, STOCK_LEVEL_TEXT } from '../lib/lowStock'
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
 import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
-import { ConfirmDialog } from '../components/form'
+import { ConfirmDialog, Modal } from '../components/form'
 import {
   Badge,
   Btn,
@@ -19,6 +19,15 @@ import {
 
 
 const DEFAULT_PAGE_SIZE = 20
+
+/** 删除被拒时后端回显的产品（只需要编码与名称）。 */
+type BOMBlocker = { code: string; name: string }
+/** 删除被拒时后端回显的批次（按批次汇总的投料记录条数）。 */
+type BatchBlocker = { batch_no: string; records: number }
+/** 两种「不能删」的原因给的建议不一样，所以分开建模，不合并成一个 products 数组。 */
+type DeleteBlock =
+  | { kind: 'bom'; partCode: string; products: BOMBlocker[] }
+  | { kind: 'trace'; partCode: string; batches: BatchBlocker[]; records: number }
 
 /**
  * 「分类」筛选的候选项。
@@ -125,6 +134,12 @@ export function PartsScreen() {
   const [formErr, setFormErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<Part | null>(null)
+  // 删除失败（非 BOM 引用）的提示。放列表上方的横幅里：确认框会关掉，
+  // 塞进 formErr 就只有表单弹窗才渲染，等于没提示。
+  const [deleteErr, setDeleteErr] = useState('')
+  // 删除被 BOM 引用拒绝时，把「被哪些产品用了」直接摆出来。
+  // 后端回 409 + products；只显示一句「删除失败」等于让用户自己去 BOM 表里翻。
+  const [blocked, setBlocked] = useState<DeleteBlock | null>(null)
   // 入库 / 盘点 / 批量。三个都是 Round 3 之前完全不存在的入口 ——
   // 后端端点与权限点早就有了，只差 UI。
   const [stockFor, setStockFor] = useState<Part | null>(null)
@@ -275,15 +290,24 @@ export function PartsScreen() {
     if (!batchDelList) return
     setBusy(true)
     setFormErr('')
+    setDeleteErr('')
     try {
       for (const p of batchDelList) {
-        await partsApi.remove(p.id)
+        try {
+          await partsApi.remove(p.id)
+        } catch (e) {
+          if (showDeleteBlockers(e, p.code)) {
+            setBatchDelList(null)
+            return
+          }
+          throw e
+        }
       }
       setSelected(new Set())
       setBatchDelList(null)
       await reload()
     } catch (e) {
-      setFormErr(
+      setDeleteErr(
         (e instanceof Error ? e.message : '批量删除失败') + '（已删除的不会回滚）',
       )
       setBatchDelList(null)
@@ -296,6 +320,7 @@ export function PartsScreen() {
   async function doDelete() {
     if (!deleting) return
     setBusy(true)
+    setDeleteErr('')
     try {
       await partsApi.remove(deleting.id)
       setSelected((prev) => {
@@ -306,11 +331,45 @@ export function PartsScreen() {
       setDeleting(null)
       await reload()
     } catch (e) {
-      setFormErr(e instanceof Error ? e.message : '删除失败')
+      if (showDeleteBlockers(e, deleting.code)) {
+        setDeleting(null)
+        return
+      }
+      setDeleteErr(e instanceof Error ? e.message : '删除失败')
       setDeleting(null)
     } finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * 409 表示「零件被引用，不能删」。两种载荷对应两种建议：
+   * - products：BOM 引用，用户去 BOM 管理删条目就能解开；
+   * - batches：生产投料记录，删不掉，只能把零件改为「停用」。
+   * 其它错误（404、非引用类失败）照旧走错误横幅，不冒充引用提示。
+   */
+  function showDeleteBlockers(e: unknown, partCode: string): boolean {
+    if (!(e instanceof ApiError) || e.status !== 409) return false
+    const data = e.data as
+      | { products?: BOMBlocker[]; batches?: BatchBlocker[]; records?: number }
+      | undefined
+    if (Array.isArray(data?.products) && data.products.length > 0) {
+      setFormErr('')
+      setDeleteErr('')
+      setBlocked({ kind: 'bom', partCode, products: data.products })
+      return true
+    }
+    if (Array.isArray(data?.batches) && data.batches.length > 0) {
+      const records =
+        typeof data.records === 'number'
+          ? data.records
+          : data.batches.reduce((n, b) => n + b.records, 0)
+      setFormErr('')
+      setDeleteErr('')
+      setBlocked({ kind: 'trace', partCode, batches: data.batches, records })
+      return true
+    }
+    return false
   }
 
   if (error) return <ScreenError kind={error.kind} text={error.text} />
@@ -323,6 +382,18 @@ export function PartsScreen() {
           {canEdit ? <Btn primary onClick={openCreate}>+ 新增零件</Btn> : null}
         </div>
       </div>
+
+      {deleteErr ? (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-[6px] border border-[var(--color-danger)]/30 bg-[var(--color-danger-bg)] px-2.5 py-1.5 text-[12px] text-[var(--color-danger)]"
+        >
+          <span>{deleteErr}</span>
+          <button type="button" className="ml-auto underline" onClick={() => setDeleteErr('')}>
+            知道了
+          </button>
+        </div>
+      ) : null}
 
       {/* 筛选区 */}
       <section className="rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] p-2.5">
@@ -611,6 +682,60 @@ export function PartsScreen() {
           onConfirm={doDelete}
           onCancel={() => setDeleting(null)}
         />
+      ) : null}
+
+      {blocked ? (
+        <Modal
+          title="无法删除零件"
+          width={460}
+          onClose={() => setBlocked(null)}
+          footer={
+            <Btn primary onClick={() => setBlocked(null)}>
+              知道了
+            </Btn>
+          }
+        >
+          {blocked.kind === 'bom' ? (
+            <>
+              <p className="text-[12.5px]">
+                零件 <b>{blocked.partCode}</b> 仍被以下产品的 BOM 引用，删除被拒绝：
+              </p>
+              <ul
+                aria-label="引用该零件的产品"
+                className="mt-2 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] p-2 text-[12px]"
+              >
+                {blocked.products.map((p) => (
+                  <li key={p.code} className="py-0.5">
+                    <span className="font-semibold">{p.code}</span> · {p.name}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[11.5px] text-[var(--color-fg-muted)]">
+                请先在「BOM 管理」里移除这些产品对该零件的引用，再删除本零件。
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-[12.5px]">
+                零件 <b>{blocked.partCode}</b> 有 <b>{blocked.records}</b> 条生产投料记录（涉及{' '}
+                {blocked.batches.length} 个批次），追溯记录不能删除：
+              </p>
+              <ul
+                aria-label="引用该零件的批次"
+                className="mt-2 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border)] bg-[var(--color-canvas)] p-2 text-[12px]"
+              >
+                {blocked.batches.map((b) => (
+                  <li key={b.batch_no} className="py-0.5">
+                    <span className="font-semibold">{b.batch_no}</span> · {b.records} 条
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[11.5px] text-[var(--color-fg-muted)]">
+                追溯记录用于质量回溯，不能删除。如不再使用该零件，请把它改为「停用」状态。
+              </p>
+            </>
+          )}
+        </Modal>
       ) : null}
     </>
   )

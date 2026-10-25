@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ApiError, usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { isStockAlert, stockLevel, STOCK_LEVEL_TEXT } from '../lib/lowStock'
@@ -740,4 +740,3 @@ export function PartsScreen() {
     </>
   )
 }
-

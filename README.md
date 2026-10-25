@@ -15,11 +15,11 @@ Built with **Wails v2** (Go backend) and a **React + TypeScript** frontend; data
 
 ## Features
 
-- **Users & permissions**: login, four roles (admin / warehouse / production / viewer), per-role feature visibility, real operator recorded in the audit log
+- **Users & permissions**: login, four roles (admin / warehouse / production / viewer), per-role feature visibility, real operator recorded in the audit log; disabling or deleting an account revokes its live sessions and remembered login
 - **Products / parts**: codes, specs, units, status, stock warnings
 - **BOM**: product-part usage, loss rate, replaceable flag, usage mode
 - **Production batches**: planned / produced quantity, status flow, material feeding
-- **Batch traceability**: trace material source by product batch or part
+- **Batch traceability**: query material sources by product batch, or reverse-look up every batch that used a part code (bidirectional query)
 - **Inventory**: stock-in, stock-out, stocktaking, warning list
 - **Operation log**: structured view (type / action / object / changes) with a detail dialog
 - **Backup & export**: whole-database backup and restore (MySQL SQL dump, SQLite snapshot), per-table CSV export; data directory configurable
@@ -48,7 +48,7 @@ access over VPN, update/rollback behaviour): see [docs/deployment.md](docs/deplo
 - The **first-run wizard** offers both; you can also set `"storage": "sqlite"` in `config.json`.
 - A config with no `storage` key is always treated as **MySQL** — the app never switches silently.
 - **Switching storage only changes the configuration; it does not move data.** Export from the old storage and import into the new one yourself.
-- Backup/restore follows the storage backend; the two are not interchangeable or merged. MySQL replays a `.sql` dump over the business tables in one transaction, preserving current accounts, migration records and database identity. SQLite replaces the entire database file with a `.db` snapshot, **including** those system records and the schema, then restarts the app. A selectable `pre_restore_` copy is made before either restore so the previous state can be recovered.
+- Backup/restore follows the storage backend; the two are not interchangeable or merged. MySQL replays a `.sql` dump over the business tables in one transaction, preserving current accounts, migration records and database identity. SQLite replaces the entire database file with a `.db` snapshot, **including** those system records and the schema; the app then blocks further business requests and asks you to quit and reopen it, after which you sign in with the accounts from the snapshot. A selectable `pre_restore_` copy is made before either restore so the previous state can be recovered.
 
 ## First run
 
@@ -99,7 +99,7 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 | Item | Requirement |
 |---|---|
 | OS | Windows 10 / 11 (64-bit) |
-| Go | **1.26 or newer** (releases and CI are built with **go1.26.5**) |
+| Go | **1.26.10 or newer** (releases and CI both build with **go1.26.10**, the current security baseline) |
 | C compiler | **64-bit mingw-w64 GCC** (required by CGO). **Verified: TDM-GCC 64-bit (10.3.0)**; other GCC distributions may fail to produce a runnable binary |
 | Node.js | 20 or newer, for the frontend bundle that is embedded in the binary |
 | Wails CLI | `go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0` |
@@ -128,7 +128,7 @@ Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 
 | Layer | Technology |
 |---|---|
-| Language | Go 1.26 |
+| Language | Go 1.26.10 |
 | Desktop shell | Wails v2.16 (Microsoft Edge WebView2) |
 | Frontend | React 19, TypeScript 6, Vite 8 |
 | Database | MySQL 8.0, or embedded SQLite (`modernc.org/sqlite`, pure Go, no CGO) |

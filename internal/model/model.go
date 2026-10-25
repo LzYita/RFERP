@@ -32,6 +32,15 @@ type Part struct {
 	Supplier  *string   `db:"supplier" json:"supplier,omitempty"`
 }
 
+// ProductRef 是「删除零件被拒」时回显给界面的最小产品信息。
+// 只带 id/编码/名称：界面要把「这个零件被哪些产品用了」说清楚，多带字段
+// 只会让响应变长，也让调用方误以为这里是完整的产品对象。
+type ProductRef struct {
+	ID   int64  `db:"id" json:"id"`
+	Code string `db:"code" json:"code"`
+	Name string `db:"name" json:"name"`
+}
+
 type BOMItem struct {
 	ID          int64     `db:"id" json:"id"`
 	ProductID   int64     `db:"product_id" json:"product_id"`

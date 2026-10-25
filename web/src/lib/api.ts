@@ -38,11 +38,19 @@ export class ApiError extends Error {
   readonly status: number
   /** 仅破坏性端点的错误带这个字段；其它错误为 undefined */
   readonly state?: OperationState
-  constructor(status: number, message: string, state?: OperationState) {
+  /**
+   * 响应体原样保留（可能是 undefined）。
+   *
+   * 409 这类错误除了文案还带结构化数据：删除零件被拒时 `products` 就是
+   * 「被哪些产品用了」。只把文案交给界面，前端就只能去正则抠产品名。
+   */
+  readonly data?: unknown
+  constructor(status: number, message: string, state?: OperationState, data?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.state = state
+    this.data = data
   }
   /** 401 表示会话失效（过期、被登出、被强制下线），界面应回到登录页 */
   get isUnauthorized(): boolean {
@@ -104,8 +112,10 @@ function broadcastUnauthorized() {
 async function throwApiError(resp: Response, token: string | null): Promise<never> {
   let msg = resp.statusText
   let state: OperationState | undefined
+  let data: unknown
   try {
     const body = await resp.json()
+    data = body
     if (body?.error) msg = body.error
     if (body?.state) state = body.state as OperationState
   } catch {
@@ -116,7 +126,7 @@ async function throwApiError(resp: Response, token: string | null): Promise<neve
     // 只在携带凭据时广播：登录本身失败不是「会话过期」
     if (token) broadcastUnauthorized()
   }
-  throw new ApiError(resp.status, msg, state)
+  throw new ApiError(resp.status, msg, state, data)
 }
 
 /**

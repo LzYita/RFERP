@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -133,6 +134,16 @@ func (s *Server) handleDeletePart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.apps.DeletePart(id, operatorName(sessionUser(w, r, s))); err != nil {
+		// 409 而不是 400：请求本身没问题，是当前数据状态不允许删。
+		// 带上 products，界面直接把「被哪些产品用了」列出来，不用去猜错误文案。
+		var inBOM *usecase.PartInBOMError
+		if errors.As(err, &inBOM) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":    inBOM.Error(),
+				"products": inBOM.Products,
+			})
+			return
+		}
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

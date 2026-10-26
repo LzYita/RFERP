@@ -116,4 +116,6 @@ it('still renders the table when the projection request fails', async () => {
   // 投影失败退化为当前三档，列表本身不受影响
   expect(await screen.findByText('M-002')).toBeTruthy()
   expect(within(screen.getByText('M-001').closest('tr') as HTMLElement).getByText('无库存')).toBeTruthy()
+  // 但要明说"在产占用算不出来"，不能让整列占位符看起来像真的没有占用
+  expect((await screen.findByRole('status')).textContent).toContain('在产占用加载失败')
 })

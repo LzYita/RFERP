@@ -185,10 +185,12 @@ func TestStockProjectionIgnoresDisabledPartsInSummary(t *testing.T) {
 	}
 }
 
-// 不变量：投影说"缺料" ⇔ 现在点完成会被拒。
+// 不变量（只有一个未完成批次时）：投影说"缺料" ⇔ 现在点完成会被拒。
 //
-// 这条比任何单个数字都重要——两边一旦分叉，界面上的预警就是在骗人。
-func TestProjectionShortageMatchesCompletionRejection(t *testing.T) {
+// 多批次时这条只在"总量"意义上成立：完成时每批各自检查当前库存，先完成的
+// 那批可能成功，后一批才被拒；投影报的是"这些批次不能全部完成"。
+// 这里只钉单批次，多批次的后果由 TestCompletionShortageNamesOtherBatches 覆盖。
+func TestProjectionShortageMatchesCompletionRejectionForOneBatch(t *testing.T) {
 	cases := []struct {
 		name  string
 		stock float64

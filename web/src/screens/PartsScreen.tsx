@@ -135,6 +135,8 @@ export function PartsScreen() {
   const [willOnly, setWillOnly] = useState(false)
   // 投影只读、可失败：拿不到就退化成当前三档，不能让整张表消失。
   const [projByPart, setProjByPart] = useState<Map<number, PartProjection>>(new Map())
+  // 失败要看得见：整列占位符与"确实没有占用"长得一样，不能默不作声。
+  const [projFailed, setProjFailed] = useState(false)
   // 「分类」筛选：Fyne 原版有的维度，迁移时整条丢了（连带列表里的分类列）。
   // 后端为它建了 idx_parts_type，说明这个维度本来就是要用的。
   const [typeFilter, setTypeFilter] = useState('全部')
@@ -178,8 +180,11 @@ export function PartsScreen() {
         // 混成一句「加载失败」会让用户既不知道该找谁、也不知道该重试。
         setError(classifyLoadError(err, '零件'))
       })
-    loadProjection().then((m) => {
-      if (alive) setProjByPart(m)
+    loadProjection().then((res) => {
+      if (alive) {
+        setProjByPart(res.rows)
+        setProjFailed(!res.ok)
+      }
     })
     return () => {
       alive = false
@@ -187,12 +192,12 @@ export function PartsScreen() {
   }, [])
 
   /** 投影单独拉、单独失败：它是附加信息，挂了不该拖垮零件列表。 */
-  async function loadProjection(): Promise<Map<number, PartProjection>> {
+  async function loadProjection(): Promise<{ rows: Map<number, PartProjection>; ok: boolean }> {
     try {
       const res = await projectionApi.get()
-      return new Map(res.parts.map((p) => [p.part_id, p]))
+      return { rows: new Map(res.parts.map((p) => [p.part_id, p])), ok: true }
     } catch {
-      return new Map()
+      return { rows: new Map(), ok: false }
     }
   }
 
@@ -245,7 +250,9 @@ export function PartsScreen() {
     const rows = await partsApi.list()
     setParts(rows)
     // 入库/盘点会改变投影；分页与筛选都依赖它，所以一起刷新。
-    setProjByPart(await loadProjection())
+    const proj = await loadProjection()
+    setProjByPart(proj.rows)
+    setProjFailed(!proj.ok)
   }
 
   async function submit() {
@@ -505,6 +512,16 @@ export function PartsScreen() {
         </div>
       </section>
 
+      {/* 投影失败不能只留下"整列占位符"：那和"确实没有占用"完全一样。 */}
+      {projFailed && (
+        <div
+          role="status"
+          className="rounded-[6px] border border-[var(--color-warn)] bg-[var(--color-warn-bg)] px-3 py-1.5 text-[11.5px] text-[var(--color-warn)]"
+        >
+          在产占用加载失败：「在产占用」列与「在产后将预警」筛选暂不完整，请稍后重试。
+        </div>
+      )}
+
       {/* 批量操作栏：选中行才出现（Ant 的 tableAlertRender） */}
       {selected.size > 0 && (
         <div className="flex items-center gap-2.5 rounded-[8px] border border-[var(--color-primary-subtle-border)] bg-[var(--color-primary-subtle)] px-3 py-2 text-[12px]">
@@ -550,7 +567,10 @@ export function PartsScreen() {
                 <th className="num">库存</th>
                 {/* 「在产占用」是未完成批次将要消耗、但还没扣的数量。
                     「库存」与它一起就能推出「全部完成后剩多少」，不必再加一列。 */}
-                <th className="num" title="未完成批次将要消耗的数量（完成时才真正扣减）">
+                <th
+                  className="num"
+                  title={projFailed ? '在产占用加载失败' : '未完成批次将要消耗的数量（完成时才真正扣减）'}
+                >
                   在产占用
                 </th>
                 <th className="num">预警值</th>
@@ -587,7 +607,11 @@ export function PartsScreen() {
                       {fmtQty(p.stock_qty)} {p.unit}
                     </td>
                     {/* 占用为 0 时显示占位符：整列 0 只会变成噪声 */}
-                    <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
+                    <td
+                      className="num"
+                      style={{ color: 'var(--color-fg-muted)' }}
+                      title={projFailed ? '在产占用加载失败' : undefined}
+                    >
                       {proj && proj.committed > 0 ? `${fmtQty(proj.committed)} ${p.unit}` : '—'}
                     </td>
                     {/* 预警值：与库存并排才看得出差多少。藏在详情里的话，

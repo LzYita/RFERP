@@ -1,6 +1,6 @@
-// 工作台四宫格：左列上"现状预警"、下"使用中预警"；右列上"生产计划"、下"操作记录"。
+// 工作台四宫格：左列上"现状预警"、下"未来预警"；右列上"生产计划"、下"操作记录"。
 //
-// 顺序是用户明确要求的（2026-10-26）：现状在上、使用中在下。它容易被后续
+// 顺序是用户明确要求的（2026-10-26）：现状在上、未来在下。它容易被后续
 // 重构无意改回去，所以除了断言内容，还要断言面板顺序与两个预警的徽章形态
 // （实心 vs 虚线）——颜色表达严重程度，线型表达"已发生 / 预计"。
 // @vitest-environment jsdom
@@ -65,7 +65,7 @@ const projectionRes = {
   summary: { willWarn: 0, willShort: 2 },
 }
 
-function stubFetch() {
+function stubFetch(opts: { projectionFails?: boolean } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
@@ -73,7 +73,11 @@ function stubFetch() {
       if (url.startsWith('/api/products')) return new Response(JSON.stringify(products))
       if (url.startsWith('/api/batches')) return new Response(JSON.stringify(batches))
       if (url.startsWith('/api/audit/recent')) return new Response(JSON.stringify(logs))
-      if (url.startsWith('/api/stock/projection')) return new Response(JSON.stringify(projectionRes))
+      if (url.startsWith('/api/stock/projection')) {
+        return opts.projectionFails
+          ? new Response('{"error":"boom"}', { status: 500 })
+          : new Response(JSON.stringify(projectionRes))
+      }
       return new Response('{}', { status: 404 })
     }),
   )
@@ -139,9 +143,24 @@ it('opens the in-progress batches consuming a projected part', async () => {
   const dialog = within(await screen.findByRole('dialog'))
   expect(dialog.getByText(/B-1/)).toBeTruthy()
   expect(dialog.getByText(/B-2/)).toBeTruthy()
-  // 每条占用都要能对上计划数与本零件占用
+  // 每条占用都要能对上批次号、计划数与本零件占用
+  expect(dialog.getByText('批次号')).toBeTruthy()
   expect(dialog.getByText('计划数')).toBeTruthy()
   expect(dialog.getByText('本零件占用')).toBeTruthy()
+})
+
+it('says the projection failed instead of pretending there are no future alerts', async () => {
+  stubFetch({ projectionFails: true })
+  render(<DashboardScreen />)
+  const future = within(
+    await screen.findByText('未来预警').then((el) => el.closest('[data-panel]') as HTMLElement),
+  )
+  expect(future.getByText(/在产占用数据加载失败/)).toBeTruthy()
+  // 不能把"算不出来"画成"没有预警"
+  expect(future.queryByText('没有正在生产、完成后会跌破预警线的零件')).toBeNull()
+  // 现状预警不依赖投影，仍然正常
+  const current = within(screen.getByText('现状预警').closest('[data-panel]') as HTMLElement)
+  expect(current.getByText('无库存')).toBeTruthy()
 })
 
 it('lists only open batches in the production plan, with their reserve level', async () => {

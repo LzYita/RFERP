@@ -255,7 +255,16 @@ function StockPreview({
       </div>
     )
   }
-  if (failed) return <BomPreview planQty={qty} items={fallbackItems} />
+  if (failed) {
+    return (
+      <div>
+        <div className="mt-1 rounded-[6px] border border-[var(--color-warn)] bg-[var(--color-warn-bg)] px-2.5 py-1.5 text-[11px] text-[var(--color-warn)]">
+          在产占用数据加载失败：以下只显示本批的 BOM 用量，不含其它在产批次的占用。
+        </div>
+        <BomPreview planQty={qty} items={fallbackItems} />
+      </div>
+    )
+  }
   if (rows === null) {
     return (
       <div className="mt-1 rounded-[6px] border border-[var(--color-border-subtle)] px-2.5 py-2 text-[11px] text-[var(--color-fg-muted)]">
@@ -275,7 +284,9 @@ function StockPreview({
   const low = rows.filter((r) => r.level === 'low')
   const conclusion =
     short.length > 0
-      ? `现有在产批次全部完成后，${short.length} 个零件会不足：本批无法完成，需先补货或调整用量。`
+      ? // 不足是"全部在产批次（含本批）合起来"的结论：本批自己可能先做就能做完，
+        // 说成"本批无法完成"会误导。缺的永远是"这些批次不能同时完成"。
+        `全部在产批次（含本批）完成后，${short.length} 个零件会不足：这些批次无法全部完成，需先补货或调整计划。`
       : low.length > 0
         ? `本批可以完成，但 ${low.length} 个零件完成后将低于预警线，建议提前补货。`
         : '本批所需零件库存充足。'

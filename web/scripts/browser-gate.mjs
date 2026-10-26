@@ -1273,6 +1273,32 @@ async function stockProjectionGate(page, product, batchNos) {
   check('弹窗同时给出计划数与本零件占用',
     holderText.includes('计划数') && holderText.includes('本零件占用'),
     `弹窗内容：${holderText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  // 列宽回归：弹窗表格若继承 .data-table 的 720px 最小宽度，就会撑出横向
+  // 滚动条、固定列被拉宽（用户截图反馈过）。jsdom 量不到，只有真浏览器能证伪。
+  const holderOverflow = await holderDialog.evaluate((el) => {
+    const table = el.querySelector('table.data-table.is-narrow')
+    if (!table) return null
+    const box = table.parentElement
+    return {
+      tableW: Math.round(table.getBoundingClientRect().width),
+      boxW: Math.round(box.getBoundingClientRect().width),
+      scrollW: box.scrollWidth,
+      clientW: box.clientWidth,
+    }
+  })
+  check('在产占用弹窗不横向溢出',
+    holderOverflow !== null && holderOverflow.scrollW <= holderOverflow.clientW + 1,
+    holderOverflow
+      ? `容器 scrollWidth=${holderOverflow.scrollW} clientWidth=${holderOverflow.clientW} 表宽=${holderOverflow.tableW} 容器宽=${holderOverflow.boxW}`
+      : '找不到占用表')
+  check('在产占用弹窗的表格铺满容器而不是超宽',
+    holderOverflow !== null && holderOverflow.tableW <= holderOverflow.boxW + 1,
+    holderOverflow ? `表宽=${holderOverflow.tableW} 容器宽=${holderOverflow.boxW}` : '找不到占用表')
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'holder-batches.png')
+    await page.screenshot({ path: shot })
+    ok(`在产占用弹窗截图 ${shot}`)
+  }
   await holderDialog.locator('button', { hasText: '关闭' }).click()
   await sleep(300)
 

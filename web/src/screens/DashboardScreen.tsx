@@ -93,14 +93,17 @@ export function DashboardScreen() {
   const [logs, setLogs] = useState<AuditLog[] | null>(null)
   const [proj, setProj] = useState<PartProjection[] | null>(null)
   const [reserve, setReserve] = useState<BatchReserve[]>([])
+  // 投影失败与"没有占用"必须分开：前者算不出来，后者是算出来没问题。
+  const [projFailed, setProjFailed] = useState(false)
   // 点开"未来预警"里的零件时，列出正在消耗它的在产批次。
   const [holderPart, setHolderPart] = useState<{ row: PartProjection; part: Part } | null>(null)
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
 
   useEffect(() => {
     let alive = true
-    // 任意一块失败不该让整屏变错误页——零件接口 500 时，统计卡与操作记录
-    // 仍然有用。五块全失败才算这一屏真的不可用（与零件屏同一策略）。
+    // 核心四块任意一块失败不该让整屏变错误页——零件接口 500 时，统计卡与
+    // 操作记录仍然有用。四块全失败才算这一屏真的不可用（与零件屏同一策略）。
+    // 投影单独加载：它只影响「未来预警」与「备料」，成功与否都不参与整屏判定。
     let okCount = 0
     let firstErr: unknown = null
 
@@ -121,18 +124,22 @@ export function DashboardScreen() {
       [api.get<Product[]>('/api/products'), (v) => setProducts(v as Product[])],
       [api.get<Batch[]>('/api/batches'), (v) => setBatches(v as Batch[])],
       [api.get<AuditLog[]>('/api/audit/recent?limit=30'), (v) => setLogs(v as AuditLog[])],
-      [
-        projectionApi.get().then((r) => {
-          // 投影是附加信息：即使它失败，也不计入"整屏失败"的判断。
-          if (!alive) return
-          okCount += 1
-          setProj(r.parts)
-          setReserve(r.batches)
-        }),
-        () => undefined,
-      ],
     ]
     jobs.forEach(([p, set]) => settle(p, set))
+
+    // 投影失败必须看得见：这一栏"没有预警"和"算不出来"是两回事，
+    // 把后者画成前者会让人以为在产批次都安全。
+    projectionApi
+      .get()
+      .then((r) => {
+        if (!alive) return
+        setProj(r.parts)
+        setReserve(r.batches)
+        setProjFailed(false)
+      })
+      .catch(() => {
+        if (alive) setProjFailed(true)
+      })
 
     Promise.allSettled(jobs.map(([p]) => p)).then(() => {
       if (!alive) return
@@ -260,7 +267,13 @@ export function DashboardScreen() {
                     <th>产品</th>
                     <th className="num" style={{ width: 62 }}>计划数</th>
                     <th className="mid" style={{ width: 70 }}>状态</th>
-                    <th className="mid" style={{ width: 62 }}>备料</th>
+                    <th
+                      className="mid"
+                      style={{ width: 62 }}
+                      title={projFailed ? '在产占用数据加载失败，备料暂不可用' : '按全部在产批次完成后推算'}
+                    >
+                      备料
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -304,11 +317,21 @@ export function DashboardScreen() {
         <Panel panelId="future-alerts" className="flex min-h-0 flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
             <span className="text-[13px] font-semibold">未来预警</span>
-            <span className="text-[11.5px] text-[var(--color-fg-subtle)]">{futureAlerts.length} 项</span>
+            <span className="text-[11.5px] text-[var(--color-fg-subtle)]">
+              {projFailed || proj === null ? '—' : `${futureAlerts.length} 项`}
+            </span>
             <span className="ml-auto text-[11px] text-[var(--color-fg-subtle)]">在产批次完成后</span>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            {futureAlerts.length === 0 ? (
+            {projFailed ? (
+              <div className="grid h-full place-items-center px-3 text-center text-[12px] text-[var(--color-warn)]">
+                在产占用数据加载失败，未来预警暂不可用
+              </div>
+            ) : proj === null ? (
+              <div className="grid h-full place-items-center text-[12px] text-[var(--color-fg-subtle)]">
+                正在计算在产占用…
+              </div>
+            ) : futureAlerts.length === 0 ? (
               <div className="grid h-full place-items-center text-[12px] text-[var(--color-fg-subtle)]">
                 没有正在生产、完成后会跌破预警线的零件
               </div>
@@ -431,7 +454,7 @@ function HolderBatchesModal({
   return (
     <Modal
       title={`在产占用 · ${part.code}`}
-      width={520}
+      width={560}
       onClose={onClose}
       footer={
         <Btn primary onClick={onClose}>
@@ -445,13 +468,13 @@ function HolderBatchesModal({
         {part.unit ? `（${part.unit}）` : ''}
       </div>
       <div className="max-h-[280px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
-        <table className="data-table">
+        <table className="data-table is-narrow is-compact">
           <colgroup>
-            <col style={{ width: 130 }} />
-            <col style={{ width: 78 }} />
+            <col style={{ width: 112 }} />
+            <col style={{ width: 64 }} />
             <col />
-            <col style={{ width: 84 }} />
-            <col style={{ width: 96 }} />
+            <col style={{ width: 60 }} />
+            <col style={{ width: 80 }} />
           </colgroup>
           <thead>
             <tr>
@@ -467,7 +490,13 @@ function HolderBatchesModal({
               const b = h.batch_id ? batchByID.get(h.batch_id) : undefined
               return (
                 <tr key={h.batch_no}>
-                  <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{h.batch_no}</td>
+                  <td
+                    className="tree-inline"
+                    style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}
+                    title={h.batch_no}
+                  >
+                    {h.batch_no}
+                  </td>
                   <td className="mid">
                     {b ? (
                       <Badge kind={batchStatusKind(b.status)}>{BATCH_STATUS_TEXT[b.status] ?? '—'}</Badge>

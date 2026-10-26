@@ -10,7 +10,8 @@
   "info": {
     "companyName": "LzYita",
     "productName": "RFERP",
-    "productVersion": "2.0.0",
+    "productVersion": "2.0.1",
+    "copyright": "Copyright © 2026 LzYita",
     "comments": "阶段 A：Wails 窗口 + 内嵌 127.0.0.1 服务"
   }
 }

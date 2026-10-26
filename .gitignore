@@ -29,12 +29,17 @@ release-notes.full.md
 # �����˹����չ������� / local manual-acceptance build
 manual-verify/
 # Wails 构建产物（wails build 生成，不入库）。
-# 例外：图标必须入库，否则干净 clone 出来的包带着 wails 默认的「W」（#84）。
+# 例外一：图标必须入库，否则干净 clone 出来的包带着 wails 默认的「W」（#84）。
+# 例外二：info.json 必须入库。它是 exe 的属性页版本资源模板，Wails 的默认
+#   模板只写 fixed.file_version 与 ProductVersion 字符串，缺 product_version
+#   与 FileVersion 字符串 —— 于是「文件版本」在资源管理器里显示 0.0.0.0 或空。
+#   不入库的话，干净 clone 每次构建都会被默认模板盖回去，这个修复就丢了。
 # 规则同下面的嵌入目录：不能让父目录整体被排除，否则反向排除无效。
 cmd/desktop-wails/build/*
 !cmd/desktop-wails/build/windows/
 cmd/desktop-wails/build/windows/*
 !cmd/desktop-wails/build/windows/icon.ico
+!cmd/desktop-wails/build/windows/info.json
 !cmd/desktop-wails/build/appicon.png
 
 # 前端构建产物（由 web/ 的 npm run build 生成，不入库）

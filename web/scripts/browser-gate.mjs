@@ -1170,22 +1170,32 @@ async function stockProjectionGate(page, product, batchNos) {
 
   await mgr.locator('[role="tab"]', { hasText: '临时零件' }).click()
   await sleep(300)
-  const partSel = mgr.locator('select[aria-label="临时零件"]')
-  const tempOpt = partSel.locator('option', { hasText: 'P-TEMP-G' })
-  check('临时零件下拉带库存信息', (await tempOpt.innerText()).includes('库存 30'),
-    `选项：${await tempOpt.innerText()}`)
-  await partSel.selectOption(await tempOpt.getAttribute('value'))
-  await mgr.getByPlaceholder('数量').fill('99999')
+  // 文字查询：输入编码过滤，点带库存信息的候选项
+  const combo = mgr.getByRole('combobox', { name: '临时零件' })
+  await combo.click()
+  await combo.fill('P-TEMP-G')
+  await sleep(300)
+  // ComboInput 会把输入原文也预置成一条候选（"库中原值"），要点的是带
+  // 名称与库存的完整标签。
+  const tempOpt = mgr.locator('[role="option"]', { hasText: '临时验证零件' })
+  check('零件搜索带出候选并显示库存', (await tempOpt.count()) > 0 && (await tempOpt.first().innerText()).includes('库存 30'),
+    `候选：${await tempOpt.first().innerText().catch(() => '(无)')}`)
+  await tempOpt.first().click()
+  await sleep(300)
+  // 选中后总量按公式自动算：计划 60 × 每台 1 个 = 60，库存 30 不够 → 拒
+  const autoTotal = await mgr.getByPlaceholder('自动').inputValue()
+  check('选中零件后自动算出本批需要量 60', autoTotal === '60', `自动总量：${autoTotal}`)
   await mgr.locator('button', { hasText: '添加' }).click()
   await sleep(900)
   const refusal = await mgr.innerText()
-  check('临时零件库存不足被拒并说明缺口', refusal.includes('临时需要 99999.00') && refusal.includes('将缺'),
+  check('临时零件库存不足被拒并说明缺口', refusal.includes('临时需要 60.00') && refusal.includes('将缺'),
     `弹窗内容：${refusal.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
-  await mgr.getByPlaceholder('数量').fill('10')
+  // 手填总量 10（清掉自动值）：这次能过库存检测
+  await mgr.getByPlaceholder('自动').fill('10')
   await mgr.locator('button', { hasText: '添加' }).click()
   await sleep(900)
   const mgrText = await mgr.innerText()
-  check('临时零件添加成功并列出', mgrText.includes('P-TEMP-G'),
+  check('临时零件添加成功并列出', mgrText.includes('P-TEMP-G') && mgrText.includes('手填总量'),
     `弹窗内容：${mgrText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
   // 临时分页的 footer 是「关闭」（跳过分页才是 取消/保存）
   await mgr.locator('button', { hasText: '关闭' }).click()

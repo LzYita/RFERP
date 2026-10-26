@@ -890,9 +890,27 @@ func (s *Service) ListTempParts(batchID int64) ([]model.BatchTempPart, error) {
 // 这次调用就是来改它的。检测在事务外取数（SQLite 单连接，事务内再查会
 // 自锁），完成生产时事务内还会按最终库存再拒一次，所以这里的检测是
 // "把不合法的填单挡在门口"，不是并发意义上的安全边界。
-func (s *Service) AddTempPart(batchID, partID int64, qty float64) error {
+func (s *Service) AddTempPart(in usecase.AddTempPartInput) error {
+	batchID, partID, qty := in.BatchID, in.PartID, in.Qty
 	if err := validatePositiveQuantity("临时零件数量", qty); err != nil {
 		return err
+	}
+	// 推导三件套要么都给要么都不给：半套多半是调用方写错了表单。
+	derivation := in.UseMode != nil || in.Quantity != nil || in.LossRate != nil
+	if derivation && (in.UseMode == nil || in.Quantity == nil || in.LossRate == nil) {
+		return fmt.Errorf("使用方式、单位用量与损耗率必须同时提供")
+	}
+	if derivation {
+		if *in.UseMode != 0 && *in.UseMode != 1 {
+			return fmt.Errorf("临时零件使用方式不合法")
+		}
+		if err := validatePositiveQuantity("临时零件单位用量", *in.Quantity); err != nil {
+			return err
+		}
+		lr := *in.LossRate
+		if math.IsNaN(lr) || math.IsInf(lr, 0) || lr < 0 || lr > maxLossRate || !representableQuantity(lr) {
+			return fmt.Errorf("损耗率必须在0到%.0f之间", maxLossRate)
+		}
 	}
 	committed, holders, _, err := s.commitmentsAndPlans(0)
 	if err != nil {
@@ -936,7 +954,11 @@ func (s *Service) AddTempPart(batchID, partID int64, qty float64) error {
 			}
 			return fmt.Errorf("%s。请先入库补足或调小数量", msg)
 		}
-		if err := tx.AddTempPart(batchID, partID, need); err != nil {
+		tp := &model.BatchTempPart{BatchID: batchID, PartID: partID, Qty: need}
+		if derivation {
+			tp.UseMode, tp.Quantity, tp.LossRate = in.UseMode, in.Quantity, in.LossRate
+		}
+		if err := tx.AddTempPart(tp); err != nil {
 			return fmt.Errorf("add temp part: %w", err)
 		}
 		return nil

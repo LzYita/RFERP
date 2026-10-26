@@ -33,6 +33,12 @@ var steps = []Step{
 		MySQL:   applyBatchTempPartsMySQL,
 		SQLite:  applyBatchTempPartsSQLite,
 	},
+	{
+		Version: 15,
+		Name:    "batch_temp_parts_derivation",
+		MySQL:   applyTempPartsDerivationMySQL,
+		SQLite:  applyTempPartsDerivationSQLite,
+	},
 }
 
 // nextVersion 是下一条应新增迁移的版本号。

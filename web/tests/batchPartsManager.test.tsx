@@ -60,16 +60,31 @@ const tempPart = (over: Partial<TempPart> = {}): TempPart => ({
   ...over,
 })
 
+type AddDerivation = { useMode: number; quantity: number; lossRate: number }
+
+/** 走完"文字查询 → 点选零件"的前置步骤。按编码定位，避免撞上 ComboInput
+ * 把输入原文预置成的那条候选项。 */
+async function pickPart(u: ReturnType<typeof userEvent.setup>, scope: HTMLElement, code: string) {
+  const input = within(scope).getByRole('combobox', { name: '临时零件' })
+  await u.click(input)
+  await u.type(input, code)
+  // ComboInput 会把输入原文也预置成一条候选项（aria-selected），真正要点的
+  // 是带名称与库存的那条完整标签。
+  await u.click(within(scope).getByRole('option', { name: new RegExp(`${code} .*库存`) }))
+}
+
 function renderManager(over: {
   items?: BOMItem[]
   temps?: TempPart[]
   skipped?: Set<number>
+  planQty?: number
   onSaveSkips?: (next: Set<number>) => void
-  onAddTemp?: (partId: number, qty: number) => Promise<void>
+  onAddTemp?: (partId: number, qty: number, derivation?: AddDerivation) => Promise<void>
   onRemoveTemp?: (partId: number) => Promise<void>
 } = {}) {
   const props = {
     batchNo: 'B-1',
+    planQty: over.planQty ?? 60,
     items: over.items ?? [bomItem()],
     parts: [part(), part({ id: 2, code: 'M-002', name: '备用螺丝', stock_qty: 8 })],
     skipped: over.skipped ?? new Set<number>(),
@@ -105,18 +120,66 @@ it('keeps two tabs and preserves the skip set while switching', async () => {
   expect(props.onSaveSkips).toHaveBeenCalledWith(new Set([1]))
 })
 
-it('adds a temp part with its quantity and shows backend refusals verbatim', async () => {
+it('adds a temp part via text search with a manually overridden total', async () => {
   const u = userEvent.setup()
   const onAddTemp = vi.fn(async () => {})
   renderManager({ onAddTemp })
   const dialog = screen.getByRole('dialog')
 
   await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
-  await u.selectOptions(within(dialog).getByLabelText('临时零件'), '2')
-  await u.type(within(dialog).getByPlaceholderText('数量'), '3')
+  await pickPart(u, dialog, 'M-002')
+  // 手填总量 3：不再提交推导依据（后端存 NULL，列表显示"手填总量"）
+  const total = within(dialog).getByPlaceholderText('自动') as HTMLInputElement
+  await u.type(total, '3')
+  // 手填前先清掉自动值：全选再输入
+  await u.clear(total)
+  await u.type(total, '3')
   await u.click(within(dialog).getByRole('button', { name: '添加' }))
 
-  await waitFor(() => expect(onAddTemp).toHaveBeenCalledWith(2, 3))
+  await waitFor(() => expect(onAddTemp).toHaveBeenCalledWith(2, 3, undefined))
+})
+
+it('computes the total from mode, per-unit quantity and loss rate automatically', async () => {
+  const u = userEvent.setup()
+  const onAddTemp = vi.fn(async () => {})
+  renderManager({ onAddTemp, planQty: 60 })
+  const dialog = screen.getByRole('dialog')
+
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  await pickPart(u, dialog, 'M-002')
+  // 默认 每台 1 个、无损耗 × 计划 60 → 总量自动 60
+  const total = within(dialog).getByPlaceholderText('自动') as HTMLInputElement
+  expect(total.value).toBe('60')
+  await u.click(within(dialog).getByRole('button', { name: '添加' }))
+
+  await waitFor(() =>
+    expect(onAddTemp).toHaveBeenCalledWith(2, 60, { useMode: 0, quantity: 1, lossRate: 0 }),
+  )
+})
+
+it('recalculates with the BOM formula when mode/quantity/loss change', async () => {
+  const u = userEvent.setup()
+  const onAddTemp = vi.fn(async () => {})
+  renderManager({ onAddTemp, planQty: 25 })
+  const dialog = screen.getByRole('dialog')
+
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  await pickPart(u, dialog, 'M-002')
+  // 每 4 台用 1 个、损耗 10%、计划 25 → ceil(25/4)=7 → ×1.1 → ceil = 8
+  await u.selectOptions(within(dialog).getByLabelText('使用方式'), '1')
+  const per = within(dialog).getByPlaceholderText('台数')
+  await u.clear(per)
+  await u.type(per, '4')
+  const loss = within(dialog).getByPlaceholderText('0')
+  await u.clear(loss)
+  await u.type(loss, '10')
+  const total = within(dialog).getByPlaceholderText('自动') as HTMLInputElement
+  expect(total.value).toBe('8')
+  await u.click(within(dialog).getByRole('button', { name: '添加' }))
+
+  await waitFor(() =>
+    expect(onAddTemp).toHaveBeenCalledWith(2, 8, { useMode: 1, quantity: 4, lossRate: 10 }),
+  )
 })
 
 it('shows the stock-shortage refusal from the server instead of closing silently', async () => {
@@ -124,12 +187,15 @@ it('shows the stock-shortage refusal from the server instead of closing silently
   const onAddTemp = vi.fn(async () => {
     throw new Error('备用螺丝 [M-002] 临时需要 99.00，全部在产批次完成后将缺 91.00')
   })
-  renderManager({ onAddTemp })
+  renderManager({ onAddTemp, planQty: 60 })
   const dialog = screen.getByRole('dialog')
 
   await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
-  await u.selectOptions(within(dialog).getByLabelText('临时零件'), '2')
-  await u.type(within(dialog).getByPlaceholderText('数量'), '99')
+  await pickPart(u, dialog, 'M-002')
+  // 手填 99（清掉自动的 60）
+  const total = within(dialog).getByPlaceholderText('自动') as HTMLInputElement
+  await u.clear(total)
+  await u.type(total, '99')
   await u.click(within(dialog).getByRole('button', { name: '添加' }))
 
   expect(await within(dialog).findByText(/将缺 91.00/)).toBeTruthy()
@@ -180,6 +246,20 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
       { partId: 2, usedQty: 50, partBatchNo: '', supplier: '' },
     ]),
   )
+})
+
+it('explains how each temp quantity was derived in the list', async () => {
+  renderManager({
+    temps: [
+      tempPart({ use_mode: 0, quantity: 2, loss_rate: 5 }),
+      tempPart({ part_id: 3, code: 'M-003', name: '垫片', qty: 10 }),
+    ],
+  })
+  const dialog = screen.getByRole('dialog')
+  await userEvent.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+
+  expect(within(dialog).getByText('每台 2 个，损耗 5%')).toBeTruthy()
+  expect(within(dialog).getByText('手填总量')).toBeTruthy()
 })
 
 it('orders the batch action buttons as requested', async () => {

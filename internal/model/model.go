@@ -108,6 +108,11 @@ type BatchTempPart struct {
 	Name      string    `db:"name" json:"name"`
 	Unit      string    `db:"unit" json:"unit"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	// 推导依据（可空）：表单按 BOM 行给出使用方式/单位用量/损耗率并自动算
+	// 总量时记录下来，手填总量时为 NULL。扣减永远以 Qty 为准。
+	UseMode  *int     `db:"use_mode" json:"use_mode,omitempty"`
+	Quantity *float64 `db:"quantity" json:"quantity,omitempty"`
+	LossRate *float64 `db:"loss_rate" json:"loss_rate,omitempty"`
 }
 
 type BatchTrace struct {

@@ -79,8 +79,20 @@ type Production interface {
 	RemoveSkipPart(batchID, partID int64) error
 	GetSkippedParts(batchID int64) ([]int64, error)
 	ListTempParts(batchID int64) ([]model.BatchTempPart, error)
-	AddTempPart(batchID, partID int64, qty float64) error
+	AddTempPart(in AddTempPartInput) error
 	RemoveTempPart(batchID, partID int64) error
+}
+
+// AddTempPartInput 添加（或改）批次临时零件。推导三件套必须同时给出或
+// 同时为空：只给一部分说明调用方把表单拆坏了，静默接受会让"总量怎么来的"
+// 再也说不清。
+type AddTempPartInput struct {
+	BatchID  int64
+	PartID   int64
+	Qty      float64
+	UseMode  *int
+	Quantity *float64
+	LossRate *float64
 }
 
 // Trace 批次正/反向追溯。

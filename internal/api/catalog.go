@@ -323,9 +323,12 @@ func (s *Server) handleListTempParts(w http.ResponseWriter, r *http.Request) {
 // 错误文案点名还占着库存的批次——前端只负责把这句话展示出来。
 func (s *Server) handleAddTempPart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		BatchID int64   `json:"batch_id"`
-		PartID  int64   `json:"part_id"`
-		Qty     float64 `json:"qty"`
+		BatchID  int64    `json:"batch_id"`
+		PartID   int64    `json:"part_id"`
+		Qty      float64  `json:"qty"`
+		UseMode  *int     `json:"use_mode"`
+		Quantity *float64 `json:"quantity"`
+		LossRate *float64 `json:"loss_rate"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -333,7 +336,14 @@ func (s *Server) handleAddTempPart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	if err := s.apps.AddTempPart(body.BatchID, body.PartID, body.Qty); err != nil {
+	if err := s.apps.AddTempPart(usecase.AddTempPartInput{
+		BatchID:  body.BatchID,
+		PartID:   body.PartID,
+		Qty:      body.Qty,
+		UseMode:  body.UseMode,
+		Quantity: body.Quantity,
+		LossRate: body.LossRate,
+	}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

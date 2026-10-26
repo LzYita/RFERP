@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   Checkbox,
+  ComboInput,
   FormError,
   FormGrid,
   FormRow,
@@ -20,6 +21,7 @@ import {
   resolveProduct,
   type Shortage,
   type TempPart,
+  type TempPartDerivation,
 } from '../lib/batch'
 
 /* ============================================================
@@ -656,6 +658,7 @@ export function RecordTraceModal({
  */
 export function PartsManagerModal({
   batchNo,
+  planQty,
   items,
   parts,
   skipped,
@@ -667,25 +670,90 @@ export function PartsManagerModal({
   onClose,
 }: {
   batchNo: string
+  /** 本批计划数：临时零件按 BOM 公式自动算总量时要用。 */
+  planQty: number
   items: BOMItem[]
-  /** 全量零件表：临时零件从中挑选。选项里带上现库存，填数量时心里有数。 */
+  /** 全量零件表：临时零件从中搜索挑选。选项里带上现库存，填数量时心里有数。 */
   parts: Part[]
   skipped: ReadonlySet<number>
   temps: ReadonlyArray<TempPart>
   busy: boolean
   /** 保存跳过差集。成功后父组件关弹窗；失败会把错误写进弹窗顶部。 */
   onSaveSkips: (next: Set<number>) => void
-  /** 加/改一个临时零件。失败抛错，由本组件展示；成功后父组件会刷新列表。 */
-  onAddTemp: (partId: number, qty: number) => Promise<void>
+  /** 加/改一个临时零件。失败抛错，由本组件展示；成功后父组件会刷新列表。
+      derivation 为空表示用户手填了总量。 */
+  onAddTemp: (partId: number, qty: number, derivation?: TempPartDerivation) => Promise<void>
   onRemoveTemp: (partId: number) => Promise<void>
   onClose: () => void
 }) {
   const [tab, setTab] = useState<'skip' | 'temp'>('skip')
   const [checked, setChecked] = useState<Set<number>>(() => new Set(skipped))
-  const [pickPart, setPickPart] = useState('')
-  const [pickQty, setPickQty] = useState('')
   const [localErr, setLocalErr] = useState('')
   const [pending, setPending] = useState(false)
+
+  // ---- 临时零件添加表单 ----
+  // 零件用文字查询（编码/名称都匹配）；总量默认按 BOM 公式
+  // （使用方式 × 单位用量 × 损耗率 × 计划数）自动算，手改后即以手填为准，
+  // 再改公式任一项会重新计算。
+  const [pickQuery, setPickQuery] = useState('')
+  const [pickedPart, setPickedPart] = useState<Part | null>(null)
+  const [useMode, setUseMode] = useState(0)
+  const [perQty, setPerQty] = useState('1')
+  const [lossRate, setLossRate] = useState('0')
+  const [totalQty, setTotalQty] = useState(planQty > 0 ? String(planQty) : '')
+  const [totalDirty, setTotalDirty] = useState(false)
+
+  const partLabel = (p: Part) => `${p.code} ${p.name}（库存 ${fmtQty(p.stock_qty)} ${p.unit}）`
+  const q = pickQuery.trim().toLowerCase()
+  const partOptions = useMemo(
+    () =>
+      parts
+        .filter(
+          (p) =>
+            q === '' ||
+            p.code.toLowerCase().includes(q) ||
+            (p.name ?? '').toLowerCase().includes(q) ||
+            (p.spec ?? '').toLowerCase().includes(q),
+        )
+        .map(partLabel),
+    [parts, q],
+  )
+
+  /** 把公式项换算成本批总量；数量还没填好时返回空串（添加时会被拦）。 */
+  function deriveTotal(mode: number, per: string, loss: string): string {
+    const perN = Number(per)
+    const lossN = Number(loss)
+    if (per === '' || !Number.isFinite(perN) || !Number.isFinite(lossN)) return ''
+    return String(bomConsume(planQty, { quantity: perN, loss_rate: lossN, use_mode: mode }))
+  }
+
+  function onPickChange(v: string) {
+    setPickQuery(v)
+    setPickedPart(parts.find((p) => partLabel(p) === v) ?? null)
+    setLocalErr('')
+  }
+
+  function updateDerivation(patch: { useMode?: number; per?: string; loss?: string }) {
+    const mode = patch.useMode ?? useMode
+    const per = patch.per ?? perQty
+    const loss = patch.loss ?? lossRate
+    setUseMode(mode)
+    setPerQty(per)
+    setLossRate(loss)
+    // 公式任一项一动，总量回到"自动"，手填值不再保留
+    setTotalDirty(false)
+    setTotalQty(deriveTotal(mode, per, loss))
+  }
+
+  function resetAddForm() {
+    setPickQuery('')
+    setPickedPart(null)
+    setUseMode(0)
+    setPerQty('1')
+    setLossRate('0')
+    setTotalDirty(false)
+    setTotalQty(deriveTotal(0, '1', '0'))
+  }
 
   // 只有标记了「可替换」的零件才能跳过：完成生产时跳过的零件不扣库存，
   // 而不可替换的零件是 BOM 的必需项，不该允许跳过（Fyne batch.go:554）。
@@ -704,25 +772,45 @@ export function PartsManagerModal({
   }
 
   function addTemp() {
-    if (pickPart === '') {
-      setLocalErr('请选择零件')
+    if (!pickedPart) {
+      setLocalErr('请从列表中选择零件（输入编码或名称搜索）')
       return
     }
-    const q = parseQuantity(pickQty, '数量')
-    if (!q.ok) {
-      setLocalErr(q.msg)
+    const t = parseQuantity(totalQty, '本批需要量')
+    if (!t.ok) {
+      setLocalErr(t.msg)
       return
     }
-    if (q.value <= 0) {
-      setLocalErr('数量必须是大于0的有限数值')
+    if (t.value <= 0) {
+      setLocalErr('本批需要量必须是大于0的有限数值')
       return
     }
+    // 手改过总量就不再提交推导依据：存下来的三件套必须能解释总量是怎么来的。
+    const derivation: TempPartDerivation | undefined = totalDirty
+      ? undefined
+      : { useMode, quantity: Number(perQty), lossRate: Number(lossRate) }
     void runTemp(async () => {
-      await onAddTemp(Number(pickPart), q.value)
-      // 成功后清空表单：留着零件名容易误触「再加一次」，列表里已经看得见它。
-      setPickPart('')
-      setPickQty('')
+      await onAddTemp(pickedPart.id, t.value, derivation)
+      resetAddForm()
     })
+  }
+
+  /** 列表里的"用法"一行：有推导依据就讲清楚怎么算的，手填就直说。 */
+  function deriveText(tp: TempPart): string {
+    if (
+      tp.use_mode === undefined ||
+      tp.use_mode === null ||
+      tp.quantity === undefined ||
+      tp.quantity === null ||
+      tp.loss_rate === undefined ||
+      tp.loss_rate === null
+    ) {
+      return '手填总量'
+    }
+    const loss = tp.loss_rate > 0 ? `，损耗 ${fmtQty(tp.loss_rate)}%` : ''
+    return tp.use_mode === 0
+      ? `每台 ${fmtQty(tp.quantity)} ${tp.unit || '个'}${loss}`
+      : `每 ${fmtQty(tp.quantity)} 台 1 个${loss}`
   }
 
   return (
@@ -821,17 +909,81 @@ export function PartsManagerModal({
           <div className="mb-2.5">
             <div className="text-[11.5px] font-semibold">本批临时零件</div>
             <div className="text-[11px] text-[var(--color-fg-muted)]">
-              不在产品 BOM 里、但这一批实际要用的料。添加时检查库存；完成生产时按数量整笔扣除。
+              不在产品 BOM 里、但这一批实际要用的料。添加时检查库存；完成生产时按总量整笔扣除。
             </div>
           </div>
-          <div className="mb-2.5 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
+          {/*
+            添加区放在列表上方：零件搜索的下拉向下弹开（max-h 180px），
+            放在弹窗底部会被 overflow-hidden 的弹窗边缘裁掉。
+          */}
+          <div className="mb-2.5 rounded-[6px] border border-[var(--color-border-subtle)] bg-[var(--color-canvas)] px-2.5 py-2">
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">零件（编码/名称搜索）</label>
+                <ComboInput
+                  aria-label="临时零件"
+                  value={pickQuery}
+                  onChange={onPickChange}
+                  options={partOptions}
+                  placeholder="输入编码或名称搜索"
+                />
+              </div>
+              <Btn disabled={pending} onClick={addTemp}>
+                {pending ? '添加中…' : '添加'}
+              </Btn>
+            </div>
+            <div className="mt-1.5 flex items-end gap-2">
+              <div style={{ width: 108 }}>
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">使用方式</label>
+                <select
+                  aria-label="使用方式"
+                  value={useMode}
+                  onChange={(e) => updateDerivation({ useMode: Number(e.target.value) })}
+                  className={selCls}
+                >
+                  <option value={0}>每台用量</option>
+                  <option value={1}>每 M 台 1 个</option>
+                </select>
+              </div>
+              <div style={{ width: 74 }}>
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">
+                  {useMode === 0 ? '单位用量' : 'M（台）'}
+                </label>
+                <TextInput
+                  value={perQty}
+                  placeholder={useMode === 0 ? '个数' : '台数'}
+                  onChange={(v) => updateDerivation({ per: v })}
+                />
+              </div>
+              <div style={{ width: 74 }}>
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">损耗率%</label>
+                <TextInput value={lossRate} placeholder="0" onChange={(v) => updateDerivation({ loss: v })} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">本批需要量</label>
+                <TextInput
+                  value={totalQty}
+                  placeholder="自动"
+                  mono
+                  onChange={(v) => {
+                    setTotalQty(v)
+                    setTotalDirty(true)
+                  }}
+                />
+                <div className="mt-0.5 text-[10px] leading-tight text-[var(--color-fg-subtle)]">
+                  自动按公式计算；直接修改即手填
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
             <table className="data-table is-narrow is-compact">
               <colgroup>
-                <col style={{ width: 110 }} />
+                <col style={{ width: 104 }} />
                 <col />
                 <col style={{ width: 78 }} />
-                <col style={{ width: 62 }} />
                 <col style={{ width: 56 }} />
+                <col style={{ width: 52 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -848,8 +1000,9 @@ export function PartsManagerModal({
                     <td className="tree-inline" style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }} title={tp.code}>
                       {tp.code}
                     </td>
-                    <td className="tree-inline" title={tp.name}>
-                      {tp.name}
+                    <td title={tp.name}>
+                      <div className="tree-inline">{tp.name}</div>
+                      <div className="text-[11px] text-[var(--color-fg-muted)]">{deriveText(tp)}</div>
                     </td>
                     <td className="num">{fmtQty(tp.qty)}</td>
                     <td className="mid">{tp.unit || '—'}</td>
@@ -874,35 +1027,6 @@ export function PartsManagerModal({
                 ) : null}
               </tbody>
             </table>
-          </div>
-          {/* 添加行：选零件 → 填本批需要量 → 添加。库存不够会在这里被拒。 */}
-          <div className="flex items-end gap-2 rounded-[6px] border border-[var(--color-border-subtle)] bg-[var(--color-canvas)] px-2.5 py-2">
-            <div className="min-w-0 flex-1">
-              <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">零件</label>
-              <select
-                aria-label="临时零件"
-                value={pickPart}
-                onChange={(e) => {
-                  setPickPart(e.target.value)
-                  setLocalErr('')
-                }}
-                className={selCls}
-              >
-                <option value="">选择零件…</option>
-                {parts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.code} {p.name}（库存 {fmtQty(p.stock_qty)} {p.unit}）
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div style={{ width: 96 }}>
-              <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">本批需要量</label>
-              <TextInput value={pickQty} placeholder="数量" onChange={(v) => setPickQty(v)} />
-            </div>
-            <Btn disabled={pending} onClick={addTemp}>
-              {pending ? '添加中…' : '添加'}
-            </Btn>
           </div>
         </>
       )}

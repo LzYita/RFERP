@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"app/internal/model"
+	"app/internal/usecase"
 )
 
 type tempPartApps struct {
@@ -20,8 +21,8 @@ func (a *tempPartApps) ListTempParts(batchID int64) ([]model.BatchTempPart, erro
 	return a.listRows, nil
 }
 
-func (a *tempPartApps) AddTempPart(batchID, partID int64, qty float64) error {
-	a.added = append(a.added, qty)
+func (a *tempPartApps) AddTempPart(in usecase.AddTempPartInput) error {
+	a.added = append(a.added, in.Qty)
 	return a.addErr
 }
 

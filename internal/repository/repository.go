@@ -359,6 +359,7 @@ func (r *Repository) GetSkippedParts(batchID int64) ([]int64, error) {
 func (r *Repository) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
 	var rows []model.BatchTempPart
 	err := r.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
 		p.code, p.name, p.unit
 		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
 		WHERE t.batch_id=? ORDER BY t.id`, batchID)
@@ -368,6 +369,7 @@ func (r *Repository) GetTempParts(batchID int64) ([]model.BatchTempPart, error) 
 func (r *Repository) GetAllTempParts() ([]model.BatchTempPart, error) {
 	var rows []model.BatchTempPart
 	err := r.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
 		p.code, p.name, p.unit
 		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
 		ORDER BY t.batch_id, t.id`)
@@ -733,6 +735,7 @@ func (t *Tx) RemoveSkipPart(batchID, partID int64) error {
 func (t *Tx) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
 	var rows []model.BatchTempPart
 	err := t.tx.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
 		p.code, p.name, p.unit
 		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
 		WHERE t.batch_id=? ORDER BY t.id`, batchID)
@@ -742,16 +745,19 @@ func (t *Tx) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
 func (t *Tx) GetAllTempParts() ([]model.BatchTempPart, error) {
 	var rows []model.BatchTempPart
 	err := t.tx.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
 		p.code, p.name, p.unit
 		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
 		ORDER BY t.batch_id, t.id`)
 	return rows, err
 }
 
-func (t *Tx) AddTempPart(batchID, partID int64, qty float64) error {
-	// 同一零件重复添加视为改数量：临时零件没有"编辑"入口，重加一次就是改。
-	_, err := t.tx.Exec(`INSERT INTO batch_temp_parts (batch_id,part_id,qty) VALUES (?,?,?)
-		ON DUPLICATE KEY UPDATE qty=VALUES(qty)`, batchID, partID, qty)
+func (t *Tx) AddTempPart(tp *model.BatchTempPart) error {
+	// 同一零件重复添加视为改数量（连推导依据一起覆盖）：临时零件没有"编辑"
+	// 入口，重加一次就是改。
+	_, err := t.tx.Exec(`INSERT INTO batch_temp_parts (batch_id,part_id,qty,use_mode,quantity,loss_rate) VALUES (?,?,?,?,?,?)
+		ON DUPLICATE KEY UPDATE qty=VALUES(qty), use_mode=VALUES(use_mode), quantity=VALUES(quantity), loss_rate=VALUES(loss_rate)`,
+		tp.BatchID, tp.PartID, tp.Qty, tp.UseMode, tp.Quantity, tp.LossRate)
 	return TranslateError(err)
 }
 

@@ -18,6 +18,7 @@ import {
   type Batch,
   type BatchTrace,
   type TempPart,
+  type TempPartDerivation,
 } from '../lib/batch'
 import {
   CreateBatchModal,
@@ -324,10 +325,10 @@ export function BatchScreen() {
     }
   }
 
-  async function addTemp(partId: number, qty: number) {
+  async function addTemp(partId: number, qty: number, derivation?: TempPartDerivation) {
     if (!selected) return
     // 不走全局 busy：添加是弹窗内的连续小操作，锁整个屏反而打断节奏。
-    await batches.addTempPart(selected.id, partId, qty)
+    await batches.addTempPart(selected.id, partId, qty, derivation)
     // 后端是 upsert：重加同零件=改数量，直接用返回后的最新列表刷新。
     setPartsTemps(await batches.tempParts(selected.id))
   }
@@ -590,6 +591,7 @@ export function BatchScreen() {
       {dialog?.kind === 'parts' && selected && partsBom ? (
         <PartsManagerModal
           batchNo={selected.batch_no}
+          planQty={selected.plan_qty}
           items={partsBom}
           parts={parts}
           skipped={partsSkipped}

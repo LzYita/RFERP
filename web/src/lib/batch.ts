@@ -217,6 +217,8 @@ export function shortageLine(s: Shortage): string {
 /**
  * 批次上的临时零件：不在产品 BOM 里、但这一批实际要用。
  * `qty` 是本批总量，完成生产时整笔扣，撤销时随消耗记录回退。
+ * 派生三件套（use_mode/quantity/loss_rate）是添加表单按 BOM 行方式算总量时
+ * 留下的依据；手填总量时为空，扣减永远以 `qty` 为准。
  */
 export interface TempPart {
   batch_id: number
@@ -225,6 +227,16 @@ export interface TempPart {
   code: string
   name: string
   unit: string
+  use_mode?: number
+  quantity?: number
+  loss_rate?: number
+}
+
+/** 添加临时零件时随总量一起提交的推导依据；手填总量时不传。 */
+export interface TempPartDerivation {
+  useMode: number
+  quantity: number
+  lossRate: number
 }
 
 export const batches = {
@@ -257,8 +269,15 @@ export const batches = {
   tempParts: async (batchId: number): Promise<TempPart[]> =>
     (await api.get<TempPart[] | null>(`/api/batches/temp-parts?batch_id=${batchId}`)) ?? [],
   // 同一零件重复添加 = 改数量（后端 upsert）；库存不够时后端 400 并说明缺口。
-  addTempPart: (batchId: number, partId: number, qty: number) =>
-    api.post<{ status: string }>('/api/batches/temp-parts', { batch_id: batchId, part_id: partId, qty }),
+  addTempPart: (batchId: number, partId: number, qty: number, derivation?: TempPartDerivation) =>
+    api.post<{ status: string }>('/api/batches/temp-parts', {
+      batch_id: batchId,
+      part_id: partId,
+      qty,
+      ...(derivation
+        ? { use_mode: derivation.useMode, quantity: derivation.quantity, loss_rate: derivation.lossRate }
+        : {}),
+    }),
   removeTempPart: (batchId: number, partId: number) =>
     api.del<{ status: string }>(`/api/batches/temp-parts?batch_id=${batchId}&part_id=${partId}`),
 }

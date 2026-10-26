@@ -77,7 +77,7 @@ func seedTempFixture(t *testing.T, stock, otherStock float64) *tempFixture {
 // 库存够 → 添加成功；投影把它算成占用。
 func TestAddTempPartProjectsIntoCommitted(t *testing.T) {
 	f := seedTempFixture(t, 50, 100)
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 30); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 30}); err != nil {
 		t.Fatalf("AddTempPart: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestAddTempPartRefusesWhenStockShort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = svc.AddTempPart(batchA, partID, 20)
+	err = svc.AddTempPart(usecase.AddTempPartInput{BatchID: batchA, PartID: partID, Qty: 20})
 	if err == nil {
 		t.Fatal("占用叠加后应当拒绝")
 	}
@@ -150,11 +150,11 @@ func TestAddTempPartRefusesWhenStockShort(t *testing.T) {
 func TestAddTempPartBoundaryExactStock(t *testing.T) {
 	f := seedTempFixture(t, 50, 0)
 	// 该产品没有 BOM（seedTempFixture 不建 BOM），占用只有临时零件本身。
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 50); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 50}); err != nil {
 		t.Fatalf("恰好用完应当允许：%v", err)
 	}
 	// 改成 51：旧数量 50 不算占用，51 > 50 拒。
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 51); err == nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 51}); err == nil {
 		t.Fatal("超过库存应当拒绝")
 	}
 }
@@ -162,11 +162,11 @@ func TestAddTempPartBoundaryExactStock(t *testing.T) {
 // 重复添加同一零件 = 改数量（upsert），不是再插一行。
 func TestAddTempPartUpsertsQuantity(t *testing.T) {
 	f := seedTempFixture(t, 100, 0)
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 10); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 10}); err != nil {
 		t.Fatal(err)
 	}
 	// 改成 8：检测时旧数量 10 不算占用（这次就是来改它的）。
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 8); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 8}); err != nil {
 		t.Fatalf("改数量应当成功：%v", err)
 	}
 	rows, err := f.svc.ListTempParts(f.batchID)
@@ -178,11 +178,11 @@ func TestAddTempPartUpsertsQuantity(t *testing.T) {
 // 完成生产：临时零件按数量整笔扣，缺料时拒绝，撤销时按冻结记录回退。
 func TestTempPartCompletionDeductsAndRevokeRestores(t *testing.T) {
 	f := seedTempFixture(t, 20, 10)
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 15); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 15}); err != nil {
 		t.Fatal(err)
 	}
 	// 对照零件也加临时 5，验证一次扣多个。
-	if err := f.svc.AddTempPart(f.batchID, f.otherID, 5); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.otherID, Qty: 5}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestTempPartCompletionDeductsAndRevokeRestores(t *testing.T) {
 // 且文案能说出"本批其余用料扣完后剩多少"。
 func TestTempPartShortageBlocksCompletion(t *testing.T) {
 	f := seedTempFixture(t, 20, 0)
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 15); err != nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 15}); err != nil {
 		t.Fatal(err)
 	}
 	// 添加后偷偷把库存调低到 10：模拟"加的时候够、完成的时候不够"。
@@ -248,10 +248,10 @@ func TestTempPartShortageBlocksCompletion(t *testing.T) {
 // 已完成/已撤销的批次不能再改临时零件；非法数量直接拒。
 func TestTempPartGuards(t *testing.T) {
 	f := seedTempFixture(t, 100, 0)
-	if err := f.svc.AddTempPart(f.batchID, f.partID, 0); err == nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: 0}); err == nil {
 		t.Fatal("0 数量应当拒绝")
 	}
-	if err := f.svc.AddTempPart(f.batchID, f.partID, -3); err == nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.partID, Qty: -3}); err == nil {
 		t.Fatal("负数应当拒绝")
 	}
 	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: f.batchID, Status: 2, Operator: "测试"}); err != nil {
@@ -260,7 +260,58 @@ func TestTempPartGuards(t *testing.T) {
 	if err := f.svc.RemoveTempPart(f.batchID, f.partID); err == nil {
 		t.Fatal("已完成批次不能删临时零件")
 	}
-	if err := f.svc.AddTempPart(f.batchID, f.otherID, 1); err == nil {
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.otherID, Qty: 1}); err == nil {
 		t.Fatal("已完成批次不能加临时零件")
+	}
+}
+
+// 表单按 BOM 行给推导三件套时要存下来；半套与非法值都要拒。
+func TestAddTempPartStoresDerivation(t *testing.T) {
+	// 对照零件也要够扣（手填总量走同一个库存检测）。
+	f := seedTempFixture(t, 100, 50)
+	mode := 1
+	per := 4.0
+	loss := 10.0
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{
+		BatchID: f.batchID, PartID: f.partID, Qty: 8,
+		UseMode: &mode, Quantity: &per, LossRate: &loss,
+	}); err != nil {
+		t.Fatalf("带推导添加失败：%v", err)
+	}
+	rows, err := f.svc.ListTempParts(f.batchID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %+v err=%v", rows, err)
+	}
+	if rows[0].UseMode == nil || *rows[0].UseMode != 1 ||
+		rows[0].Quantity == nil || *rows[0].Quantity != 4 ||
+		rows[0].LossRate == nil || *rows[0].LossRate != 10 {
+		t.Fatalf("推导字段没存对：%+v", rows[0])
+	}
+
+	// 半套：只给使用方式 → 拒
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{
+		BatchID: f.batchID, PartID: f.otherID, Qty: 1, UseMode: &mode,
+	}); err == nil {
+		t.Fatal("推导三件套不完整应当拒绝")
+	}
+	// 非法使用方式 → 拒
+	bad := 5
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{
+		BatchID: f.batchID, PartID: f.otherID, Qty: 1,
+		UseMode: &bad, Quantity: &per, LossRate: &loss,
+	}); err == nil {
+		t.Fatal("非法使用方式应当拒绝")
+	}
+	// 手填总量（不带推导）→ 允许，且列里推导为空（对照零件库存 100，够扣）
+	if err := f.svc.AddTempPart(usecase.AddTempPartInput{
+		BatchID: f.batchID, PartID: f.otherID, Qty: 3,
+	}); err != nil {
+		t.Fatalf("手填总量应当允许：%v", err)
+	}
+	rows, _ = f.svc.ListTempParts(f.batchID)
+	for _, r := range rows {
+		if r.PartID == f.otherID && r.UseMode != nil {
+			t.Fatalf("手填总量不该带推导：%+v", r)
+		}
 	}
 }

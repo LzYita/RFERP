@@ -63,7 +63,7 @@ type TxOps interface {
 	RemoveSkipPart(batchID, partID int64) error
 	GetTempParts(batchID int64) ([]model.BatchTempPart, error)
 	GetAllTempParts() ([]model.BatchTempPart, error)
-	AddTempPart(batchID, partID int64, qty float64) error
+	AddTempPart(tp *model.BatchTempPart) error
 	RemoveTempPart(batchID, partID int64) error
 }
 

@@ -37,3 +37,65 @@ func applyBatchTempPartsSQLite(db *sqlx.DB) error {
 	_, err := db.Exec(tempPartsDDLite)
 	return err
 }
+
+// v15 给 batch_temp_parts 补"推导字段"：添加表单按 BOM 行的方式给
+// 使用方式/单位用量/损耗率并自动算总量，这三列记录推导依据；用户手填
+// 总量时三列为 NULL（总量 qty 永远是扣减依据，推导字段只是给人看的）。
+// v14 已在部分库上落过（列不能 IF NOT EXISTS），所以用 v15 而不是改 v14。
+const tempPartsDerivationMySQL = `ALTER TABLE batch_temp_parts
+	ADD COLUMN use_mode SMALLINT NULL COMMENT '使用方式0每台N个/1每M台1个',
+	ADD COLUMN quantity DECIMAL(12,2) NULL COMMENT '单位用量',
+	ADD COLUMN loss_rate DECIMAL(5,2) NULL COMMENT '损耗率%'`
+
+func applyTempPartsDerivationMySQL(db *sqlx.DB) error {
+	for _, col := range []string{"use_mode", "quantity", "loss_rate"} {
+		ok, err := columnExists(db, "batch_temp_parts", col)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if _, err := db.Exec(tempPartsDerivationMySQL); err != nil {
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+func applyTempPartsDerivationSQLite(db *sqlx.DB) error {
+	rows, err := db.Queryx(`PRAGMA table_info(batch_temp_parts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dft any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dft, &pk); err != nil {
+			return err
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if have["use_mode"] {
+		return nil
+	}
+	// SQLite 的 ALTER TABLE 一次只能加一列，必须拆三条。
+	for _, stmt := range []string{
+		`ALTER TABLE batch_temp_parts ADD COLUMN use_mode SMALLINT NULL`,
+		`ALTER TABLE batch_temp_parts ADD COLUMN quantity NUMERIC NULL`,
+		`ALTER TABLE batch_temp_parts ADD COLUMN loss_rate NUMERIC NULL`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}

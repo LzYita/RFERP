@@ -26,6 +26,7 @@ import {
   SkipPartsModal,
   shortagesOf,
 } from './batchForms'
+import { projection as projectionApi, RESERVE_TEXT, type BatchReserve } from '../lib/projection'
 
 /**
  * 批次追溯。
@@ -45,6 +46,8 @@ export function BatchScreen() {
   const [list, setList] = useState<Batch[] | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [parts, setParts] = useState<Part[]>([])
+  // 按批次的备料结论（来自投影）：只用于列表角标，取不到就不显示。
+  const [reserve, setReserve] = useState<Map<number, BatchReserve>>(new Map())
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
 
   const [sel, setSel] = useState<number | null>(null)
@@ -71,6 +74,18 @@ export function BatchScreen() {
 
   async function reload() {
     setList(await batches.list())
+    // 状态一变在产占用就变，备料角标必须重新取，不能等下次进页面。
+    setReserve(await loadReserve())
+  }
+
+  /** 备料角标只依赖投影的批次结论；取不到就不显示，不影响列表本身。 */
+  async function loadReserve(): Promise<Map<number, BatchReserve>> {
+    try {
+      const res = await projectionApi.get()
+      return new Map(res.batches.map((b) => [b.batch_id, b]))
+    } catch {
+      return new Map()
+    }
   }
 
   useEffect(() => {
@@ -82,6 +97,9 @@ export function BatchScreen() {
         setProducts(ps)
         setParts(pts)
         setError(null)
+        loadReserve().then((m) => {
+          if (alive) setReserve(m)
+        })
       })
       .catch((e) => {
         if (alive) setError(classifyLoadError(e, '批次'))
@@ -400,6 +418,7 @@ export function BatchScreen() {
               <col style={{ width: 80 }} />
               <col style={{ width: 80 }} />
               <col style={{ width: 90 }} />
+              <col style={{ width: 78 }} />
               <col style={{ width: 130 }} />
               <col style={{ width: 100 }} />
             </colgroup>
@@ -411,6 +430,11 @@ export function BatchScreen() {
                 <th className="num">计划数</th>
                 <th className="num">完成数</th>
                 <th className="mid">状态</th>
+                {/* 备料按"全部在产批次都完成"的口径给结论：只在未完成批次上显示，
+                    已完成/已撤销的消耗与库存早已结清，再标"不足"是误导。 */}
+                <th className="mid" title="按全部在产批次完成后推算的备料情况">
+                  备料
+                </th>
                 <th>客户</th>
                 <th>创建时间</th>
               </tr>
@@ -439,13 +463,16 @@ export function BatchScreen() {
                   <td className="mid">
                     <Badge kind={statusKind(b.status)}>{statusText(b.status)}</Badge>
                   </td>
+                  <td className="mid">
+                    <ReserveBadge reserve={reserve.get(b.id)} status={b.status} />
+                  </td>
                   <td>{b.customer ?? ''}</td>
                   <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(b.created_at)}</td>
                 </tr>
               ))}
               {(list ?? []).length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                  <td colSpan={9} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                     还没有批次，点「新建批次」开始
                   </td>
                 </tr>
@@ -550,6 +577,7 @@ export function BatchScreen() {
           message={`确定将批次 ${selected.batch_no} 标记为【${statusText(dialog.to)}】？`}
           confirmLabel="确定"
           busy={busy}
+          error={err}
           onConfirm={() => void doStatus(dialog.to)}
           onCancel={() => setDialog(null)}
         />
@@ -559,6 +587,7 @@ export function BatchScreen() {
         <ConfirmDialog
           title="确认撤销"
           danger
+          error={err}
           busy={busy}
           message={
             <>
@@ -584,4 +613,26 @@ export function BatchScreen() {
   function partById(id: number): Part | undefined {
     return parts.find((p) => p.id === id)
   }
+}
+
+/**
+ * 批次行的「备料」角标。
+ *
+ * 已完成/已撤销不显示：前者的库存已经扣过，后者永远不会扣，
+ * 给它们标"不足"只会制造噪声。未完成但没有投影数据时也留空——
+ * 拿不到就什么都不说，比猜一个"充足"安全。
+ */
+function ReserveBadge({ reserve, status }: { reserve?: BatchReserve; status: number }) {
+  if (!reserve || status === BATCH_STATUS.done || status === BATCH_STATUS.revoked) {
+    return <span className="text-[var(--color-fg-subtle)]">—</span>
+  }
+  const kind = reserve.level === 'short' ? 'danger' : reserve.level === 'low' ? 'warn' : 'ok'
+  const detail = (reserve.parts ?? [])
+    .map((p) => `${p.name} [${p.code}]：完成后 ${p.after}`)
+    .join('；')
+  return (
+    <Badge kind={kind} title={detail || undefined}>
+      {RESERVE_TEXT[reserve.level]}
+    </Badge>
+  )
 }

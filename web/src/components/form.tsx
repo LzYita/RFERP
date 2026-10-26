@@ -553,6 +553,7 @@ export function ConfirmDialog({
   danger,
   confirmLabel = '确定',
   busy,
+  error,
   onConfirm,
   onCancel,
 }: {
@@ -561,6 +562,13 @@ export function ConfirmDialog({
   danger?: boolean
   confirmLabel?: string
   busy?: boolean
+  /**
+   * 确认动作失败时的错误文案。
+   *
+   * 没有这一格时，失败只把错误塞进调用方的 state，而那个 state 只在别的弹窗里
+   * 渲染——用户点了「确定」看到弹窗还在、什么都没发生，会以为程序卡住。
+   */
+  error?: string
   onConfirm: () => void
   onCancel?: () => void
 }) {
@@ -600,6 +608,14 @@ export function ConfirmDialog({
         </>
       }
     >
+      {error ? (
+        <div
+          role="alert"
+          className="mb-2 max-h-[180px] overflow-auto whitespace-pre-wrap rounded-[6px] border border-[var(--color-danger)]/30 bg-[var(--color-danger-bg)] px-2.5 py-1.5 text-[11.5px] text-[var(--color-danger)]"
+        >
+          {error}
+        </div>
+      ) : null}
       <div className="text-[12px] leading-relaxed text-[var(--color-fg)]">{message}</div>
     </Modal>
   )

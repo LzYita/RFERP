@@ -12,6 +12,7 @@ import { Btn, fmtQty } from '../components/ui'
 import { parseQuantity } from '../lib/num'
 import type { BOMItem, Part, Product } from '../lib/catalog'
 import { bom as bomApi } from '../lib/catalog'
+import { buildPreviewRows, projection as projectionApi, type PreviewRow } from '../lib/projection'
 import {
   bomConsume,
   cascadeFor,
@@ -184,7 +185,7 @@ export function CreateBatchModal({
         <WarnBox>该产品没有 BOM 明细。批次仍可创建，但完成生产时不会扣除任何零件。</WarnBox>
       )}
       {product && bom && bom.length > 0 ? (
-        <BomPreview planQty={parseQuantity(planQty, 'q').ok ? (parseQuantity(planQty, 'q') as { value: number }).value : 0} items={bom} />
+        <StockPreview productId={product.id} planQty={planQty} parts={parts} fallbackItems={bom} />
       ) : null}
     </Modal>
   )
@@ -192,6 +193,163 @@ export function CreateBatchModal({
 
 const selCls =
   'h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)] disabled:text-[var(--color-fg-subtle)]'
+
+/**
+ * 建批预览：把这一批的计划并入投影，逐零件显示
+ * 现有 / 其它在产占用 / 本批需要 / 全部完成后 / 预警线。
+ *
+ * 它补的正是「库存只在完成时才扣、未完成批次看起来库存充足」造成的空档：
+ * 两个批次各自都够、合起来不够，在建第二批时就能看见。
+ * **不阻止保存**——建批只是登记计划，硬拦仍在完成生产那一步。
+ *
+ * 投影接口失败时退回原来的「按 BOM 预计消耗」表：预测拿不到，至少让用户
+ * 看到本批会用多少料，而不是一片空白。
+ */
+function StockPreview({
+  productId,
+  planQty,
+  parts,
+  fallbackItems,
+}: {
+  productId: number
+  planQty: string
+  parts: Part[]
+  fallbackItems: BOMItem[]
+}) {
+  const parsed = parseQuantity(planQty, '计划数量')
+  const qty = parsed.ok && Number.isInteger(parsed.value) && parsed.value > 0 ? parsed.value : 0
+  const [rows, setRows] = useState<PreviewRow[] | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (qty <= 0) return
+    let alive = true
+    // 计划数量是逐位输入的：等停顿再请求，300ms 足以区分"手停"与"还在打"。
+    // 清空旧结果放在定时器里（异步），不在 effect 体内同步 setState——
+    // 后者会触发一次多余渲染，也是 lint 明令警告的写法。
+    const timer = setTimeout(() => {
+      setRows(null)
+      setFailed(false)
+      projectionApi
+        .get({ productId, planQty: qty })
+        .then((res) => {
+          if (!alive) return
+          setRows(buildPreviewRows(res, parts))
+          setFailed(false)
+        })
+        .catch(() => {
+          if (alive) setFailed(true)
+        })
+    }, 300)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+  }, [productId, qty, parts])
+
+  if (qty <= 0) {
+    return (
+      <div className="mt-1 rounded-[6px] border border-[var(--color-border-subtle)] px-2.5 py-2 text-[11px] text-[var(--color-fg-muted)]">
+        填写计划数量后显示备料预览。
+      </div>
+    )
+  }
+  if (failed) return <BomPreview planQty={qty} items={fallbackItems} />
+  if (rows === null) {
+    return (
+      <div className="mt-1 rounded-[6px] border border-[var(--color-border-subtle)] px-2.5 py-2 text-[11px] text-[var(--color-fg-muted)]">
+        正在计算本批备料情况…
+      </div>
+    )
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="mt-1 rounded-[6px] border border-[var(--color-border-subtle)] px-2.5 py-2 text-[11px] text-[var(--color-fg-muted)]">
+        该产品没有需要消耗的零件。
+      </div>
+    )
+  }
+
+  const short = rows.filter((r) => r.level === 'short')
+  const low = rows.filter((r) => r.level === 'low')
+  const conclusion =
+    short.length > 0
+      ? `现有在产批次全部完成后，${short.length} 个零件会不足：本批无法完成，需先补货或调整用量。`
+      : low.length > 0
+        ? `本批可以完成，但 ${low.length} 个零件完成后将低于预警线，建议提前补货。`
+        : '本批所需零件库存充足。'
+  const conclusionColor =
+    short.length > 0
+      ? 'text-[var(--color-danger)]'
+      : low.length > 0
+        ? 'text-[var(--color-warn)]'
+        : 'text-[var(--color-ok)]'
+
+  return (
+    <div className="mt-1 rounded-[6px] border border-[var(--color-border-subtle)]">
+      <div className="flex items-center gap-2 border-b border-[var(--color-border-subtle)] px-2.5 py-1 text-[11px]">
+        <span className="shrink-0 text-[var(--color-fg-muted)]">备料预览</span>
+        <span className={conclusionColor}>{conclusion}</span>
+      </div>
+      <div className="max-h-[170px] overflow-auto">
+        <table className="data-table is-compact">
+          <colgroup>
+            <col style={{ width: 118 }} />
+            <col />
+            <col style={{ width: 68 }} />
+            <col style={{ width: 76 }} />
+            <col style={{ width: 70 }} />
+            <col style={{ width: 82 }} />
+            <col style={{ width: 70 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>零件编码</th>
+              <th>零件名称</th>
+              <th className="num">现有</th>
+              <th className="num" title="其它未完成批次已占用、完成时才扣的数量">
+                其它占用
+              </th>
+              <th className="num">本批需要</th>
+              <th className="num">全部完成后</th>
+              <th className="num">预警线</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.partId}>
+                <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{r.code}</td>
+                <td>{r.name}</td>
+                <td className="num">{fmtQty(r.stock)}</td>
+                <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
+                  {r.others > 0 ? fmtQty(r.others) : '—'}
+                </td>
+                <td className="num">{fmtQty(r.planned)}</td>
+                <td
+                  className="num"
+                  style={{
+                    color:
+                      r.level === 'short'
+                        ? 'var(--color-danger)'
+                        : r.level === 'low'
+                          ? 'var(--color-warn)'
+                          : undefined,
+                    fontWeight: r.level === 'ok' ? undefined : 600,
+                  }}
+                >
+                  {fmtQty(r.after)}
+                </td>
+                <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
+                  {fmtQty(r.warn)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
 
 function BomPreview({ planQty, items }: { planQty: number; items: BOMItem[] }) {
   return (

@@ -69,7 +69,7 @@ type Inventory interface {
 	AdjustStock(in AdjustStockInput) error
 }
 
-// Production 生产批次与投料跳过零件。
+// Production 生产批次、投料跳过零件与临时零件。
 type Production interface {
 	CreateBatch(b *model.ProductBatch) (*model.ProductBatch, error)
 	ListBatches() ([]model.ProductBatch, error)
@@ -78,6 +78,9 @@ type Production interface {
 	AddSkipPart(batchID, partID int64) error
 	RemoveSkipPart(batchID, partID int64) error
 	GetSkippedParts(batchID int64) ([]int64, error)
+	ListTempParts(batchID int64) ([]model.BatchTempPart, error)
+	AddTempPart(batchID, partID int64, qty float64) error
+	RemoveTempPart(batchID, partID int64) error
 }
 
 // Trace 批次正/反向追溯。

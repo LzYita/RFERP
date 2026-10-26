@@ -61,6 +61,10 @@ type TxOps interface {
 	GetSkippedParts(batchID int64) ([]int64, error)
 	AddSkipPart(batchID, partID int64) error
 	RemoveSkipPart(batchID, partID int64) error
+	GetTempParts(batchID int64) ([]model.BatchTempPart, error)
+	GetAllTempParts() ([]model.BatchTempPart, error)
+	AddTempPart(batchID, partID int64, qty float64) error
+	RemoveTempPart(batchID, partID int64) error
 }
 
 // Store is the persistence surface used by the application service.
@@ -81,6 +85,8 @@ type Store interface {
 	ListBatches() ([]model.ProductBatch, error)
 	GetSkippedParts(batchID int64) ([]int64, error)
 	GetAllSkippedParts() ([]SkipPartRow, error)
+	GetTempParts(batchID int64) ([]model.BatchTempPart, error)
+	GetAllTempParts() ([]model.BatchTempPart, error)
 	CreateTrace(t *model.BatchTrace) (int64, error)
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
 	TraceByProduct(batchNo string) ([]model.BatchTrace, error)

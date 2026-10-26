@@ -10,20 +10,21 @@ import {
   BATCH_STATUS,
   batches,
   canChangeStatus,
-  canEditSkips,
+  canManageParts,
   findShortages,
   statusKind,
   statusText,
   traces,
   type Batch,
   type BatchTrace,
+  type TempPart,
 } from '../lib/batch'
 import {
   CreateBatchModal,
   type NewBatchInput,
+  PartsManagerModal,
   RecordTraceModal,
   ShortageModal,
-  SkipPartsModal,
   shortagesOf,
 } from './batchForms'
 import { projection as projectionApi, RESERVE_TEXT, type BatchReserve } from '../lib/projection'
@@ -57,7 +58,7 @@ export function BatchScreen() {
   const [dialog, setDialog] = useState<
     | { kind: 'create' }
     | { kind: 'trace' }
-    | { kind: 'skip' }
+    | { kind: 'parts' }
     | { kind: 'status'; to: number }
     | { kind: 'revoke' }
     | null
@@ -272,34 +273,33 @@ export function BatchScreen() {
     }
   }
 
-  /* ---------- 跳过零件 ---------- */
+  /* ---------- 零件管理（跳过 / 临时） ---------- */
 
-  const [skipBom, setSkipBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
-  const [skipAlready, setSkipAlready] = useState<Set<number>>(new Set())
+  const [partsBom, setPartsBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
+  const [partsSkipped, setPartsSkipped] = useState<Set<number>>(new Set())
+  const [partsTemps, setPartsTemps] = useState<TempPart[]>([])
 
-  async function openSkip() {
+  async function openPartsManager() {
     if (!selected) return
-    const guard = canEditSkips(selected)
+    const guard = canManageParts(selected)
     if (!guard.ok) {
       setNotice(guard.msg)
       return
     }
     setBusy(true)
     try {
-      const [bom, already] = await Promise.all([
+      const [bom, already, temps] = await Promise.all([
         bomApi.list(selected.product_id),
         batches.skipped(selected.id),
+        batches.tempParts(selected.id),
       ])
-      if (bom.length === 0) {
-        setNotice('该产品没有BOM明细，无需跳过')
-        return
-      }
-      setSkipBom(bom)
-      setSkipAlready(new Set(already))
+      setPartsBom(bom)
+      setPartsSkipped(new Set(already))
+      setPartsTemps(temps)
       setErr('')
-      setDialog({ kind: 'skip' })
+      setDialog({ kind: 'parts' })
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : '查询BOM失败')
+      setNotice(e instanceof Error ? e.message : '查询零件数据失败')
     } finally {
       setBusy(false)
     }
@@ -311,8 +311,8 @@ export function BatchScreen() {
     try {
       // 只提交差集：API 对重复新增/删除缺失都是幂等返回 200，逐条全量提交
       // 会为 N 个零件发 2N 个请求，其中大部分什么都没做。
-      const toAdd = [...next].filter((id) => !skipAlready.has(id))
-      const toRemove = [...skipAlready].filter((id) => !next.has(id))
+      const toAdd = [...next].filter((id) => !partsSkipped.has(id))
+      const toRemove = [...partsSkipped].filter((id) => !next.has(id))
       for (const partId of toAdd) await batches.addSkip(selected.id, partId)
       for (const partId of toRemove) await batches.removeSkip(selected.id, partId)
       setDialog(null)
@@ -324,15 +324,40 @@ export function BatchScreen() {
     }
   }
 
+  async function addTemp(partId: number, qty: number) {
+    if (!selected) return
+    // 不走全局 busy：添加是弹窗内的连续小操作，锁整个屏反而打断节奏。
+    await batches.addTempPart(selected.id, partId, qty)
+    // 后端是 upsert：重加同零件=改数量，直接用返回后的最新列表刷新。
+    setPartsTemps(await batches.tempParts(selected.id))
+  }
+
+  async function removeTemp(partId: number) {
+    if (!selected) return
+    await batches.removeTempPart(selected.id, partId)
+    setPartsTemps(await batches.tempParts(selected.id))
+  }
+
   /* ---------- 追溯 ---------- */
 
   const [traceBom, setTraceBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
+  // 跳过与临时零件随弹窗打开时一起取：跳过的不给投，临时的加一行，
+  // 「零件管理」里刚改过的内容在这里立刻可见。
+  const [traceSkipped, setTraceSkipped] = useState<Set<number>>(new Set())
+  const [traceTemps, setTraceTemps] = useState<TempPart[]>([])
 
   async function openTrace() {
     if (!selected) return
     setBusy(true)
     try {
-      setTraceBom(await bomApi.list(selected.product_id))
+      const [bom, skipped, temps] = await Promise.all([
+        bomApi.list(selected.product_id),
+        batches.skipped(selected.id),
+        batches.tempParts(selected.id),
+      ])
+      setTraceBom(bom)
+      setTraceSkipped(new Set(skipped))
+      setTraceTemps(temps)
       setErr('')
       setDialog({ kind: 'trace' })
     } catch (e) {
@@ -355,6 +380,12 @@ export function BatchScreen() {
               <Btn primary onClick={() => open({ kind: 'create' })}>
                 新建批次
               </Btn>
+              <Btn disabled={!selected || busy} onClick={() => void openPartsManager()}>
+                零件管理
+              </Btn>
+              <Btn disabled={!selected || busy} onClick={() => void openTrace()}>
+                记录投料
+              </Btn>
               <Btn
                 disabled={!selected || busy}
                 onClick={() => {
@@ -372,12 +403,6 @@ export function BatchScreen() {
                 }}
               >
                 完成生产
-              </Btn>
-              <Btn disabled={!selected || busy} onClick={() => void openTrace()}>
-                记录投料
-              </Btn>
-              <Btn disabled={!selected || busy} onClick={() => void openSkip()}>
-                跳过零件
               </Btn>
               <Btn
                 danger
@@ -553,6 +578,8 @@ export function BatchScreen() {
           batchNo={selected.batch_no}
           planQty={selected.plan_qty}
           items={traceBom}
+          skipped={traceSkipped}
+          temps={traceTemps}
           busy={busy}
           err={err}
           onSubmit={recordTraces}
@@ -560,13 +587,17 @@ export function BatchScreen() {
         />
       ) : null}
 
-      {dialog?.kind === 'skip' && selected && skipBom ? (
-        <SkipPartsModal
+      {dialog?.kind === 'parts' && selected && partsBom ? (
+        <PartsManagerModal
           batchNo={selected.batch_no}
-          items={skipBom}
-          already={skipAlready}
+          items={partsBom}
+          parts={parts}
+          skipped={partsSkipped}
+          temps={partsTemps}
           busy={busy}
-          onSubmit={saveSkips}
+          onSaveSkips={(next) => void saveSkips(next)}
+          onAddTemp={addTemp}
+          onRemoveTemp={removeTemp}
           onClose={() => setDialog(null)}
         />
       ) : null}

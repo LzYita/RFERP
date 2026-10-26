@@ -356,6 +356,24 @@ func (r *Repository) GetSkippedParts(batchID int64) ([]int64, error) {
 	return ids, err
 }
 
+func (r *Repository) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := r.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		WHERE t.batch_id=? ORDER BY t.id`, batchID)
+	return rows, err
+}
+
+func (r *Repository) GetAllTempParts() ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := r.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		ORDER BY t.batch_id, t.id`)
+	return rows, err
+}
+
 func (r *Repository) AddSkipPart(batchID, partID int64) error {
 	return r.WithTx(func(tx TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
@@ -709,6 +727,36 @@ func (t *Tx) AddSkipPart(batchID, partID int64) error {
 
 func (t *Tx) RemoveSkipPart(batchID, partID int64) error {
 	_, err := t.tx.Exec(`DELETE FROM batch_skip_parts WHERE batch_id=? AND part_id=?`, batchID, partID)
+	return err
+}
+
+func (t *Tx) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := t.tx.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		WHERE t.batch_id=? ORDER BY t.id`, batchID)
+	return rows, err
+}
+
+func (t *Tx) GetAllTempParts() ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := t.tx.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		ORDER BY t.batch_id, t.id`)
+	return rows, err
+}
+
+func (t *Tx) AddTempPart(batchID, partID int64, qty float64) error {
+	// 同一零件重复添加视为改数量：临时零件没有"编辑"入口，重加一次就是改。
+	_, err := t.tx.Exec(`INSERT INTO batch_temp_parts (batch_id,part_id,qty) VALUES (?,?,?)
+		ON DUPLICATE KEY UPDATE qty=VALUES(qty)`, batchID, partID, qty)
+	return TranslateError(err)
+}
+
+func (t *Tx) RemoveTempPart(batchID, partID int64) error {
+	_, err := t.tx.Exec(`DELETE FROM batch_temp_parts WHERE batch_id=? AND part_id=?`, batchID, partID)
 	return err
 }
 

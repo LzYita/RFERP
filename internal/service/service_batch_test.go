@@ -166,6 +166,8 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 20))
+	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(12), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
@@ -178,6 +180,7 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 		"deduct":           float64(8),
 		"new_stock":        float64(12),
 		"batch_id":         int64(1),
+		"source":           "bom",
 	}, "operator")
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?")).
 		WithArgs(4, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -217,6 +220,8 @@ func TestCompleteBatchRejectsWhenStockIsInsufficient(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
+	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	// 缺料即中止：不设任何 UpdatePartStock / CreateBatchConsumption / 批次更新期望
 	mock.ExpectRollback()
 
@@ -251,6 +256,8 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
+	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.98), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
@@ -261,6 +268,7 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 		"deduct":           float64(0.02),
 		"new_stock":        float64(0.98),
 		"batch_id":         int64(1),
+		"source":           "bom",
 	}, "operator")
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE product_batches SET produced_qty=?, updated_at=NOW() WHERE id=?")).
 		WithArgs(1, int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -301,6 +309,8 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 	// 本用例要测的是「审计写失败时扣减必须回滚」，不是缺料拦截（那是另一个用例）。
 	// 给足库存（plan 4 × qty 2 = 需要 8，库存 100）让流程走完扣减再在审计处失败。
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 100))
+	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
+		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(92), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).

@@ -127,12 +127,12 @@ export function canChangeStatus(b: Batch, to: number): { ok: true } | { ok: fals
   return { ok: true }
 }
 
-export function canEditSkips(b: Batch): { ok: true } | { ok: false; msg: string } {
+export function canManageParts(b: Batch): { ok: true } | { ok: false; msg: string } {
   if (b.status === BATCH_STATUS.done) {
-    return { ok: false, msg: '已完成的批次不能跳过零件' }
+    return { ok: false, msg: '已完成的批次不能再修改零件' }
   }
   if (b.status === BATCH_STATUS.revoked) {
-    return { ok: false, msg: '已撤销的批次不能跳过零件' }
+    return { ok: false, msg: '已撤销的批次不能再修改零件' }
   }
   return { ok: true }
 }
@@ -214,6 +214,19 @@ export function shortageLine(s: Shortage): string {
 
 /* ---------------- 接口 ---------------- */
 
+/**
+ * 批次上的临时零件：不在产品 BOM 里、但这一批实际要用。
+ * `qty` 是本批总量，完成生产时整笔扣，撤销时随消耗记录回退。
+ */
+export interface TempPart {
+  batch_id: number
+  part_id: number
+  qty: number
+  code: string
+  name: string
+  unit: string
+}
+
 export const batches = {
   /** 零行时后端返回 null，这里统一成 []。 */
   list: async (): Promise<Batch[]> => (await api.get<Batch[] | null>('/api/batches')) ?? [],
@@ -240,6 +253,14 @@ export const batches = {
     api.post<{ status: string }>('/api/batches/skip', { batch_id: batchId, part_id: partId }),
   removeSkip: (batchId: number, partId: number) =>
     api.del<{ status: string }>(`/api/batches/skip?batch_id=${batchId}&part_id=${partId}`),
+
+  tempParts: async (batchId: number): Promise<TempPart[]> =>
+    (await api.get<TempPart[] | null>(`/api/batches/temp-parts?batch_id=${batchId}`)) ?? [],
+  // 同一零件重复添加 = 改数量（后端 upsert）；库存不够时后端 400 并说明缺口。
+  addTempPart: (batchId: number, partId: number, qty: number) =>
+    api.post<{ status: string }>('/api/batches/temp-parts', { batch_id: batchId, part_id: partId, qty }),
+  removeTempPart: (batchId: number, partId: number) =>
+    api.del<{ status: string }>(`/api/batches/temp-parts?batch_id=${batchId}&part_id=${partId}`),
 }
 
 export const traces = {

@@ -27,6 +27,12 @@ var steps = []Step{
 		MySQL:   applyDBIdentityMySQL,
 		SQLite:  applyDBIdentitySQLite,
 	},
+	{
+		Version: 14,
+		Name:    "batch_temp_parts",
+		MySQL:   applyBatchTempPartsMySQL,
+		SQLite:  applyBatchTempPartsSQLite,
+	},
 }
 
 // nextVersion 是下一条应新增迁移的版本号。

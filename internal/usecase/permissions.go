@@ -46,6 +46,9 @@ var permissions = []UseCasePermission{
 	{Name: "Production.RevokeBatch", Module: auth.ModuleBatch, Access: auth.AccessWrite},
 	{Name: "Production.AddSkipPart", Module: auth.ModuleBatch, Access: auth.AccessWrite},
 	{Name: "Production.RemoveSkipPart", Module: auth.ModuleBatch, Access: auth.AccessWrite},
+	{Name: "Production.ListTempParts", Module: auth.ModuleBatch, Access: auth.AccessRead},
+	{Name: "Production.AddTempPart", Module: auth.ModuleBatch, Access: auth.AccessWrite},
+	{Name: "Production.RemoveTempPart", Module: auth.ModuleBatch, Access: auth.AccessWrite},
 
 	// Trace
 	{Name: "Trace.GetTraceByBatch", Module: auth.ModuleBatch, Access: auth.AccessRead},

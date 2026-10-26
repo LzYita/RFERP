@@ -8,7 +8,7 @@ import {
   NumberInput,
   TextInput,
 } from '../components/form'
-import { Btn, fmtQty } from '../components/ui'
+import { Badge, Btn, fmtQty } from '../components/ui'
 import { parseQuantity } from '../lib/num'
 import type { BOMItem, Part, Product } from '../lib/catalog'
 import { bom as bomApi } from '../lib/catalog'
@@ -19,6 +19,7 @@ import {
   defaultBatchNo,
   resolveProduct,
   type Shortage,
+  type TempPart,
 } from '../lib/batch'
 
 /* ============================================================
@@ -461,10 +462,19 @@ export function ShortageModal({
  * 记录投料
  * ============================================================ */
 
+/**
+ * 投料行的展示元数据，与 rows 一一对应（同下标）。
+ * tag 告诉渲染层这一行是什么：BOM 常规行 / 已跳过（禁用）/ 临时零件（新增行）。
+ */
+type TraceLine = { partId: number; code: string; name: string; tag: 'bom' | 'skipped' | 'temp' }
+type TraceRow = { partId: number; usedQty: string; partBatchNo: string; supplier: string; locked: boolean }
+
 export function RecordTraceModal({
   batchNo,
   planQty,
   items,
+  skipped,
+  temps,
   busy,
   err,
   onSubmit,
@@ -473,20 +483,45 @@ export function RecordTraceModal({
   batchNo: string
   planQty: number
   items: BOMItem[]
+  /** 已跳过的零件：完成时不扣库存，也不允许记投料。行保留但禁用——
+      直接消失会让人以为漏了，摆出来带「已跳过」标记才看得懂状态变化。 */
+  skipped: ReadonlySet<number>
+  /** 临时零件：不在 BOM 里、这批实际要用，作为新增的元组行参与投料。 */
+  temps: ReadonlyArray<TempPart>
   busy: boolean
   err: string
   onSubmit: (rows: { partId: number; usedQty: number; partBatchNo: string; supplier: string }[]) => void
   onClose: () => void
 }) {
-  // 用量预填按 BOM 算出的消耗量，四舍五入到整数（Fyne batch.go:434 用 %.0f）
-  const [rows, setRows] = useState(() =>
-    items.map((b) => ({
+  // 行清单在打开时定死：BOM 行在前（被跳过的行禁用），临时零件行跟在后面。
+  // 「零件管理」里刚加的跳过/临时零件，下次打开这里自然生效。
+  const lines: TraceLine[] = [
+    ...items.map((b) => ({
       partId: b.part_id,
+      code: b.part_code ?? '—',
+      name: b.part_name ?? '—',
+      tag: (skipped.has(b.part_id) ? 'skipped' : 'bom') as TraceLine['tag'],
+    })),
+    ...temps.map((tp) => ({ partId: tp.part_id, code: tp.code, name: tp.name, tag: 'temp' as const })),
+  ]
+  const [rows, setRows] = useState<TraceRow[]>(() => {
+    const bomRows: TraceRow[] = items.map((b) => ({
+      partId: b.part_id,
+      // 用量预填按 BOM 算出的消耗量，四舍五入到整数（Fyne batch.go:434 用 %.0f）
       usedQty: String(Math.round(bomConsume(planQty, b))),
       partBatchNo: '',
       supplier: '',
-    })),
-  )
+      locked: skipped.has(b.part_id),
+    }))
+    const tempRows: TraceRow[] = temps.map((tp) => ({
+      partId: tp.part_id,
+      usedQty: String(tp.qty),
+      partBatchNo: '',
+      supplier: '',
+      locked: false,
+    }))
+    return [...bomRows, ...tempRows]
+  })
   const [localErr, setLocalErr] = useState('')
 
   function submit() {
@@ -494,6 +529,7 @@ export function RecordTraceModal({
     // 父组件再等它报错——用户已经填了一屏，弹回去才知道第几行错了很糟。
     const out: { partId: number; usedQty: number; partBatchNo: string; supplier: string }[] = []
     for (const r of rows) {
+      if (r.locked) continue // 已跳过的零件不能记投料（完成时也不扣它）
       const raw = r.usedQty.trim()
       if (raw === '') continue // Fyne batch.go:455-457：空用量静默跳过该行
       const q = parseQuantity(raw, '投料数量')
@@ -528,6 +564,7 @@ export function RecordTraceModal({
       <FormError text={localErr || err} />
       <div className="mb-2 text-[11px] text-[var(--color-fg-muted)]">
         留空表示不记录该零件。投料记录只作追溯，不影响库存——库存只在「完成生产」时扣除。
+        标记「已跳过」的零件完成时不扣库存，不能记录投料。
       </div>
       <div className="max-h-[320px] overflow-auto rounded-[6px] border border-[var(--color-border)]">
         <table className="data-table is-compact">
@@ -546,40 +583,58 @@ export function RecordTraceModal({
             </tr>
           </thead>
           <tbody>
-            {items.map((b, i) => (
-              <tr key={b.part_id}>
-                <td>
-                  <div style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{b.part_code ?? '—'}</div>
-                  <div className="text-[11px] text-[var(--color-fg-muted)]">{b.part_name ?? '—'}</div>
-                </td>
-                <td>
-                  <NumberInput
-                    value={rows[i].usedQty}
-                    onChange={(v) =>
-                      setRows((prev) => prev.map((r, j) => (j === i ? { ...r, usedQty: v } : r)))
-                    }
-                  />
-                </td>
-                <td>
-                  <TextInput
-                    value={rows[i].partBatchNo}
-                    placeholder="批次号"
-                    onChange={(v) =>
-                      setRows((prev) => prev.map((r, j) => (j === i ? { ...r, partBatchNo: v } : r)))
-                    }
-                  />
-                </td>
-                <td>
-                  <TextInput
-                    value={rows[i].supplier}
-                    placeholder="供应商"
-                    onChange={(v) =>
-                      setRows((prev) => prev.map((r, j) => (j === i ? { ...r, supplier: v } : r)))
-                    }
-                  />
-                </td>
-              </tr>
-            ))}
+            {lines.map((line, i) => {
+              const row = rows[i]
+              const tag =
+                line.tag === 'skipped' ? (
+                  <Badge kind="neutral">已跳过</Badge>
+                ) : line.tag === 'temp' ? (
+                  <Badge kind="warn">临时</Badge>
+                ) : null
+              return (
+                <tr
+                  key={`${line.tag}-${line.partId}-${i}`}
+                  style={row.locked ? { opacity: 0.55 } : undefined}
+                >
+                  <td>
+                    <div className="flex items-center gap-1.5">
+                      <div style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{line.code}</div>
+                      {tag}
+                    </div>
+                    <div className="text-[11px] text-[var(--color-fg-muted)]">{line.name}</div>
+                  </td>
+                  <td>
+                    <NumberInput
+                      value={row.usedQty}
+                      disabled={row.locked}
+                      onChange={(v) =>
+                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, usedQty: v } : r)))
+                      }
+                    />
+                  </td>
+                  <td>
+                    <TextInput
+                      value={row.partBatchNo}
+                      placeholder="批次号"
+                      disabled={row.locked}
+                      onChange={(v) =>
+                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, partBatchNo: v } : r)))
+                      }
+                    />
+                  </td>
+                  <td>
+                    <TextInput
+                      value={row.supplier}
+                      placeholder="供应商"
+                      disabled={row.locked}
+                      onChange={(v) =>
+                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, supplier: v } : r)))
+                      }
+                    />
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -588,81 +643,268 @@ export function RecordTraceModal({
 }
 
 /* ============================================================
- * 跳过零件
+ * 零件管理（跳过零件 / 临时零件，两个分页）
  * ============================================================ */
 
-export function SkipPartsModal({
+/**
+ * 一个入口管本批的零件增减：跳过（BOM 里有但不扣）与临时（BOM 里没有但要扣）。
+ *
+ * 两个分页的提交语义不同，footer 因此跟着切换：
+ *   - 跳过是「勾选 → 保存」的差集提交（沿用原 SkipPartsModal 的行为）；
+ *   - 临时零件是逐条立即生效——加一个就要当场看到库存检测结果，攒着批量
+ *     提交反而会把"哪一条被拒"搅在一起。
+ */
+export function PartsManagerModal({
   batchNo,
   items,
-  already,
+  parts,
+  skipped,
+  temps,
   busy,
-  onSubmit,
+  onSaveSkips,
+  onAddTemp,
+  onRemoveTemp,
   onClose,
 }: {
   batchNo: string
   items: BOMItem[]
-  already: Set<number>
+  /** 全量零件表：临时零件从中挑选。选项里带上现库存，填数量时心里有数。 */
+  parts: Part[]
+  skipped: ReadonlySet<number>
+  temps: ReadonlyArray<TempPart>
   busy: boolean
-  onSubmit: (next: Set<number>) => void
+  /** 保存跳过差集。成功后父组件关弹窗；失败会把错误写进弹窗顶部。 */
+  onSaveSkips: (next: Set<number>) => void
+  /** 加/改一个临时零件。失败抛错，由本组件展示；成功后父组件会刷新列表。 */
+  onAddTemp: (partId: number, qty: number) => Promise<void>
+  onRemoveTemp: (partId: number) => Promise<void>
   onClose: () => void
 }) {
-  const [checked, setChecked] = useState<Set<number>>(() => new Set(already))
+  const [tab, setTab] = useState<'skip' | 'temp'>('skip')
+  const [checked, setChecked] = useState<Set<number>>(() => new Set(skipped))
+  const [pickPart, setPickPart] = useState('')
+  const [pickQty, setPickQty] = useState('')
+  const [localErr, setLocalErr] = useState('')
+  const [pending, setPending] = useState(false)
 
   // 只有标记了「可替换」的零件才能跳过：完成生产时跳过的零件不扣库存，
   // 而不可替换的零件是 BOM 的必需项，不该允许跳过（Fyne batch.go:554）。
   const replaceable = items.filter((b) => b.replaceable === 1)
 
+  async function runTemp(fn: () => Promise<void>) {
+    setLocalErr('')
+    setPending(true)
+    try {
+      await fn()
+    } catch (e) {
+      setLocalErr(e instanceof Error ? e.message : '操作失败')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  function addTemp() {
+    if (pickPart === '') {
+      setLocalErr('请选择零件')
+      return
+    }
+    const q = parseQuantity(pickQty, '数量')
+    if (!q.ok) {
+      setLocalErr(q.msg)
+      return
+    }
+    if (q.value <= 0) {
+      setLocalErr('数量必须是大于0的有限数值')
+      return
+    }
+    void runTemp(async () => {
+      await onAddTemp(Number(pickPart), q.value)
+      // 成功后清空表单：留着零件名容易误触「再加一次」，列表里已经看得见它。
+      setPickPart('')
+      setPickQty('')
+    })
+  }
+
   return (
     <Modal
-      title={`跳过零件 - ${batchNo}`}
+      title={`零件管理 - ${batchNo}`}
       onClose={onClose}
-      width={460}
+      width={560}
       footer={
-        <>
-          <Btn onClick={onClose}>取消</Btn>
-          <Btn primary disabled={busy} onClick={() => onSubmit(checked)}>
-            {busy ? '保存中…' : '保存'}
+        tab === 'skip' ? (
+          <>
+            <Btn onClick={onClose}>取消</Btn>
+            <Btn primary disabled={busy} onClick={() => onSaveSkips(checked)}>
+              {busy ? '保存中…' : '保存'}
+            </Btn>
+          </>
+        ) : (
+          <Btn primary onClick={onClose}>
+            关闭
           </Btn>
-        </>
+        )
       }
     >
-      <div className="mb-2.5">
-        <div className="text-[11.5px] font-semibold">选择要跳过的零件</div>
-        <div className="text-[11px] text-[var(--color-fg-muted)]">
-          勾选后，完成生产时将不扣除该零件库存
-        </div>
+      {/* 分页切换：两个 aria 名就是分页语义，测试与读屏都靠它们 */}
+      <div className="mb-3 flex gap-1 rounded-[6px] border border-[var(--color-border)] p-0.5" role="tablist">
+        {(
+          [
+            ['skip', `跳过零件${checked.size > 0 ? `（${checked.size}）` : ''}`],
+            ['temp', `临时零件${temps.length > 0 ? `（${temps.length}）` : ''}`],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => {
+              setTab(key)
+              setLocalErr('')
+            }}
+            className={
+              'rounded-[5px] px-3 py-1 text-[12px] ' +
+              (tab === key
+                ? 'bg-[var(--color-primary)] text-white'
+                : 'text-[var(--color-fg-muted)] hover:text-[var(--color-fg)]')
+            }
+          >
+            {label}
+          </button>
+        ))}
       </div>
-      {replaceable.length === 0 ? (
-        <WarnBox>
-          该产品的BOM中没有标记为「可替换」的零件
-          <br />
-          请在BOM管理中设置
-        </WarnBox>
+      <FormError text={localErr} />
+
+      {tab === 'skip' ? (
+        <>
+          <div className="mb-2.5">
+            <div className="text-[11.5px] font-semibold">选择要跳过的零件</div>
+            <div className="text-[11px] text-[var(--color-fg-muted)]">
+              勾选后，完成生产时将不扣除该零件库存，且不能记录投料
+            </div>
+          </div>
+          {replaceable.length === 0 ? (
+            <WarnBox>
+              该产品的BOM中没有标记为「可替换」的零件
+              <br />
+              请在BOM管理中设置
+            </WarnBox>
+          ) : (
+            <div className="max-h-[260px] overflow-auto">
+              {replaceable.map((b) => (
+                <label
+                  key={b.part_id}
+                  className="flex cursor-pointer items-center gap-2 rounded-[4px] px-1.5 py-1.5 text-[12px] hover:bg-[var(--color-canvas)]"
+                >
+                  <Checkbox
+                    checked={checked.has(b.part_id)}
+                    onChange={(c) => {
+                      setChecked((prev) => {
+                        const next = new Set(prev)
+                        if (c) next.add(b.part_id)
+                        else next.delete(b.part_id)
+                        return next
+                      })
+                    }}
+                    label=""
+                  />
+                  <span>
+                    {b.part_name ?? ''} <span className="text-[var(--color-fg-muted)]">[{b.part_code ?? ''}]</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </>
       ) : (
-        <div className="max-h-[260px] overflow-auto">
-          {replaceable.map((b) => (
-            <label
-              key={b.part_id}
-              className="flex cursor-pointer items-center gap-2 rounded-[4px] px-1.5 py-1.5 text-[12px] hover:bg-[var(--color-canvas)]"
-            >
-              <Checkbox
-                checked={checked.has(b.part_id)}
-                onChange={(c) => {
-                  setChecked((prev) => {
-                    const next = new Set(prev)
-                    if (c) next.add(b.part_id)
-                    else next.delete(b.part_id)
-                    return next
-                  })
+        <>
+          <div className="mb-2.5">
+            <div className="text-[11.5px] font-semibold">本批临时零件</div>
+            <div className="text-[11px] text-[var(--color-fg-muted)]">
+              不在产品 BOM 里、但这一批实际要用的料。添加时检查库存；完成生产时按数量整笔扣除。
+            </div>
+          </div>
+          <div className="mb-2.5 max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
+            <table className="data-table is-narrow is-compact">
+              <colgroup>
+                <col style={{ width: 110 }} />
+                <col />
+                <col style={{ width: 78 }} />
+                <col style={{ width: 62 }} />
+                <col style={{ width: 56 }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>编码</th>
+                  <th>名称</th>
+                  <th className="num">本批需要量</th>
+                  <th className="mid">单位</th>
+                  <th className="mid">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {temps.map((tp) => (
+                  <tr key={tp.part_id}>
+                    <td className="tree-inline" style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }} title={tp.code}>
+                      {tp.code}
+                    </td>
+                    <td className="tree-inline" title={tp.name}>
+                      {tp.name}
+                    </td>
+                    <td className="num">{fmtQty(tp.qty)}</td>
+                    <td className="mid">{tp.unit || '—'}</td>
+                    <td className="mid">
+                      <button
+                        type="button"
+                        className="text-[var(--color-danger)] disabled:opacity-50"
+                        disabled={pending}
+                        onClick={() => void runTemp(() => onRemoveTemp(tp.part_id))}
+                      >
+                        移除
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {temps.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-5 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                      还没有临时零件
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+          {/* 添加行：选零件 → 填本批需要量 → 添加。库存不够会在这里被拒。 */}
+          <div className="flex items-end gap-2 rounded-[6px] border border-[var(--color-border-subtle)] bg-[var(--color-canvas)] px-2.5 py-2">
+            <div className="min-w-0 flex-1">
+              <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">零件</label>
+              <select
+                aria-label="临时零件"
+                value={pickPart}
+                onChange={(e) => {
+                  setPickPart(e.target.value)
+                  setLocalErr('')
                 }}
-                label=""
-              />
-              <span>
-                {b.part_name ?? ''} <span className="text-[var(--color-fg-muted)]">[{b.part_code ?? ''}]</span>
-              </span>
-            </label>
-          ))}
-        </div>
+                className={selCls}
+              >
+                <option value="">选择零件…</option>
+                {parts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.code} {p.name}（库存 {fmtQty(p.stock_qty)} {p.unit}）
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ width: 96 }}>
+              <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">本批需要量</label>
+              <TextInput value={pickQty} placeholder="数量" onChange={(v) => setPickQty(v)} />
+            </div>
+            <Btn disabled={pending} onClick={addTemp}>
+              {pending ? '添加中…' : '添加'}
+            </Btn>
+          </div>
+        </>
       )}
     </Modal>
   )

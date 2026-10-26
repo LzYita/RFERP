@@ -96,6 +96,20 @@ type BatchConsumption struct {
 	CreatedAt   time.Time `db:"created_at" json:"created_at"`
 }
 
+// BatchTempPart 是批次上的临时零件：不在产品 BOM 里、但这一批实际要用料。
+// Qty 是**本批总量**（不是每台用量）：临时 addition 是一次性的，套用
+// use_mode/损耗率只会让填写的人猜不透口径。完成生产时按 Qty 整笔扣减，
+// 与 BOM 零件走同一套缺料拒绝与撤销回退。
+type BatchTempPart struct {
+	BatchID   int64     `db:"batch_id" json:"batch_id"`
+	PartID    int64     `db:"part_id" json:"part_id"`
+	Qty       float64   `db:"qty" json:"qty"`
+	Code      string    `db:"code" json:"code"`
+	Name      string    `db:"name" json:"name"`
+	Unit      string    `db:"unit" json:"unit"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
 type BatchTrace struct {
 	ID          int64     `db:"id" json:"id"`
 	BatchID     int64     `db:"batch_id" json:"batch_id"`

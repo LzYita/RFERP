@@ -392,12 +392,14 @@ export function NumberInput({
   placeholder,
   step,
   autoFocus,
+  disabled,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   step?: string
   autoFocus?: boolean
+  disabled?: boolean
 }) {
   return (
     <input
@@ -407,6 +409,7 @@ export function NumberInput({
       autoFocus={autoFocus}
       value={value}
       placeholder={placeholder}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
     />
   )

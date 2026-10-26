@@ -113,6 +113,9 @@ func validateBOMItem(item *model.BOMItem) error {
 	if item.UseMode != 0 && item.UseMode != 1 {
 		return fmt.Errorf("BOM用量模式不合法")
 	}
+	if item.Replaceable != 0 && item.Replaceable != 1 {
+		return fmt.Errorf("BOM可替换标记不合法")
+	}
 	if err := validatePositiveQuantity("BOM用量", item.Quantity); err != nil {
 		return err
 	}
@@ -478,6 +481,56 @@ func (s *Service) AddBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 
 func (s *Service) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 	return s.repo.GetBOMByProduct(productID)
+}
+
+// UpdateBOMItem 修改一条 BOM 明细的用量、用量模式、损耗率与「可替换」标记。
+//
+// 只有这四个字段可改：挂在哪个零件上与备注不在编辑范围内。
+// 调用方传进来的 b 只带 id/version 与这四个值；其余字段从库里的旧行复制，
+// 这样审计日志的 old/new diff 里不会出现"零件被改成自己"这类噪声。
+func (s *Service) UpdateBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
+	if b == nil {
+		return nil, fmt.Errorf("BOM零件不能为空")
+	}
+	if err := validateBOMItem(b); err != nil {
+		return nil, err
+	}
+	var out *model.BOMItem
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
+		old, err := tx.GetBOMItemForUpdate(b.ID)
+		if err != nil {
+			return err
+		}
+		if old == nil {
+			return fmt.Errorf("bom item not found")
+		}
+		next := *old
+		next.Quantity = b.Quantity
+		next.LossRate = b.LossRate
+		next.UseMode = b.UseMode
+		next.Replaceable = b.Replaceable
+		next.Operator = b.Operator
+		// 乐观锁的比对值必须来自**调用方**（它是客户端读到那一行时的版本），
+		// 用库里的 old.Version 就永远相等，并发改动会被静默覆盖。
+		next.Version = b.Version
+		affected, err := tx.UpdateBOMItem(&next)
+		if err != nil {
+			return fmt.Errorf("update bom: %w", err)
+		}
+		if affected == 0 {
+			return repository.OptimisticLockError(err)
+		}
+		if err := s.writeAuditTx(tx, auditEntry{"bom_items", next.ID, "UPDATE", old, &next, *b.Operator}); err != nil {
+			return err
+		}
+		next.Version = old.Version + 1
+		out = &next
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Service) RemoveBOMItem(id int64, operator string) error {

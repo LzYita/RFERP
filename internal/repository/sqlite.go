@@ -298,6 +298,30 @@ func (t *SQLiteTx) CreateBOMItem(b *model.BOMItem) (int64, error) {
 	return res.LastInsertId()
 }
 
+func (t *SQLiteTx) GetBOMItemForUpdate(id int64) (*model.BOMItem, error) {
+	var b model.BOMItem
+	err := t.q.Get(&b, `SELECT * FROM bom_items WHERE id=?`, id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// 与 MySQL 侧同一口径：只写用量、模式、损耗率、可替换四个业务字段。
+func (t *SQLiteTx) UpdateBOMItem(b *model.BOMItem) (int64, error) {
+	res, err := t.q.Exec(
+		`UPDATE bom_items SET quantity=?, loss_rate=?, use_mode=?, replaceable=?, operator=?, version=version+1, updated_at=(strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE id=? AND version=?`,
+		b.Quantity, b.LossRate, b.UseMode, b.Replaceable, b.Operator, b.ID, b.Version,
+	)
+	if err != nil {
+		return 0, TranslateError(err)
+	}
+	return res.RowsAffected()
+}
+
 func (t *SQLiteTx) DeleteBOMItem(id int64) error {
 	_, err := t.q.Exec(`DELETE FROM bom_items WHERE id=?`, id)
 	return err

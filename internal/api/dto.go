@@ -119,6 +119,44 @@ func (in *partWriteReq) toPartForUpdate(s *Server) (*model.Part, error) {
 	}, nil
 }
 
+// bomUpdateReq 是 BOM 明细的更新请求体。
+//
+// 只接受四个业务字段：用量、用量模式、损耗率、是否可替换。产品/零件归属与备注
+// 不在这里——界面上这一行动作叫「编辑用量」，能让一条明细换零件的编辑框会把
+// "改数量"变成"挂到别的物料上"，那是两种操作，不该共用一个入口。
+//
+// 用 DisallowUnknownFields：多传 product_id 之类会被 400 拒绝，而不是被静默忽略，
+// 免得客户端以为换了零件、服务端其实没换。
+type bomUpdateReq struct {
+	ID          int64    `json:"id"`
+	Quantity    float64  `json:"quantity"`
+	LossRate    float64  `json:"loss_rate"`
+	UseMode     int      `json:"use_mode"`
+	Replaceable int      `json:"replaceable"`
+	Version     int      `json:"version"`
+	Operator    *string  `json:"-"`
+	_           struct{} `json:"-"`
+}
+
+func decodeBOMUpdate(w http.ResponseWriter, r *http.Request) (*bomUpdateReq, bool) {
+	var in bomUpdateReq
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return nil, false
+	}
+	if in.ID <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return nil, false
+	}
+	if in.Replaceable != 0 && in.Replaceable != 1 {
+		writeErr(w, http.StatusBadRequest, "replaceable 只能是 0（不可替换）或 1（可替换）")
+		return nil, false
+	}
+	return &in, true
+}
+
 // productWriteReq 是产品的创建与更新请求体，字段与零件对齐。
 type productWriteReq struct {
 	Code     string  `json:"code"`

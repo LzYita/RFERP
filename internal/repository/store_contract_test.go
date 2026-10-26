@@ -44,6 +44,87 @@ func contractCases(t *testing.T, open storeFactory) {
 		}
 	})
 
+	// 更新一条 BOM 明细：只有用量/模式/损耗率可变，版本号必须递增，
+	// 过期的版本号必须不改任何行（乐观锁）。
+	t.Run("bom_update_only_three_fields", func(t *testing.T) {
+		s, _ := open(t)
+		pid, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.CreateProduct(&model.Product{Code: "P-UPD", Name: "Update", Unit: "台", Status: 1})
+		})
+		if err != nil {
+			t.Fatalf("create product: %v", err)
+		}
+		partA, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.CreatePart(&model.Part{Code: "C-UPD-A", Name: "A", Unit: "个", Status: 1})
+		})
+		if err != nil {
+			t.Fatalf("create part a: %v", err)
+		}
+		partB, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.CreatePart(&model.Part{Code: "C-UPD-B", Name: "B", Unit: "个", Status: 1})
+		})
+		if err != nil {
+			t.Fatalf("create part b: %v", err)
+		}
+		remark := "原始备注"
+		itemID, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.CreateBOMItem(&model.BOMItem{
+				ProductID: pid, PartID: partA, Quantity: 2, LossRate: 0,
+				Remark: &remark, Replaceable: 1, UseMode: 0,
+			})
+		})
+		if err != nil {
+			t.Fatalf("create bom: %v", err)
+		}
+		boms, err := s.GetBOMByProduct(pid)
+		if err != nil || len(boms) != 1 {
+			t.Fatalf("boms=%v err=%v", boms, err)
+		}
+		cur := boms[0]
+
+		// 故意把 ProductID/PartID/Remark 改成别的值传进去：仓储层只写四个业务字段，
+		// 这些必须原样保留（调用方不该靠"记得不传"来保证）。
+		// Replaceable 反过来：它是可编辑字段，传 0 就必须写成 0。
+		other := "不该被写入"
+		changed, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.UpdateBOMItem(&model.BOMItem{
+				ID: itemID, Version: cur.Version,
+				Quantity: 5, LossRate: 7.5, UseMode: 1, Replaceable: 0,
+				ProductID: 999, PartID: partB, Remark: &other,
+			})
+		})
+		if err != nil || changed != 1 {
+			t.Fatalf("update affected=%d err=%v", changed, err)
+		}
+		after, err := s.GetBOMByProduct(pid)
+		if err != nil || len(after) != 1 {
+			t.Fatalf("reload: %v", err)
+		}
+		got := after[0]
+		if got.Quantity != 5 || got.LossRate != 7.5 || got.UseMode != 1 {
+			t.Fatalf("three fields not updated: %+v", got)
+		}
+		if got.ProductID != pid || got.PartID != partA {
+			t.Fatalf("non-editable fields changed: product=%d part=%d", got.ProductID, got.PartID)
+		}
+		if got.Replaceable != 0 {
+			t.Fatalf("replaceable 应被更新为 0，实际 %d", got.Replaceable)
+		}
+		if got.Remark == nil || *got.Remark != remark {
+			t.Fatalf("remark changed: %v", got.Remark)
+		}
+		if got.Version != cur.Version+1 {
+			t.Fatalf("version=%d, want %d", got.Version, cur.Version+1)
+		}
+
+		stale, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.UpdateBOMItem(&model.BOMItem{ID: itemID, Version: cur.Version, Quantity: 9})
+		})
+		if err != nil || stale != 0 {
+			t.Fatalf("stale version affected=%d err=%v, want 0", stale, err)
+		}
+	})
+
 	// products.code is intentionally NOT unique: a code is a product-family
 	// number shared by colour/spec variants. Both
 	// adapters must accept that. parts.code IS unique, so the conflict case

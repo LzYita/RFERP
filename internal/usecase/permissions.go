@@ -31,6 +31,7 @@ var permissions = []UseCasePermission{
 	{Name: "Catalog.GetBOMByProduct", Module: auth.ModuleBOM, Access: auth.AccessRead},
 	{Name: "Catalog.ValidateBOM", Module: auth.ModuleBOM, Access: auth.AccessRead},
 	{Name: "Catalog.AddBOMItem", Module: auth.ModuleBOM, Access: auth.AccessWrite},
+	{Name: "Catalog.UpdateBOMItem", Module: auth.ModuleBOM, Access: auth.AccessWrite},
 	{Name: "Catalog.RemoveBOMItem", Module: auth.ModuleBOM, Access: auth.AccessWrite},
 
 	// Inventory

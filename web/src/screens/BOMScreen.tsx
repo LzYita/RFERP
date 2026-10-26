@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   Badge,
   Btn,
@@ -18,6 +18,8 @@ import {
 } from '../components/form'
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
+import { buildBomGroups } from '../lib/bomTree'
+import { recallBomSelection, rememberBomSelection } from '../lib/bomSelection'
 import {
   bom as bomApi,
   parts as partsApi,
@@ -45,6 +47,14 @@ import {
  *
  * 用产品列表直接做一个下拉是不够的：产品重名与同系列不同规格是这套数据里
  * 真实存在的形态，只有级联才区分得开。
+ *
+ * 明细表是树状：根 = 产品，子层 = 零件分类（零件主数据的 part_type——
+ * BOMItem 不冗余它，按 part_id 从 allParts 现查），叶子 = 明细行。
+ * 分组是纯函数，在 lib/bomTree.ts，可单测。
+ *
+ * 本屏只改**明细**：往 BOM 里挂零件、删明细、改用量/模式/损耗率/可替换。
+ * 零件主数据（编码、名称、分类、库存…）的新增与编辑留在「零件管理」屏——
+ * 这里是"这个产品用多少什么料"的地方，不是维护物料档案的地方。
  */
 
 type Picker = { id: number; label: string; code: string; name: string; spec: string }
@@ -63,6 +73,14 @@ interface Draft {
   loss: string
   replaceable: boolean
   remark: string
+}
+
+/** 行内编辑的草稿：只有这四个字段（与 PUT /api/bom 的契约一致）。 */
+interface EditDraft {
+  useMode: string
+  qty: string
+  loss: string
+  replaceable: boolean
 }
 
 const emptyDraft = (): Draft => ({
@@ -86,12 +104,31 @@ export function BOMScreen() {
   const [items, setItems] = useState<BOMItem[] | null>(null)
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
 
+  // 上一次的选择（模块级短期记忆）：离开本屏再回来时直接恢复，
+  // 不必重新点名称→编码→规格。重开应用即回到空选择。
+  const [restored] = useState(() => recallBomSelection())
+
   // 级联三级
-  const [cName, setCName] = useState('')
-  const [cCode, setCCode] = useState('')
-  const [cSpec, setCSpec] = useState('')
+  const [cName, setCName] = useState(restored?.name ?? '')
+  const [cCode, setCCode] = useState(restored?.code ?? '')
+  const [cSpec, setCSpec] = useState(restored?.spec ?? '')
   // 搜索框
-  const [searchPick, setSearchPick] = useState<Picker | null>(null)
+  const [searchPick, setSearchPick] = useState<Picker | null>(() =>
+    restored
+      ? {
+          id: restored.id,
+          code: restored.code,
+          name: restored.name,
+          spec: restored.spec,
+          label: pickLabel(restored.code, restored.name, restored.spec),
+        }
+      : null,
+  )
+  // 明细加载中：级联已解析出产品、请求还没回来。此时表格只给加载行，
+  // 不给「共 0 个零件」这种会被读成"空 BOM"的数字。
+  const [loading, setLoading] = useState(false)
+  // 级联被用户触碰的次数：同产品重选时 id 不变，靠它重新拉一次明细。
+  const [pickerEpoch, setPickerEpoch] = useState(0)
 
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -99,6 +136,20 @@ export function BOMScreen() {
   const [formErr, setFormErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<BOMItem | null>(null)
+
+  // 树的折叠状态：key 是分类名。换产品即重置（新树没有理由继承旧树的折叠）。
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  // 编辑一条 BOM 明细：只有用量、用量模式、损耗率、可替换四个字段。
+  const [editItem, setEditItem] = useState<BOMItem | null>(null)
+  const [editDraft, setEditDraft] = useState<EditDraft>({
+    useMode: '0',
+    qty: '1',
+    loss: '0',
+    replaceable: false,
+  })
+  const [editErr, setEditErr] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
 
   const { modules } = usePermissions()
   const canEdit = canWrite(modules, 'bom')
@@ -109,6 +160,14 @@ export function BOMScreen() {
       .then(([ps, pts]) => {
         if (!alive) return
         setProducts(ps)
+        // 记忆里的产品可能已被删除：清掉，避免每次都恢复到一条不存在的产品上。
+        if (restored && !ps.some((p) => p.id === restored.id)) {
+          rememberBomSelection(null)
+          setSearchPick(null)
+          setCName('')
+          setCCode('')
+          setCSpec('')
+        }
         // 零件列表加载期间零件选择器是空的；用空数组而不是 null，
         // 否则 resolvePick 会拿到 null.all 直接抛。
         setAllParts(pts)
@@ -120,6 +179,9 @@ export function BOMScreen() {
     return () => {
       alive = false
     }
+    // restored 是挂载时的快照，刻意不进依赖：产品列表只该拉一次，
+    // 把它放进去会让每次恢复变化都重拉两份列表。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const pickers = useMemo(() => (products ?? []).map(toPicker), [products])
@@ -127,6 +189,22 @@ export function BOMScreen() {
     () => (allParts ?? []).map((p) => ({ id: p.id, label: pickLabel(p.code, p.name, p.spec) })),
     [allParts],
   )
+
+  // 树：分类分组由纯函数完成；零件主数据或明细变化都自动重新分组
+  // （比如把某零件的分类从「电子」改成「五金」，树应立刻搬家）。
+  const groups = useMemo(
+    () => buildBomGroups(items ?? [], allParts ?? []),
+    [items, allParts],
+  )
+
+  function toggleGroup(name: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
 
   // 级联的候选：名称 → 编码 → 规格，逐级收窄
   const codesForName = useMemo(() => {
@@ -171,6 +249,41 @@ export function BOMScreen() {
   // 搜索框优先，其次级联 —— 对应 Fyne 的 resolveProductID
   const active = searchPick ?? cascadePick
 
+  /**
+   * 用户动了级联的任何一级：旧选择立刻作废。
+   *
+   * 不清 searchPick 的话，级联改到一半时 active 仍是旧产品（searchPick 优先），
+   * 表格会停在旧产品的明细上，与查询栏对不上——这正是要消灭的错位。
+   * 清了之后 active 落回 cascadePick：级联没选完整就是 null（表格空白），
+   * 选完整了就是新产品。
+   *
+   * pickerEpoch 解决「重新点选同一个产品」：id 没变、但 searchPick 已被清空，
+   * 若不重新拉取，明细会永远停在空白。epoch 让加载 effect 与级联同步 effect
+   * 再跑一次，把数据和搜索框都补回来。
+   */
+  function touchPicker() {
+    setSearchPick(null)
+    setItems(null)
+    setSelectedRow(null)
+    setPickerEpoch((e) => e + 1)
+  }
+
+  // 记住当前产品：离开本屏再回来时由 recallBomSelection 恢复。
+  // 清空选择时一并清掉记忆——用户主动清空，回来不该又冒出一个产品。
+  useEffect(() => {
+    if (!active) {
+      rememberBomSelection(null)
+      return
+    }
+    rememberBomSelection({
+      id: active.id,
+      code: active.code,
+      name: active.name,
+      spec: active.spec,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id])
+
   // 选了搜索框就把级联填上（Fyne: syncCascadeFromPicker）
   function pickFromSearch(v: Picker | null) {
     setSearchPick(v)
@@ -186,39 +299,106 @@ export function BOMScreen() {
   }
 
   // 级联变了就把搜索框填上（Fyne: syncPickerFromCascade）
+  // 依赖里带 pickerEpoch：用户重新点选同一个产品时 id 不变，
+  // 但 touchPicker 已把 searchPick 清空，必须在这里补回去。
   useEffect(() => {
     if (!cascadePick) return
     setSearchPick(cascadePick)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cascadePick?.id])
+  }, [cascadePick?.id, pickerEpoch])
 
   useEffect(() => {
     if (!active) {
       setItems(null)
       setSelectedRow(null)
+      setCollapsed(new Set())
+      setLoading(false)
       return
     }
     let alive = true
+    setLoading(true)
     bomApi
       .list(active.id)
       .then((r) => {
         if (alive) {
           setItems(r)
           setSelectedRow(null)
+          setCollapsed(new Set())
+          setLoading(false)
         }
       })
       .catch((e) => {
-        if (alive) setError(classifyLoadError(e, 'BOM 明细'))
+        if (alive) {
+          setError(classifyLoadError(e, 'BOM 明细'))
+          setLoading(false)
+        }
       })
     return () => {
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id])
+  }, [active?.id, pickerEpoch])
 
   async function reload() {
     if (!active) return
     setItems(await bomApi.list(active.id))
+  }
+
+  function openEditItem(item: BOMItem) {
+    setEditItem(item)
+    setEditDraft({
+      useMode: String(item.use_mode),
+      qty: String(item.quantity),
+      loss: String(item.loss_rate),
+      replaceable: item.replaceable === 1,
+    })
+    setEditErr('')
+  }
+
+  /**
+   * 保存明细的用量/模式/损耗率。
+   *
+   * 只提交这三个字段 + id + version：服务端 DisallowUnknownFields，多传
+   * 零件归属会被 400 拒绝。校验口径与新增保持一致（后端同一套规则）。
+   */
+  async function submitEditItem() {
+    if (!editItem) return
+    const q = Number(editDraft.qty)
+    const l = Number(editDraft.loss)
+    if (!Number.isFinite(q)) {
+      setEditErr('用量必须是有效数值')
+      return
+    }
+    if (q <= 0) {
+      setEditErr('BOM用量必须大于0')
+      return
+    }
+    if (!Number.isFinite(l)) {
+      setEditErr('损耗率必须是有效数值')
+      return
+    }
+    if (l < 0 || l > 100) {
+      setEditErr('损耗率必须在0到100之间')
+      return
+    }
+    setEditBusy(true)
+    setEditErr('')
+    try {
+      await bomApi.update({
+        id: editItem.id,
+        quantity: q,
+        loss_rate: l,
+        use_mode: Number(editDraft.useMode),
+        replaceable: editDraft.replaceable ? 1 : 0,
+        version: editItem.version,
+      })
+      setEditItem(null)
+      await reload()
+    } catch (e) {
+      setEditErr(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      setEditBusy(false)
+    }
   }
 
   async function submit() {
@@ -281,6 +461,9 @@ export function BOMScreen() {
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
   const sel = (items ?? []).find((i) => i.id === selectedRow) ?? null
+  // 表格总列数：操作列（编辑明细的用量）跟随 bom 写权限，
+  // 根行 / 分类行 / 空态行的 colSpan 都跟随它
+  const COLS = canEdit ? 9 : 8
 
   return (
     <>
@@ -302,6 +485,7 @@ export function BOMScreen() {
                 setCName(e.target.value)
                 setCCode('')
                 setCSpec('')
+                touchPicker()
               }}
             >
               <option value="">全部</option>
@@ -322,6 +506,7 @@ export function BOMScreen() {
               onChange={(e) => {
                 setCCode(e.target.value)
                 setCSpec('')
+                touchPicker()
               }}
             >
               <option value="">全部</option>
@@ -339,7 +524,10 @@ export function BOMScreen() {
               className="h-[26px] w-[130px] rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)] disabled:text-[var(--color-fg-subtle)]"
               value={cSpec}
               disabled={specsForCode.length === 0}
-              onChange={(e) => setCSpec(e.target.value)}
+              onChange={(e) => {
+                setCSpec(e.target.value)
+                touchPicker()
+              }}
             >
               <option value="">全部</option>
               {specsForCode.map((s) => (
@@ -361,6 +549,8 @@ export function BOMScreen() {
 
           {canEdit ? (
             <div className="ml-auto flex gap-2">
+              {/* 本屏只往 BOM 里挂已有零件；零件主数据的新增在「零件管理」屏，
+                  两个动作放在同一行按钮里容易被当成同一件事。 */}
               <Btn
                 disabled={!active}
                 onClick={() => {
@@ -369,7 +559,7 @@ export function BOMScreen() {
                   setFormOpen(true)
                 }}
               >
-                + 添加零件
+                + 添加 BOM 零件
               </Btn>
               <Btn danger disabled={!sel} onClick={() => sel && setDeleting(sel)}>
                 删除
@@ -385,7 +575,7 @@ export function BOMScreen() {
             {active ? `BOM 明细 · ${active.code} ${active.name}` : 'BOM 明细'}
           </span>
           <span className="text-[11.5px] text-[var(--color-fg-subtle)]">
-            {active ? `共 ${(items ?? []).length} 个零件` : ''}
+            {active && !loading ? `共 ${(items ?? []).length} 个零件` : ''}
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
@@ -404,6 +594,7 @@ export function BOMScreen() {
                 <col style={{ width: 80 }} />
                 <col style={{ width: 84 }} />
                 <col />
+                {canEdit ? <col style={{ width: 64 }} /> : null}
               </colgroup>
               <thead>
                 <tr>
@@ -415,50 +606,116 @@ export function BOMScreen() {
                   <th className="num">损耗率</th>
                   <th className="mid">可替换</th>
                   <th>备注</th>
+                  {canEdit ? (
+                    <th className="mid col-fix" style={{ width: 64 }}>
+                      操作
+                    </th>
+                  ) : null}
                 </tr>
               </thead>
               <tbody>
-                {(items ?? []).map((it) => (
-                  <tr
-                    key={it.id}
-                    data-selected={selectedRow === it.id}
-                    onClick={() => setSelectedRow(it.id === selectedRow ? null : it.id)}
-                  >
-                    <td className="mid">
-                      <input
-                        type="checkbox"
-                        checked={selectedRow === it.id}
-                        onChange={() => setSelectedRow(it.id === selectedRow ? null : it.id)}
-                        aria-label={`选择 ${it.part_code ?? it.id}`}
-                      />
-                    </td>
-                    <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                      {it.part_code ?? '—'}
-                    </td>
-                    <td>{it.part_name ?? '—'}</td>
-                    <td>
-                      <Badge kind={it.use_mode === 1 ? 'neutral' : 'ok'}>
-                        {it.use_mode === 1 ? '每M台用1个' : '每台用N个'}
-                      </Badge>
-                    </td>
-                    {/* 两种模式的单位不同：前者是台，后者是个 */}
-                    <td className="num">
-                      {it.use_mode === 1 ? `${Number(it.quantity).toFixed(0)}台` : `${Number(it.quantity).toFixed(2)}个`}
-                    </td>
-                    <td className="num">{Number(it.loss_rate).toFixed(1)}%</td>
-                    <td className="mid">
-                      {it.replaceable === 1 ? (
-                        <Badge kind="warn">可替换</Badge>
-                      ) : (
-                        <span className="text-[var(--color-fg-subtle)]">—</span>
-                      )}
-                    </td>
-                    <td>{it.remark ?? ''}</td>
-                  </tr>
-                ))}
-                {(items ?? []).length === 0 && (
+                {/* 根：产品。树的第一层，永远展开、不可折叠。
+                    加载中不显示计数——"共 0 个零件"会被读成空 BOM */}
+                <tr data-tree-root className="tree-root">
+                  <td colSpan={COLS} style={{ paddingLeft: 14 }}>
+                    <span className="tree-root-tag">产品</span>
+                    <span className="font-semibold">
+                      {active.code} {active.name}
+                    </span>
+                    <span className="ml-2 text-[11.5px] font-normal text-[var(--color-fg-subtle)]">
+                      {loading ? '正在加载明细…' : `共 ${(items ?? []).length} 个零件 · ${groups.length} 类`}
+                    </span>
+                  </td>
+                </tr>
+                {loading ? (
                   <tr>
-                    <td colSpan={8} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                    <td colSpan={COLS} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                      正在加载明细…
+                    </td>
+                  </tr>
+                ) : null}
+                {groups.map((g) => (
+                  <Fragment key={g.name}>
+                    {/* 分类层：可折叠。点行切换，整行都是热区 */}
+                    <tr
+                      data-tree-group
+                      data-collapsed={collapsed.has(g.name)}
+                      className="tree-group"
+                      onClick={() => toggleGroup(g.name)}
+                    >
+                      <td colSpan={COLS} style={{ paddingLeft: 14 }}>
+                        <span className="tree-toggle" aria-hidden>
+                          {collapsed.has(g.name) ? '▶' : '▼'}
+                        </span>
+                        <span className="font-semibold">{g.name}</span>
+                        <span className="ml-2 text-[11.5px] text-[var(--color-fg-subtle)]">
+                          {g.leaves.length} 项
+                        </span>
+                      </td>
+                    </tr>
+                    {!collapsed.has(g.name) &&
+                      g.leaves.map(({ item }, idx) => (
+                        <tr
+                          key={item.id}
+                          className={
+                            idx === g.leaves.length - 1 ? 'tree-leaf is-group-end' : 'tree-leaf'
+                          }
+                          data-selected={selectedRow === item.id}
+                          onClick={() => setSelectedRow(item.id === selectedRow ? null : item.id)}
+                        >
+                          <td className="mid">
+                            <input
+                              type="checkbox"
+                              checked={selectedRow === item.id}
+                              onChange={() => setSelectedRow(item.id === selectedRow ? null : item.id)}
+                              aria-label={`选择 ${item.part_code ?? item.id}`}
+                            />
+                          </td>
+                          <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
+                            {item.part_code ?? '—'}
+                          </td>
+                          <td>{item.part_name ?? '—'}</td>
+                          <td>
+                            <Badge kind={item.use_mode === 1 ? 'neutral' : 'ok'}>
+                              {item.use_mode === 1 ? '每M台用1个' : '每台用N个'}
+                            </Badge>
+                          </td>
+                          {/* 两种模式的单位不同：前者是台，后者是个 */}
+                          <td className="num">
+                            {item.use_mode === 1
+                              ? `${Number(item.quantity).toFixed(0)}台`
+                              : `${Number(item.quantity).toFixed(2)}个`}
+                          </td>
+                          <td className="num">{Number(item.loss_rate).toFixed(1)}%</td>
+                          <td className="mid">
+                            {item.replaceable === 1 ? (
+                              <Badge kind="warn">可替换</Badge>
+                            ) : (
+                              <span className="text-[var(--color-fg-subtle)]">—</span>
+                            )}
+                          </td>
+                          <td>{item.remark ?? ''}</td>
+                          {canEdit ? (
+                            <td className="mid col-fix">
+                              {/* 行本身点击是选中（供删除），编辑按钮要拦住冒泡 */}
+                              <button
+                                className="text-[var(--color-primary)]"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openEditItem(item)
+                                }}
+                              >
+                                编辑
+                              </button>
+                            </td>
+                          ) : null}
+                        </tr>
+                      ))}
+                  </Fragment>
+                ))}
+                {!loading && (items ?? []).length === 0 && (
+                  <tr>
+                    <td colSpan={COLS} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                       该产品还没有 BOM 明细
                     </td>
                   </tr>
@@ -534,6 +791,64 @@ export function BOMScreen() {
         </Modal>
       ) : null}
 
+      {editItem ? (
+        <Modal
+          title="编辑 BOM 明细"
+          onClose={() => setEditItem(null)}
+          width={420}
+          footer={
+            <>
+              <Btn onClick={() => setEditItem(null)}>取消</Btn>
+              <Btn primary disabled={editBusy} onClick={submitEditItem}>
+                {editBusy ? '保存中…' : '保存'}
+              </Btn>
+            </>
+          }
+        >
+          <FormError text={editErr} />
+          {/* 只读展示这一行挂的是什么零件：编辑范围不含零件归属，
+              标出来才不会让人以为可以在这里换件（换件 = 删掉再加一行）。 */}
+          <FormRow label="零件">
+            <div className="flex h-[26px] items-center text-[11.5px]">
+              <span style={{ fontFamily: 'Consolas, monospace' }}>{editItem.part_code ?? '—'}</span>
+              <span className="ml-2 text-[var(--color-fg-muted)]">{editItem.part_name ?? ''}</span>
+            </div>
+          </FormRow>
+          <FormRow label="用量模式">
+            <select
+              className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)]"
+              value={editDraft.useMode}
+              onChange={(e) => setEditDraft({ ...editDraft, useMode: e.target.value })}
+            >
+              {USE_MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+          <FormRow label={editDraft.useMode === '1' ? '每多少台用1个(M)' : '每台用量(个)'}>
+            <NumberInput
+              value={editDraft.qty}
+              onChange={(v) => setEditDraft({ ...editDraft, qty: v })}
+            />
+          </FormRow>
+          <FormRow label="损耗率%">
+            <NumberInput
+              value={editDraft.loss}
+              onChange={(v) => setEditDraft({ ...editDraft, loss: v })}
+            />
+          </FormRow>
+          <FormRow label="可替换">
+            <Checkbox
+              checked={editDraft.replaceable}
+              onChange={(v) => setEditDraft({ ...editDraft, replaceable: v })}
+              label="该零件可被替换（跳过时不消耗库存）"
+            />
+          </FormRow>
+        </Modal>
+      ) : null}
+
       {deleting ? (
         <ConfirmDialog
           title="确认删除"
@@ -544,6 +859,7 @@ export function BOMScreen() {
           onCancel={() => setDeleting(null)}
         />
       ) : null}
+
     </>
   )
 }

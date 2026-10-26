@@ -244,8 +244,8 @@ func TestCompletionShortageNamesOtherBatches(t *testing.T) {
 	}
 }
 
-// use_mode=1（每 M 台用 1 个）的向上取整必须与扣料一致；跳过零件不参与占用。
-func TestStockProjectionHonoursUseModeAndSkips(t *testing.T) {
+// use_mode=1（每 M 台用 1 个）的向上取整必须与扣料一致。
+func TestStockProjectionHonoursUseMode(t *testing.T) {
 	svc, store := newProjectionFixture(t)
 	var partID int64
 	if err := store.WithTx(func(tx repository.TxOps) error {
@@ -285,5 +285,41 @@ func TestStockProjectionHonoursUseModeAndSkips(t *testing.T) {
 	}
 	if res.Parts[0].Committed != 8 {
 		t.Fatalf("committed = %v，期望 8（ceil(25/4)=7，含 10%% 损耗后向上取整）", res.Parts[0].Committed)
+	}
+}
+
+// 跳过零件既不进投影，也不在完成时扣：两边必须同时排除，否则投影会虚报缺料。
+func TestStockProjectionExcludesSkippedParts(t *testing.T) {
+	f := seedProjectionFixture(t, 100, 0, 60, "B-SKIP")
+	if err := f.svc.AddSkipPart(f.batchIDs["B-SKIP"], f.partID); err != nil {
+		t.Fatalf("AddSkipPart: %v", err)
+	}
+
+	res, err := f.svc.StockProjection(usecase.StockProjectionInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Parts) != 0 {
+		t.Fatalf("跳过的零件不该出现在投影里：%+v", res.Parts)
+	}
+	if res.Summary.WillShort != 0 || res.Summary.WillWarn != 0 {
+		t.Fatalf("summary = %+v，期望全 0", res.Summary)
+	}
+	if len(res.Batches) != 1 || res.Batches[0].Level != "ok" {
+		t.Fatalf("batches = %+v，跳过唯一零件后应为 ok", res.Batches)
+	}
+
+	// 同样的口径用在完成生产上：库存不该被扣。
+	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{
+		ID: f.batchIDs["B-SKIP"], Status: 2, Operator: "测试",
+	}); err != nil {
+		t.Fatalf("跳过后完成应当成功：%v", err)
+	}
+	part, err := f.store.GetPart(f.partID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.StockQty != 100 {
+		t.Fatalf("跳过的零件被扣了库存：%v", part.StockQty)
 	}
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isProjectedAlert, stockView } from '../src/lib/lowStock'
+import {
+  currentStockView,
+  isProjectedAlert,
+  projectedStockView,
+  stockView,
+} from '../src/lib/lowStock'
 
 const part = (over: Partial<{ stock_qty: number; warn_qty: number; status: number }> = {}) => ({
   stock_qty: 100,
@@ -64,6 +69,50 @@ describe('stockView', () => {
     expect(v.hint).toContain('在产占用 130')
     expect(v.hint).toContain('-30')
     expect(v.hint).toContain('预警线 20')
+  })
+})
+
+describe('currentStockView（现状预警专用）', () => {
+  it('never reports a future state', () => {
+    // 现在 40、预警线 100：现状只能是低库存，即使投影说做完会缺
+    const v = currentStockView(part({ stock_qty: 40, warn_qty: 100 }))
+    expect(v.kind).toBe('low')
+    expect(v.text).toBe('低库存')
+    expect(v.dashed).toBe(false)
+    expect(v.hint).toContain('当前库存 40')
+  })
+
+  it('matches the old three levels and keeps disabled first', () => {
+    expect(currentStockView(part({ stock_qty: 0 })).kind).toBe('out')
+    expect(currentStockView(part({ stock_qty: 10, warn_qty: 20 })).kind).toBe('low')
+    expect(currentStockView(part({ stock_qty: 100, warn_qty: 20 })).kind).toBe('normal')
+    expect(currentStockView(part({ status: 2, stock_qty: 0 })).kind).toBe('disabled')
+  })
+})
+
+describe('projectedStockView（未来预警专用）', () => {
+  it('returns null when the projection is healthy', () => {
+    expect(projectedStockView(part(), { committed: 10, after: 90 })).toBeNull()
+    // 预警线为 0 时"将预警"不成立，但"将缺料"仍成立
+    expect(projectedStockView(part({ warn_qty: 0 }), { committed: 10, after: 90 })).toBeNull()
+  })
+
+  it('always uses forward-looking text and a dashed badge', () => {
+    const short = projectedStockView(part(), { committed: 130, after: -30 })!
+    expect(short.kind).toBe('will_short')
+    expect(short.text).toBe('将缺料')
+    expect(short.dashed).toBe(true)
+
+    const low = projectedStockView(part({ stock_qty: 100, warn_qty: 90 }), { committed: 20, after: 80 })!
+    expect(low.kind).toBe('will_low')
+    expect(low.text).toBe('将预警')
+    expect(low.dashed).toBe(true)
+  })
+
+  it('reports a projected deficit even when the part is currently low', () => {
+    // 两栏各说各的：现状栏会说"低库存"，未来栏说"将缺料"
+    const v = projectedStockView(part({ stock_qty: 40, warn_qty: 100 }), { committed: 70, after: -30 })!
+    expect(v.kind).toBe('will_short')
   })
 })
 

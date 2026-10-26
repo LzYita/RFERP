@@ -108,6 +108,12 @@ func TestStockProjectionAggregatesOpenBatches(t *testing.T) {
 	if len(got.Holders) != 2 {
 		t.Fatalf("holders = %+v，期望两个批次", got.Holders)
 	}
+	// 来源必须带 batch_id：工作台要从"零件"跳到"哪些批次在用"。
+	for _, h := range got.Holders {
+		if h.BatchID == 0 || h.BatchNo == "" {
+			t.Fatalf("holder 缺少批次标识：%+v", h)
+		}
+	}
 
 	res, err := f.svc.StockProjection(usecase.StockProjectionInput{})
 	if err != nil {

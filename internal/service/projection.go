@@ -96,6 +96,7 @@ func (s *Service) commitmentsAndPlans(excludeBatchID int64) (map[int64]float64, 
 		for partID, qty := range consumption {
 			committed[partID] += qty
 			holders[partID] = append(holders[partID], usecase.ProjectionHolder{
+				BatchID: b.ID,
 				BatchNo: b.BatchNo,
 				Qty:     qty,
 			})

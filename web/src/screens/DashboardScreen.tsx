@@ -2,24 +2,35 @@
  * 工作台：首屏，登录后的默认落点。
  *
  * 四宫格（左列看库存，右列看生产）：
- *   左上 现状预警   —— 当前库存已经无货/低于预警线（实心徽章）
- *   左下 使用中预警 —— 全部在产批次完成后将无货/低于预警线（虚线徽章）
+ *   左上 现状预警   —— 当前库存已经无货/低于预警线（实心、现在时文案）
+ *   左下 未来预警   —— 全部在产批次完成后将无货/低于预警线（虚线、"将"字）
  *   右上 生产计划   —— 待生产/生产中/已暂停的批次与备料结论
  *   右下 操作记录   —— 最近 30 条审计
  *
- * 两类预警**分栏**而不是合成一张表：它们的处理动作不同——现状预警是"去补货"，
- * 使用中预警是"排产时就要备料"。混在一起后用户分不清"现在就该处理"与
- * "这批做完会出问题"。
+ * 两类预警**分栏**且各用各的口径，不是同一张表换个颜色：
+ *   - 现状预警只用「现在」的库存判断（currentStockView）；
+ *   - 未来预警只用投影判断（projectedStockView），每行必带"将"字与虚线。
+ * 一个零件可以同时出现在两栏（现在低库存、做完会缺货），但它在这两栏里的文案
+ * 必须不同——否则"现状"栏里出现"将缺料"，用户会以为这一栏在说未来。
+ *
+ * 点击未来预警里的零件会列出正在消耗它的在产批次：那才是"为什么它会缺"的
+ * 答案，也是用户下一步要去处理的计划。
  *
  * 数据来自五个既有/只读端点，没有新增 /api/dashboard：
  * 工作台必须独立成立，不能要求用户先访问别的屏。
  */
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
-import { isStockAlert, isProjectedAlert, stockView } from '../lib/lowStock'
-import { projection as projectionApi, RESERVE_TEXT, type BatchReserve, type PartProjection } from '../lib/projection'
+import { currentStockView, isStockAlert, projectedStockView } from '../lib/lowStock'
+import {
+  projection as projectionApi,
+  RESERVE_TEXT,
+  type BatchReserve,
+  type PartProjection,
+} from '../lib/projection'
 import { tableLabel, actionLabel, shortSummary } from '../lib/auditLabels'
-import { Badge, Panel, ScreenError, classifyLoadError, fmtQty, shortTime } from '../components/ui'
+import { Badge, Btn, Panel, ScreenError, classifyLoadError, fmtQty, shortTime } from '../components/ui'
+import { Modal } from '../components/form'
 import { BATCH_STATUS } from '../lib/batch'
 
 interface Part {
@@ -82,6 +93,8 @@ export function DashboardScreen() {
   const [logs, setLogs] = useState<AuditLog[] | null>(null)
   const [proj, setProj] = useState<PartProjection[] | null>(null)
   const [reserve, setReserve] = useState<BatchReserve[]>([])
+  // 点开"未来预警"里的零件时，列出正在消耗它的在产批次。
+  const [holderPart, setHolderPart] = useState<{ row: PartProjection; part: Part } | null>(null)
   const [error, setError] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
 
   useEffect(() => {
@@ -134,23 +147,23 @@ export function DashboardScreen() {
   }, [])
 
   const partList = parts ?? []
-  const projByPart = new Map((proj ?? []).map((p) => [p.part_id, p]))
   const partByID = new Map(partList.map((p) => [p.id, p]))
 
   // 现状预警：当前无货或低于预警线（含停用件，与之前一致）。
   const currentAlerts = partList.filter((p) => p.status !== 1 || isStockAlert(p))
 
-  // 使用中预警：按全部在产批次完成后的余量判断，停用件不进（不会补货）。
-  const projectedAlerts = (proj ?? [])
-    .filter((row) => {
+  // 未来预警：只看投影，且只保留"将缺料/将预警"两档（停用件不进——不会补货）。
+  const futureAlerts = (proj ?? [])
+    .flatMap((row) => {
       const p = partByID.get(row.part_id)
-      if (!p || p.status !== 1) return false
-      return isProjectedAlert(stockView(p, row))
+      if (!p || p.status !== 1) return []
+      const view = projectedStockView(p, row)
+      return view ? [{ row, part: p, view }] : []
     })
-    .map((row) => ({ row, part: partByID.get(row.part_id)! }))
 
   const plan = (batches ?? []).filter((b) => isOpenBatch(b.status))
   const reserveByBatch = new Map(reserve.map((r) => [r.batch_id, r]))
+  const batchByID = new Map((batches ?? []).map((b) => [b.id, b]))
 
   if (error) return <ScreenError kind={error.kind} text={error.text} />
 
@@ -207,7 +220,8 @@ export function DashboardScreen() {
                 </thead>
                 <tbody>
                   {currentAlerts.slice(0, 8).map((p) => {
-                    const view = stockView(p, projByPart.get(p.id))
+                    // 只报"现在"：这一栏的标题是现状，出现"将缺料"会名不副实。
+                    const view = currentStockView(p)
                     return (
                       <tr key={p.id}>
                         <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
@@ -286,15 +300,15 @@ export function DashboardScreen() {
           </div>
         </Panel>
 
-        {/* 左下：使用中预警（在产后） */}
-        <Panel panelId="projected-alerts" className="flex min-h-0 flex-col overflow-hidden">
+        {/* 左下：未来预警（在产批次完成后） */}
+        <Panel panelId="future-alerts" className="flex min-h-0 flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-[var(--color-border)] px-2.5 py-1.5">
-            <span className="text-[13px] font-semibold">使用中预警</span>
-            <span className="text-[11.5px] text-[var(--color-fg-subtle)]">{projectedAlerts.length} 项</span>
+            <span className="text-[13px] font-semibold">未来预警</span>
+            <span className="text-[11.5px] text-[var(--color-fg-subtle)]">{futureAlerts.length} 项</span>
             <span className="ml-auto text-[11px] text-[var(--color-fg-subtle)]">在产批次完成后</span>
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            {projectedAlerts.length === 0 ? (
+            {futureAlerts.length === 0 ? (
               <div className="grid h-full place-items-center text-[12px] text-[var(--color-fg-subtle)]">
                 没有正在生产、完成后会跌破预警线的零件
               </div>
@@ -310,22 +324,26 @@ export function DashboardScreen() {
                   </tr>
                 </thead>
                 <tbody>
-                  {projectedAlerts.slice(0, 8).map(({ row, part }) => {
-                    const view = stockView(part, row)
-                    return (
-                      <tr key={row.part_id}>
-                        <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{part.code}</td>
-                        <td>{part.name}</td>
-                        <td className="num">{fmtQty(row.committed)}</td>
-                        <td className="num">{fmtQty(row.after)}</td>
-                        <td className="mid">
-                          <Badge kind={view.tone} dashed title={view.hint}>
-                            {view.text}
-                          </Badge>
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {futureAlerts.slice(0, 8).map(({ row, part, view }) => (
+                    // 整行可点：点开看"是哪些在产计划在吃这个零件"，
+                    // 那才是用户下一步要处理的单据。
+                    <tr
+                      key={row.part_id}
+                      className="cursor-pointer"
+                      data-future-part={part.code}
+                      onClick={() => setHolderPart({ row, part })}
+                    >
+                      <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{part.code}</td>
+                      <td>{part.name}</td>
+                      <td className="num">{fmtQty(row.committed)}</td>
+                      <td className="num">{fmtQty(row.after)}</td>
+                      <td className="mid">
+                        <Badge kind={view.tone} dashed title={view.hint}>
+                          {view.text}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             )}
@@ -379,6 +397,100 @@ export function DashboardScreen() {
           </div>
         </Panel>
       </div>
+
+      {holderPart ? (
+        <HolderBatchesModal
+          part={holderPart.part}
+          row={holderPart.row}
+          batchByID={batchByID}
+          onClose={() => setHolderPart(null)}
+        />
+      ) : null}
     </>
+  )
+}
+
+/**
+ * 「这个零件会被哪些在产计划吃掉」。
+ *
+ * 未来预警只给结论，这里给单据：批次号、状态、整批计划数、以及该零件在这一批
+ * 里占多少。用户据此决定是补货、改计划还是先完成某一批。
+ */
+function HolderBatchesModal({
+  part,
+  row,
+  batchByID,
+  onClose,
+}: {
+  part: Part
+  row: PartProjection
+  batchByID: Map<number, Batch>
+  onClose: () => void
+}) {
+  const holders = [...(row.holders ?? [])].sort((a, b) => b.qty - a.qty)
+  return (
+    <Modal
+      title={`在产占用 · ${part.code}`}
+      width={520}
+      onClose={onClose}
+      footer={
+        <Btn primary onClick={onClose}>
+          关闭
+        </Btn>
+      }
+    >
+      <div className="mb-2 text-[12px] text-[var(--color-fg-muted)]">
+        {part.name}：现有 {fmtQty(row.stock)}，在产占用 {fmtQty(row.committed)}，
+        全部完成后 {fmtQty(row.after)}
+        {part.unit ? `（${part.unit}）` : ''}
+      </div>
+      <div className="max-h-[280px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
+        <table className="data-table">
+          <colgroup>
+            <col style={{ width: 130 }} />
+            <col style={{ width: 78 }} />
+            <col />
+            <col style={{ width: 84 }} />
+            <col style={{ width: 96 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>批次号</th>
+              <th className="mid">状态</th>
+              <th>产品</th>
+              <th className="num">计划数</th>
+              <th className="num">本零件占用</th>
+            </tr>
+          </thead>
+          <tbody>
+            {holders.map((h) => {
+              const b = h.batch_id ? batchByID.get(h.batch_id) : undefined
+              return (
+                <tr key={h.batch_no}>
+                  <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{h.batch_no}</td>
+                  <td className="mid">
+                    {b ? (
+                      <Badge kind={batchStatusKind(b.status)}>{BATCH_STATUS_TEXT[b.status] ?? '—'}</Badge>
+                    ) : (
+                      <span className="text-[var(--color-fg-subtle)]">—</span>
+                    )}
+                  </td>
+                  <td>{b?.product_name ?? '—'}</td>
+                  <td className="num">{b ? b.plan_qty : '—'}</td>
+                  <td className="num">{fmtQty(h.qty)}</td>
+                </tr>
+              )
+            })}
+            {holders.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="py-6 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                  没有在产批次占用这个零件
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
   )
 }

@@ -1172,6 +1172,33 @@ async function stockProjectionGate(page, product, batchNos) {
     `弹窗内容：${previewText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
   check('建批预览的「其它占用」是合计值（180）', previewText.includes('180'),
     `弹窗内容：${previewText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 预览表不能比弹窗宽：横向溢出会把 auto 列压成 0 宽，文字压到相邻列上
+  // （实测过"装饰圈0"这种重叠）。jsdom 量不到，只有真浏览器能证伪。
+  const overflow = await modal.evaluate((el) => {
+    const table = el.querySelector('table.data-table.is-narrow')
+    if (!table) return null
+    const box = table.parentElement
+    return {
+      tableW: Math.round(table.getBoundingClientRect().width),
+      boxW: Math.round(box.getBoundingClientRect().width),
+      scrollW: box.scrollWidth,
+      clientW: box.clientWidth,
+    }
+  })
+  check('备料预览不横向溢出',
+    overflow !== null && overflow.scrollW <= overflow.clientW + 1,
+    overflow ? `容器 scrollWidth=${overflow.scrollW} clientWidth=${overflow.clientW} 表宽=${overflow.tableW} 容器宽=${overflow.boxW}` : '找不到预览表')
+  check('备料预览的零件列有实际宽度',
+    overflow !== null && overflow.tableW > 0,
+    overflow ? `表宽=${overflow.tableW}` : '找不到预览表')
+
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'batch-preview.png')
+    await page.screenshot({ path: shot })
+    ok(`建批预览截图 ${shot}`)
+  }
+
   await modal.locator('button', { hasText: '取消' }).click()
   await sleep(400)
 
@@ -1215,19 +1242,40 @@ async function stockProjectionGate(page, product, batchNos) {
   const borderStyle = await dashedBadge.evaluate((el) => getComputedStyle(el).borderStyle).catch(() => '')
   check('虚线徽章真的画成虚线', borderStyle.includes('dashed'), `border-style=${borderStyle}`)
 
-  // 6) 工作台：四宫格顺序与两张预警
+  // 6) 工作台：四宫格顺序与两类预警各说各的
   await page.click('text=工作台')
   await sleep(1500)
   const panels = await page.locator('[data-panel]').evaluateAll((els) =>
     els.map((e) => e.getAttribute('data-panel')),
   )
-  check('工作台四宫格顺序：现状/计划 在上，使用中/操作记录 在下',
-    JSON.stringify(panels) === JSON.stringify(['current-alerts', 'production-plan', 'projected-alerts', 'recent-logs']),
+  check('工作台四宫格顺序：现状/计划 在上，未来/操作记录 在下',
+    JSON.stringify(panels) === JSON.stringify(['current-alerts', 'production-plan', 'future-alerts', 'recent-logs']),
     `实际顺序：${panels.join(' → ')}`)
-  const projected = page.locator('[data-panel="projected-alerts"]')
-  const projectedText = await projected.innerText()
-  check('使用中预警命中共用零件的批次', projectedText.includes('P-0001'),
-    `面板内容：${projectedText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  const currentPanel = page.locator('[data-panel="current-alerts"]')
+  const currentText = await currentPanel.innerText()
+  check('现状预警只报现在时（不出现"将缺料"）', !currentText.includes('将缺料'),
+    `面板内容：${currentText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  const future = page.locator('[data-panel="future-alerts"]')
+  const futureText = await future.innerText()
+  check('未来预警命中共用零件的批次', futureText.includes('P-0001'),
+    `面板内容：${futureText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 点未来预警里的零件 → 列出正在消耗它的在产计划
+  await future.locator('[data-future-part="P-0001"]').first().click()
+  await sleep(600)
+  const holderDialog = page.locator('div[class*="fixed"]').last()
+  const holderText = await holderDialog.innerText()
+  check('点零件列出对应的在产计划',
+    holderText.includes('B-STK-2') && holderText.includes('B-STK-3'),
+    `弹窗内容：${holderText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  check('弹窗同时给出计划数与本零件占用',
+    holderText.includes('计划数') && holderText.includes('本零件占用'),
+    `弹窗内容：${holderText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  await holderDialog.locator('button', { hasText: '关闭' }).click()
+  await sleep(300)
+
   const planPanel = page.locator('[data-panel="production-plan"]')
   const planText = await planPanel.innerText()
   check('生产计划列出剩余两个在产批次', planText.includes('B-STK-2') && planText.includes('B-STK-3'),

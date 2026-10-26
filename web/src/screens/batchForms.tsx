@@ -102,7 +102,8 @@ export function CreateBatchModal({
     <Modal
       title="新建生产批次"
       onClose={onClose}
-      width={500}
+      // 备料预览有 6 列，500px 会把名称列压到 0 宽、文字直接压到下一列上。
+      width={600}
       footer={
         <>
           <Btn onClick={onClose}>取消</Btn>
@@ -292,20 +293,23 @@ function StockPreview({
         <span className={conclusionColor}>{conclusion}</span>
       </div>
       <div className="max-h-[170px] overflow-auto">
-        <table className="data-table is-compact">
+        {/*
+          列宽必须留够：`table-layout: fixed` 下，固定列之和一旦超过弹窗内宽，
+          表格就会横向溢出，`auto` 那一列被压到 0 宽，文字直接压到相邻列上
+          （就是"装饰圈0"那种重叠）。所以名称并入零件列，不再单独占一列。
+        */}
+        <table className="data-table is-narrow">
           <colgroup>
-            <col style={{ width: 118 }} />
             <col />
-            <col style={{ width: 68 }} />
-            <col style={{ width: 76 }} />
-            <col style={{ width: 70 }} />
-            <col style={{ width: 82 }} />
-            <col style={{ width: 70 }} />
+            <col style={{ width: 62 }} />
+            <col style={{ width: 72 }} />
+            <col style={{ width: 72 }} />
+            <col style={{ width: 80 }} />
+            <col style={{ width: 62 }} />
           </colgroup>
           <thead>
             <tr>
-              <th>零件编码</th>
-              <th>零件名称</th>
+              <th>零件</th>
               <th className="num">现有</th>
               <th className="num" title="其它未完成批次已占用、完成时才扣的数量">
                 其它占用
@@ -318,8 +322,10 @@ function StockPreview({
           <tbody>
             {rows.map((r) => (
               <tr key={r.partId}>
-                <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{r.code}</td>
-                <td>{r.name}</td>
+                <td className="tree-inline" title={`${r.code} ${r.name}`}>
+                  <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{r.code}</span>
+                  <span className="ml-1.5 text-[var(--color-fg-muted)]">{r.name}</span>
+                </td>
                 <td className="num">{fmtQty(r.stock)}</td>
                 <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
                   {r.others > 0 ? fmtQty(r.others) : '—'}

@@ -10,6 +10,8 @@ package usecase
 
 // ProjectionHolder 是一条占用来源：哪个批次、占了多少。
 type ProjectionHolder struct {
+	// BatchID 供界面从"某个零件"跳到"哪些批次在用"；假设中的那一批为 0。
+	BatchID int64   `json:"batch_id,omitempty"`
 	BatchNo string  `json:"batch_no"`
 	Qty     float64 `json:"qty"`
 	// Planned 标记"假设中的一批"：建批弹窗预览时把用户正在填的计划也算进去。

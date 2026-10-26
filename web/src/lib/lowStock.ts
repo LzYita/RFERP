@@ -125,3 +125,53 @@ export function stockView(
 export function isProjectedAlert(v: StockView): boolean {
   return v.kind === 'will_short' || v.kind === 'will_low'
 }
+
+/**
+ * 「只看现在」的状态：停用 / 无库存 / 低库存 / 正常。
+ *
+ * 工作台的「现状预警」必须用它，而不是合并后的 stockView：
+ * 一个零件现在 40 个（低于预警线 100）、做完在产后会缺 30 个，
+ * 在"现状"这一栏里应当显示**低库存**。若显示"将缺料"，这一栏就名不副实——
+ * 用户看到的是未来结论，却以为在说眼下。
+ */
+export function currentStockView(
+  p: StockJudgable & { status?: number; unit?: string },
+): StockView {
+  const unit = p.unit ? ` ${p.unit}` : ''
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const hint = `当前库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const base = { committed: 0, after: p.stock_qty, hint }
+  if (p.status !== undefined && p.status !== 1) {
+    return { kind: 'disabled', text: '停用', tone: 'neutral', dashed: false, ...base }
+  }
+  if (p.stock_qty <= 0) {
+    return { kind: 'out', text: '无库存', tone: 'danger', dashed: false, ...base }
+  }
+  if (p.warn_qty > 0 && p.stock_qty < p.warn_qty) {
+    return { kind: 'low', text: '低库存', tone: 'warn', dashed: false, ...base }
+  }
+  return { kind: 'normal', text: '正常', tone: 'ok', dashed: false, ...base }
+}
+
+/**
+ * 「只看以后」的状态：将缺料 / 将预警；两者都不成立时返回 null。
+ *
+ * 工作台的「未来预警」用它：这一栏里的每一行都必须带"将"字与虚线，
+ * 不能混进"低库存"这类现在时的结论。
+ */
+export function projectedStockView(
+  p: StockJudgable & { status?: number; unit?: string },
+  projection: { committed: number; after: number },
+): StockView | null {
+  const unit = p.unit ? ` ${p.unit}` : ''
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const hint = `在产占用 ${fmt(projection.committed)}${unit}，全部完成后 ${fmt(projection.after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const base = { committed: projection.committed, after: projection.after, hint }
+  if (projection.after < 0) {
+    return { kind: 'will_short', text: '将缺料', tone: 'danger', dashed: true, ...base }
+  }
+  if (p.warn_qty > 0 && projection.after < p.warn_qty) {
+    return { kind: 'will_low', text: '将预警', tone: 'warn', dashed: true, ...base }
+  }
+  return null
+}

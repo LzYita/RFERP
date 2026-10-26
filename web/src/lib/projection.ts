@@ -8,6 +8,8 @@
 import { api } from './api'
 
 export interface ProjectionHolder {
+  /** 在产批次 id；建批预览里"计划中"的那一批为 0。 */
+  batch_id?: number
   batch_no: string
   qty: number
   planned?: boolean

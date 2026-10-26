@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiError, usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
-import { isStockAlert, stockLevel, STOCK_LEVEL_TEXT } from '../lib/lowStock'
+import { isStockAlert, isProjectedAlert, stockView } from '../lib/lowStock'
+import { projection as projectionApi, type PartProjection } from '../lib/projection'
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
 import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
@@ -14,7 +15,6 @@ import {
   ScreenError,
   classifyLoadError,
   fmtQty,
-  shortTime,
 } from '../components/ui'
 
 
@@ -84,6 +84,8 @@ export function filterParts(
   q: string,
   typeFilter: string,
   lowOnly: boolean,
+  willOnly = false,
+  projByPart: ReadonlyMap<number, { committed: number; after: number }> = new Map(),
 ): Part[] {
   let out = [...rows]
   if (typeFilter !== '全部') {
@@ -97,7 +99,16 @@ export function filterParts(
       ),
     )
   }
-  if (lowOnly) out = out.filter(isStockAlert)
+  // 两个预警筛选是**并集**：一个看"现在"，一个看"全部在产完成之后"。
+  // 只勾后者时，已经没货但投影反而无占用的零件不会被选中——这符合"在产后"
+  // 的字面含义；用户想两者都看就都勾上。
+  if (lowOnly || willOnly) {
+    out = out.filter((p) => {
+      const cur = lowOnly && isStockAlert(p)
+      const will = willOnly && isProjectedAlert(stockView(p, projByPart.get(p.id)))
+      return cur || will
+    })
+  }
   return out
 }
 
@@ -120,6 +131,10 @@ export function PartsScreen() {
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [q, setQ] = useState('')
   const [lowOnly, setLowOnly] = useState(false)
+  // 「在产后将预警」：按未完成批次的占用推算，与「库存预警」（当前）并列。
+  const [willOnly, setWillOnly] = useState(false)
+  // 投影只读、可失败：拿不到就退化成当前三档，不能让整张表消失。
+  const [projByPart, setProjByPart] = useState<Map<number, PartProjection>>(new Map())
   // 「分类」筛选：Fyne 原版有的维度，迁移时整条丢了（连带列表里的分类列）。
   // 后端为它建了 idx_parts_type，说明这个维度本来就是要用的。
   const [typeFilter, setTypeFilter] = useState('全部')
@@ -163,16 +178,29 @@ export function PartsScreen() {
         // 混成一句「加载失败」会让用户既不知道该找谁、也不知道该重试。
         setError(classifyLoadError(err, '零件'))
       })
+    loadProjection().then((m) => {
+      if (alive) setProjByPart(m)
+    })
     return () => {
       alive = false
     }
   }, [])
 
+  /** 投影单独拉、单独失败：它是附加信息，挂了不该拖垮零件列表。 */
+  async function loadProjection(): Promise<Map<number, PartProjection>> {
+    try {
+      const res = await projectionApi.get()
+      return new Map(res.parts.map((p) => [p.part_id, p]))
+    } catch {
+      return new Map()
+    }
+  }
+
   const typeOptions = useMemo(() => typeFilterOptions(parts ?? []), [parts])
   const activeType = effectiveTypeFilter(typeOptions, typeFilter)
   const filtered = useMemo(
-    () => filterParts(parts ?? [], q, activeType, lowOnly),
-    [parts, q, activeType, lowOnly],
+    () => filterParts(parts ?? [], q, activeType, lowOnly, willOnly, projByPart),
+    [parts, q, activeType, lowOnly, willOnly, projByPart],
   )
 
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
@@ -216,6 +244,8 @@ export function PartsScreen() {
   async function reload() {
     const rows = await partsApi.list()
     setParts(rows)
+    // 入库/盘点会改变投影；分页与筛选都依赖它，所以一起刷新。
+    setProjByPart(await loadProjection())
   }
 
   async function submit() {
@@ -426,12 +456,37 @@ export function PartsScreen() {
             </select>
           </Field>
           <Field label="库存">
-            <label className="flex h-[26px] items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px]">
-              <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
-              {/* 勾选后列出「零库存 + 跌破预警线」，不只是跌破预警线，
-                  所以文案跟着口径改，否则用户会以为漏掉了没货的零件。 */}
-              库存预警
-            </label>
+            <div className="flex h-[26px] items-center gap-2">
+              <label className="flex h-[26px] items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-2.5 text-[11.5px]">
+                <input
+                  type="checkbox"
+                  checked={lowOnly}
+                  aria-label="库存预警"
+                  onChange={(e) => {
+                    setLowOnly(e.target.checked)
+                    setPage(1)
+                  }}
+                />
+                {/* 勾选后列出「零库存 + 跌破预警线」，不只是跌破预警线，
+                    所以文案跟着口径改，否则用户会以为漏掉了没货的零件。 */}
+                库存预警
+              </label>
+              <label
+                className="flex h-[26px] items-center gap-1.5 rounded-[6px] border border-dashed border-[var(--color-border)] px-2.5 text-[11.5px]"
+                title="按未完成批次将要消耗的数量推算：全部在产批次完成后低于预警线或不够"
+              >
+                <input
+                  type="checkbox"
+                  checked={willOnly}
+                  aria-label="在产后将预警"
+                  onChange={(e) => {
+                    setWillOnly(e.target.checked)
+                    setPage(1)
+                  }}
+                />
+                在产后将预警
+              </label>
+            </div>
           </Field>
           <Btn primary onClick={() => setPage(1)}>
             查询
@@ -440,6 +495,7 @@ export function PartsScreen() {
             onClick={() => {
               setQ('')
               setLowOnly(false)
+              setWillOnly(false)
               setTypeFilter('全部')
               setPage(1)
             }}
@@ -492,13 +548,17 @@ export function PartsScreen() {
                     不显示的话用户设了分类也无从核对 */}
                 <th>分类</th>
                 <th className="num">库存</th>
+                {/* 「在产占用」是未完成批次将要消耗、但还没扣的数量。
+                    「库存」与它一起就能推出「全部完成后剩多少」，不必再加一列。 */}
+                <th className="num" title="未完成批次将要消耗的数量（完成时才真正扣减）">
+                  在产占用
+                </th>
                 <th className="num">预警值</th>
                 <th className="mid">状态</th>
                 {/* 供应商：Fyne 版有（part.go:80 第 8 列），迁移时漏了。
                     它与「分类」一样是表单里能填、CSV 导出里有、审计 JSON 里有、
                     唯独列表看不见的字段——用户填了无从核对。 */}
                 <th>供应商</th>
-                <th>更新时间</th>
                 <th className="mid col-fix" style={{ width: 120 }}>
                   操作
                 </th>
@@ -506,7 +566,8 @@ export function PartsScreen() {
             </thead>
             <tbody>
               {rows.map((p) => {
-                const level = stockLevel(p)
+                const proj = projByPart.get(p.id)
+                const view = stockView(p, proj)
                 return (
                   <tr key={p.id} data-selected={selected.has(p.id)}>
                     <td className="mid">
@@ -525,32 +586,23 @@ export function PartsScreen() {
                     <td className="num">
                       {fmtQty(p.stock_qty)} {p.unit}
                     </td>
+                    {/* 占用为 0 时显示占位符：整列 0 只会变成噪声 */}
+                    <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
+                      {proj && proj.committed > 0 ? `${fmtQty(proj.committed)} ${p.unit}` : '—'}
+                    </td>
                     {/* 预警值：与库存并排才看得出差多少。藏在详情里的话，
                         用户只会看到"低库存"两个字，不知道差多少、补多少。 */}
                     <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
                       {fmtQty(p.warn_qty)} {p.unit}
                     </td>
                     <td className="mid">
-                      {/* 停用优先：停用件显示灰色「停用」，不再叠加库存档位。
-                          零件已经停用、不会补货，把它的库存问题标红只会淹没真正
-                          要处理的零件。库存维度在 status===1 时才显示。 */}
-                      <Badge
-                        kind={
-                          p.status !== 1
-                            ? 'neutral'
-                            : level === 'out'
-                              ? 'danger'
-                              : level === 'low'
-                                ? 'warn'
-                                : 'ok'
-                        }
-                      >
-                        {p.status !== 1 ? '停用' : STOCK_LEVEL_TEXT[level]}
+                      {/* 一列装两个时间维度：实心=当前事实，虚线=全部在产完成后。
+                          停用优先于一切库存款（不会补货的零件不该淹没真问题）。 */}
+                      <Badge kind={view.tone} dashed={view.dashed} title={view.hint}>
+                        {view.text}
                       </Badge>
                     </td>
                     <td style={{ color: 'var(--color-fg-muted)' }}>{p.supplier || '—'}</td>
-                    {/* 去年份：年份由筛选/排序语境承担 */}
-                    <td style={{ color: 'var(--color-fg-muted)' }}>{shortTime(p.updated_at)}</td>
                     <td className="mid col-fix">
                       {canEdit ? (
                         <>

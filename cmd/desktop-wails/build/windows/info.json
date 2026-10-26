@@ -1,0 +1,19 @@
+{
+	"fixed": {
+		"file_version": "{{.Info.ProductVersion}}",
+		"product_version": "{{.Info.ProductVersion}}"
+	},
+	"info": {
+		"0000": {
+			"CompanyName": "{{.Info.CompanyName}}",
+			"FileDescription": "{{.Info.ProductName}}",
+			"FileVersion": "{{.Info.ProductVersion}}",
+			"InternalName": "RFERP",
+			"LegalCopyright": "{{.Info.Copyright}}",
+			"OriginalFilename": "RFERP.exe",
+			"ProductName": "{{.Info.ProductName}}",
+			"ProductVersion": "{{.Info.ProductVersion}}",
+			"Comments": "{{.Info.Comments}}"
+		}
+	}
+}

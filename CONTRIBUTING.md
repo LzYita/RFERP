@@ -63,7 +63,17 @@ Another value has drifted before: `cmd/desktop-wails/wails.json` carries
 resource** (what Explorer's Properties → Details shows). It is independent of
 `main.version`, so a build can report the right version in the app and a stale one
 in the file properties - exactly what happened before 2.0.0 (the resource said
-1.3.0). Update it with the release version before step 4.
+1.3.0).
+
+The release build now injects `info.productVersion` from the version argument for
+the duration of the build and restores the file afterwards, so the two values
+cannot drift. The checked-in value is only what a bare `wails build` would use.
+
+`build/windows/info.json` also has to carry the version in both places Windows
+reads it: `fixed.product_version` (the `VS_FIXEDFILEINFO` block, which some tools
+prefer) and the `FileVersion`/`ProductVersion` strings. A resource that sets only
+one of them shows a correct version in one place and `0.0.0.0` or blank in
+another.
 
 A build must never run against a live configuration: `wails build` executes the
 application while generating bindings, and the application opens whatever

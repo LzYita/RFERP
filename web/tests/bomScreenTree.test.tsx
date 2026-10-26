@@ -43,15 +43,24 @@ const bomItems = [
   { id: 12, product_id: 3, part_id: 9, quantity: 2, loss_rate: 0, replaceable: 0, use_mode: 0, version: 1, part_code: 'M-003', part_name: '旧数据零件' },
 ]
 
-/** 产品与零件列表按 URL 区分；BOM 明细只在 product_id=3 时返回。 */
-function stubFetch(opts: { parts?: unknown[]; bom?: unknown[]; method?: string; body?: unknown } = {}) {
+const product2 = { id: 4, code: 'P-002', name: '空气炸锅', unit: '台', status: 1, version: 1 }
+const bomItems2 = [
+  { id: 21, product_id: 4, part_id: 8, quantity: 3, loss_rate: 0, replaceable: 0, use_mode: 0, version: 1, part_code: 'M-002', part_name: '外壳' },
+]
+
+/** 产品与零件列表按 URL 区分；BOM 明细按 product_id 分流，默认回退到第一个产品的数据。 */
+function stubFetch(opts: { parts?: unknown[]; bomByProduct?: Record<string, unknown[]> } = {}) {
   const fetch = vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === 'PUT' || init?.method === 'POST') {
-      return new Response(JSON.stringify(opts.body ?? {}), { status: 200 })
+      return new Response(JSON.stringify({}), { status: 200 })
     }
-    if (url.startsWith('/api/products')) return new Response(JSON.stringify([product]))
+    if (url.startsWith('/api/products')) return new Response(JSON.stringify([product, product2]))
     if (url.startsWith('/api/parts')) return new Response(JSON.stringify(opts.parts ?? [electronic, plastic, untyped]))
-    if (url.startsWith('/api/bom?')) return new Response(JSON.stringify(opts.bom ?? bomItems))
+    if (url.startsWith('/api/bom?')) {
+      const id = new URL(url, 'http://x').searchParams.get('product_id') ?? ''
+      const body = opts.bomByProduct?.[id] ?? (id === '4' ? bomItems2 : bomItems)
+      return new Response(JSON.stringify(body))
+    }
     return new Response(JSON.stringify({ error: `unexpected GET ${url}` }), { status: 404 })
   })
   vi.stubGlobal('fetch', fetch)
@@ -217,6 +226,56 @@ it('forgets a remembered product that no longer exists', async () => {
   expect((screen.getByLabelText('名称') as HTMLSelectElement).value).toBe('')
   // 记忆必须被清掉：否则每次进来都会恢复到一个不存在的产品上
   expect(recallBomSelection()).toBeNull()
+})
+
+it('blanks the table the moment the cascade changes, not when the next load lands', async () => {
+  stubFetch()
+  const u = userEvent.setup()
+  render(<BOMScreen />)
+  await pickProduct(u)
+  await screen.findByText('M-001')
+
+  // 改名称：级联立即不完整，旧明细必须当场消失。
+  // 慢一拍（等新明细回来才清）的话，中间那几秒查询栏与表格内容对不上。
+  await u.selectOptions(screen.getByLabelText('名称'), '空气炸锅')
+  expect(screen.queryByText('M-001')).toBeNull()
+  expect(screen.queryByText('P-001 智能电水壶')).toBeNull()
+  expect(await screen.findByText('请先选择产品')).toBeTruthy()
+})
+
+it('after switching, loads only the new product\'s lines', async () => {
+  stubFetch()
+  const u = userEvent.setup()
+  render(<BOMScreen />)
+  await pickProduct(u)
+  await screen.findByText('M-001')
+
+  await u.selectOptions(screen.getByLabelText('名称'), '空气炸锅')
+  await screen.findByText('请先选择产品')
+  await u.selectOptions(screen.getByLabelText('编码'), 'P-002')
+
+  // 新产品的明细出现，旧产品的零件一行都不残留，根行也换了产品
+  expect(await screen.findByText('M-002')).toBeTruthy()
+  expect(screen.queryByText('M-001')).toBeNull()
+  expect(screen.getByText('P-002 空气炸锅')).toBeTruthy()
+})
+
+it('reloads details when the same product is picked again', async () => {
+  const fetch = stubFetch()
+  const u = userEvent.setup()
+  render(<BOMScreen />)
+  await pickProduct(u)
+  await screen.findByText('M-001')
+  const firstGets = fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/bom?')).length
+
+  // 清空编码再选回同一个产品：id 没变，但明细必须重新拉
+  // （这条路径靠 pickerEpoch 驱动，id 相同不会自然触发 effect）
+  await u.selectOptions(screen.getByLabelText('编码'), '')
+  await screen.findByText('请先选择产品')
+  await u.selectOptions(screen.getByLabelText('编码'), 'P-001')
+  expect(await screen.findByText('M-001')).toBeTruthy()
+  const secondGets = fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/bom?')).length
+  expect(secondGets).toBeGreaterThan(firstGets)
 })
 
 it('offers no way to create part master data from this screen', async () => {

@@ -124,6 +124,11 @@ export function BOMScreen() {
         }
       : null,
   )
+  // 明细加载中：级联已解析出产品、请求还没回来。此时表格只给加载行，
+  // 不给「共 0 个零件」这种会被读成"空 BOM"的数字。
+  const [loading, setLoading] = useState(false)
+  // 级联被用户触碰的次数：同产品重选时 id 不变，靠它重新拉一次明细。
+  const [pickerEpoch, setPickerEpoch] = useState(0)
 
   const [selectedRow, setSelectedRow] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -244,6 +249,25 @@ export function BOMScreen() {
   // 搜索框优先，其次级联 —— 对应 Fyne 的 resolveProductID
   const active = searchPick ?? cascadePick
 
+  /**
+   * 用户动了级联的任何一级：旧选择立刻作废。
+   *
+   * 不清 searchPick 的话，级联改到一半时 active 仍是旧产品（searchPick 优先），
+   * 表格会停在旧产品的明细上，与查询栏对不上——这正是要消灭的错位。
+   * 清了之后 active 落回 cascadePick：级联没选完整就是 null（表格空白），
+   * 选完整了就是新产品。
+   *
+   * pickerEpoch 解决「重新点选同一个产品」：id 没变、但 searchPick 已被清空，
+   * 若不重新拉取，明细会永远停在空白。epoch 让加载 effect 与级联同步 effect
+   * 再跑一次，把数据和搜索框都补回来。
+   */
+  function touchPicker() {
+    setSearchPick(null)
+    setItems(null)
+    setSelectedRow(null)
+    setPickerEpoch((e) => e + 1)
+  }
+
   // 记住当前产品：离开本屏再回来时由 recallBomSelection 恢复。
   // 清空选择时一并清掉记忆——用户主动清空，回来不该又冒出一个产品。
   useEffect(() => {
@@ -275,20 +299,24 @@ export function BOMScreen() {
   }
 
   // 级联变了就把搜索框填上（Fyne: syncPickerFromCascade）
+  // 依赖里带 pickerEpoch：用户重新点选同一个产品时 id 不变，
+  // 但 touchPicker 已把 searchPick 清空，必须在这里补回去。
   useEffect(() => {
     if (!cascadePick) return
     setSearchPick(cascadePick)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cascadePick?.id])
+  }, [cascadePick?.id, pickerEpoch])
 
   useEffect(() => {
     if (!active) {
       setItems(null)
       setSelectedRow(null)
       setCollapsed(new Set())
+      setLoading(false)
       return
     }
     let alive = true
+    setLoading(true)
     bomApi
       .list(active.id)
       .then((r) => {
@@ -296,16 +324,20 @@ export function BOMScreen() {
           setItems(r)
           setSelectedRow(null)
           setCollapsed(new Set())
+          setLoading(false)
         }
       })
       .catch((e) => {
-        if (alive) setError(classifyLoadError(e, 'BOM 明细'))
+        if (alive) {
+          setError(classifyLoadError(e, 'BOM 明细'))
+          setLoading(false)
+        }
       })
     return () => {
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.id])
+  }, [active?.id, pickerEpoch])
 
   async function reload() {
     if (!active) return
@@ -453,6 +485,7 @@ export function BOMScreen() {
                 setCName(e.target.value)
                 setCCode('')
                 setCSpec('')
+                touchPicker()
               }}
             >
               <option value="">全部</option>
@@ -473,6 +506,7 @@ export function BOMScreen() {
               onChange={(e) => {
                 setCCode(e.target.value)
                 setCSpec('')
+                touchPicker()
               }}
             >
               <option value="">全部</option>
@@ -490,7 +524,10 @@ export function BOMScreen() {
               className="h-[26px] w-[130px] rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)] disabled:text-[var(--color-fg-subtle)]"
               value={cSpec}
               disabled={specsForCode.length === 0}
-              onChange={(e) => setCSpec(e.target.value)}
+              onChange={(e) => {
+                setCSpec(e.target.value)
+                touchPicker()
+              }}
             >
               <option value="">全部</option>
               {specsForCode.map((s) => (
@@ -538,7 +575,7 @@ export function BOMScreen() {
             {active ? `BOM 明细 · ${active.code} ${active.name}` : 'BOM 明细'}
           </span>
           <span className="text-[11.5px] text-[var(--color-fg-subtle)]">
-            {active ? `共 ${(items ?? []).length} 个零件` : ''}
+            {active && !loading ? `共 ${(items ?? []).length} 个零件` : ''}
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
@@ -577,7 +614,8 @@ export function BOMScreen() {
                 </tr>
               </thead>
               <tbody>
-                {/* 根：产品。树的第一层，永远展开、不可折叠 */}
+                {/* 根：产品。树的第一层，永远展开、不可折叠。
+                    加载中不显示计数——"共 0 个零件"会被读成空 BOM */}
                 <tr data-tree-root className="tree-root">
                   <td colSpan={COLS} style={{ paddingLeft: 14 }}>
                     <span className="tree-root-tag">产品</span>
@@ -585,10 +623,17 @@ export function BOMScreen() {
                       {active.code} {active.name}
                     </span>
                     <span className="ml-2 text-[11.5px] font-normal text-[var(--color-fg-subtle)]">
-                      共 {(items ?? []).length} 个零件 · {groups.length} 类
+                      {loading ? '正在加载明细…' : `共 ${(items ?? []).length} 个零件 · ${groups.length} 类`}
                     </span>
                   </td>
                 </tr>
+                {loading ? (
+                  <tr>
+                    <td colSpan={COLS} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
+                      正在加载明细…
+                    </td>
+                  </tr>
+                ) : null}
                 {groups.map((g) => (
                   <Fragment key={g.name}>
                     {/* 分类层：可折叠。点行切换，整行都是热区 */}
@@ -668,7 +713,7 @@ export function BOMScreen() {
                       ))}
                   </Fragment>
                 ))}
-                {(items ?? []).length === 0 && (
+                {!loading && (items ?? []).length === 0 && (
                   <tr>
                     <td colSpan={COLS} className="py-8 text-center text-[12px] text-[var(--color-fg-subtle)]">
                       该产品还没有 BOM 明细

@@ -937,7 +937,7 @@ async function statsRankGate(page, longName) {
  * 只查 /api/bom 永远证明不了「分类从哪来、空分类去哪了」。所以这里
  * 读真实渲染出来的层级，并验证折叠确实把叶子收走。
  */
-async function bomTreeGate(page, product) {
+async function bomTreeGate(page, product, product2) {
   // 侧栏标签是「BOM管理」，屏内标题是「BOM 管理」（nav.ts:35）——别混用
   await page.click('text=BOM管理')
   await sleep(1200)
@@ -1093,6 +1093,34 @@ async function bomTreeGate(page, product) {
     (await page.locator('table').last().innerText()).includes('P-0001'),
     '恢复的产品没有加载出 BOM 明细')
 
+  // 切换产品：级联一动，旧明细必须当场消失（不能等新明细回来才清——
+  // 中间那几秒查询栏与表格对不上）。然后选完整，新产品的明细出现。
+  await nameSel.selectOption(product2.name)
+  await sleep(500)
+  const blankPrompt = await page.locator('text=请先选择产品').count()
+  const staleLine = await page.locator('text=P-0001').count()
+  check('级联改动瞬间旧明细消失', blankPrompt > 0 && staleLine === 0,
+    `提示=${blankPrompt}，P-0001 残留=${staleLine}`)
+  await codeSel.selectOption(product2.code)
+  await sleep(300)
+  if ((await specSel.count()) > 0) await specSel.selectOption(product2.spec)
+  await sleep(1200)
+  const p2Root = await page.locator('tr[data-tree-root]').first().innerText()
+  check('切换后根行变为新产品', p2Root.includes(product2.code) && p2Root.includes(product2.name),
+    `根行：${p2Root.replace(/\s*\n\s*/g, ' | ')}`)
+  check('新产品的明细已加载', (await page.locator('text=P-8001').count()) > 0, 'P-8001 没有出现')
+  check('旧产品的零件不残留', (await page.locator('text=P-0001').count()) === 0, 'P-0001 还在')
+
+  // 选回原产品：同 id 重选走 epoch 路径，明细必须重新出现
+  await nameSel.selectOption(product.name)
+  await sleep(300)
+  await codeSel.selectOption(product.code)
+  await sleep(300)
+  if ((await specSel.count()) > 0) await specSel.selectOption(product.spec)
+  await sleep(1200)
+  check('选回原产品明细恢复（同 id 重选）', (await page.locator('text=P-0001').count()) > 0,
+    'P-0001 没有回来')
+
   // 需要肉眼核对布局时：GATE_SHOTS=<目录> 跑一遍，留下这一步的截图。
   // 默认不留文件——关口每跑一次都往仓库/临时目录堆图是噪音。
   if (process.env.GATE_SHOTS) {
@@ -1162,7 +1190,24 @@ try {
     })
     if (r.code !== 200) throw new Error(`预置 BOM 明细 ${code} 失败 ${r.code} ${r.text.slice(0, 120)}`)
   }
-  ok('装配产品与 BOM 明细（电子/五金/未分类）')
+  // 第二个产品：切换产品用（验证「级联一动旧明细立刻消失」）
+  const BOM_PRODUCT2 = { code: 'P-BOM-2', name: 'BOM树验证产品二', spec: 'B' }
+  const created2 = await api('/api/products', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ ...BOM_PRODUCT2, unit: '台', spec: 'B' }),
+  })
+  if (created2.code !== 200) throw new Error(`预置产品二失败 ${created2.code} ${created2.text.slice(0, 120)}`)
+  {
+    const p = partByCode('P-8001')
+    const r = await api('/api/bom', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ product_id: created2.body.id, part_id: p.id, quantity: 2, loss_rate: 0, replaceable: 0, use_mode: 0 }),
+    })
+    if (r.code !== 200) throw new Error(`预置产品二明细失败 ${r.code} ${r.text.slice(0, 120)}`)
+  }
+  ok('装配产品与 BOM 明细（电子/五金/未分类 + 切换用第二产品）')
 
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
@@ -1218,7 +1263,7 @@ try {
     await statsRankGate(page, LONG_PART)
 
     // BOM 屏：树状层级与零件主数据入口
-    await bomTreeGate(page, BOM_PRODUCT)
+    await bomTreeGate(page, BOM_PRODUCT, BOM_PRODUCT2)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

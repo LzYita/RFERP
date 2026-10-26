@@ -37,6 +37,28 @@ type StockProjectionInput struct {
 	PlanQty   int
 }
 
+// PartReserveBrief 是某个批次里"导致备料不足/将预警"的零件摘要。
+type PartReserveBrief struct {
+	PartID int64   `json:"part_id"`
+	Code   string  `json:"code"`
+	Name   string  `json:"name"`
+	After  float64 `json:"after"`
+	Warn   float64 `json:"warn"`
+}
+
+// BatchReserve 是按批次汇总的备料结论，供批次列表角标与工作台「生产计划」
+// 直接使用——前端不必为每个批次再拉一遍 BOM 与跳过清单。
+//
+// Level 取该批所用零件的最坏档（口径是"全部在产批次都完成"）：
+//   - short: 有零件完成后为负（做不出来）
+//   - low:   有零件完成后低于预警线（做得完但要补货）
+//   - ok:    其余
+type BatchReserve struct {
+	BatchID int64              `json:"batch_id"`
+	Level   string             `json:"level"`
+	Parts   []PartReserveBrief `json:"parts,omitempty"`
+}
+
 // StockProjectionSummary 是给工作台与卡片用的计数，只统计启用中的零件。
 type StockProjectionSummary struct {
 	WillWarn  int `json:"willWarn"`
@@ -45,5 +67,6 @@ type StockProjectionSummary struct {
 
 type StockProjectionResult struct {
 	Parts   []PartProjection       `json:"parts"`
+	Batches []BatchReserve         `json:"batches"`
 	Summary StockProjectionSummary `json:"summary"`
 }

@@ -116,6 +116,31 @@ func TestStockProjectionAggregatesOpenBatches(t *testing.T) {
 	if res.Summary.WillShort != 1 || res.Summary.WillWarn != 0 {
 		t.Fatalf("summary = %+v，期望 WillShort=1 WillWarn=0", res.Summary)
 	}
+	// 两个批次共用同一个缺料零件，所以两批的备料结论都是"做不出来"。
+	if len(res.Batches) != 2 {
+		t.Fatalf("batches = %+v，期望两个在产批次", res.Batches)
+	}
+	for _, b := range res.Batches {
+		if b.Level != "short" || len(b.Parts) != 1 || b.Parts[0].PartID != f.partID {
+			t.Fatalf("批次备料结论 = %+v，期望 short 且点名该零件", b)
+		}
+	}
+}
+
+// 只"将低于预警线"的批次结论是 low，不能报成做不出来。
+func TestStockProjectionBatchLevelLow(t *testing.T) {
+	// 库存 100、预警线 90、一批 20 → 完成后 80，低于预警线但仍为正。
+	f := seedProjectionFixture(t, 100, 90, 20, "B-LOW")
+	res, err := f.svc.StockProjection(usecase.StockProjectionInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Batches) != 1 || res.Batches[0].Level != "low" {
+		t.Fatalf("batches = %+v，期望 low", res.Batches)
+	}
+	if res.Summary.WillShort != 0 || res.Summary.WillWarn != 1 {
+		t.Fatalf("summary = %+v，期望 WillWarn=1", res.Summary)
+	}
 }
 
 // 建批预览：把"还没创建的这一批"也算进去，并标成计划中。

@@ -58,6 +58,9 @@ type Catalog interface {
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	RemoveBOMItem(id int64, operator string) error
 	ValidateBOM(productID int64) (bool, error)
+
+	// StockProjection 返回"未完成批次完成后"的库存视图（只读，不写库）。
+	StockProjection(in StockProjectionInput) (*StockProjectionResult, error)
 }
 
 // Inventory 零件库存出入与盘点。

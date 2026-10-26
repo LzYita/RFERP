@@ -378,6 +378,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/bom", s.auth(s.handleUpdateBOM, "Catalog.UpdateBOMItem"))
 	mux.HandleFunc("DELETE /api/bom", s.auth(s.handleRemoveBOM, "Catalog.RemoveBOMItem"))
 	mux.HandleFunc("GET /api/bom/validate", s.auth(s.handleValidateBOM, "Catalog.ValidateBOM"))
+	// 库存投影是只读派生值，四个角色都需要看（生产员排产、仓库员备料），
+	// 因此挂在「零件可读」上，不新增权限点。
+	mux.HandleFunc("GET /api/stock/projection", s.auth(s.handleStockProjection, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/batches", s.auth(s.handleCreateBatch, "Production.CreateBatch"))
 	mux.HandleFunc("POST /api/batches/revoke", s.auth(s.handleRevokeBatch, "Production.RevokeBatch"))
 	mux.HandleFunc("GET /api/batches/skipped", s.auth(s.handleSkippedParts, "Production.GetSkippedParts"))

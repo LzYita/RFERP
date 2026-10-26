@@ -68,6 +68,9 @@ const (
 	// 至今没有命名常量，散落在本文件多处；这里先把「新建」这一处命名，
 	// 其余待后续统一（见 docs/plans 的 Round 4 记录）。
 	batchStatusPending = 0
+	// batchStatusCompleted 是本文件里另一个有语义含义的状态字面量：
+	// 它同时是"扣减库存"的触发点与"不再计入在产占用"的边界。
+	batchStatusCompleted = 2
 )
 
 func validatePlanQty(qty int) error {
@@ -597,6 +600,13 @@ func (s *Service) ListBatches() ([]model.ProductBatch, error) {
 
 func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 	id, status, operator := in.ID, in.Status, in.Operator
+	// 占用来源必须在事务**外**取：SQLite 适配器是单连接，事务持有连接时
+	// 再发一条查询会直接把自己等死（实测过：整条用例挂到超时）。
+	// 它只用于缺料文案的补充说明，事务外的快照足够。
+	var others map[int64][]usecase.ProjectionHolder
+	if status == batchStatusCompleted {
+		others = s.otherCommittedForHint(id)
+	}
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(id)
 		if err != nil {
@@ -654,6 +664,9 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 			}
 			var deductions []deduction
 			shortages := make([]string, 0, len(bom))
+			// 缺料时说明"库存还被哪些在产批次占着"：只报"当前 40"会让用户以为
+			// 补 40 就够，而实际缺口可能出自别的批次已经把库存预定完了。
+			// 取不到来源只是少一句解释，不改变"缺料即拒绝"这个结论。
 			for _, item := range bom {
 				if skipMap[item.PartID] {
 					continue
@@ -667,9 +680,12 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 				}
 				requestedDeduct := quantizeQuantity(bomConsume(batch.PlanQty, item))
 				if requestedDeduct > part.StockQty {
-					shortages = append(shortages, fmt.Sprintf(
-						"%s [%s]: 需要 %.2f，当前 %.2f",
-						part.Name, part.Code, requestedDeduct, quantizeQuantity(part.StockQty)))
+					line := fmt.Sprintf("%s [%s]: 需要 %.2f，当前 %.2f",
+						part.Name, part.Code, requestedDeduct, quantizeQuantity(part.StockQty))
+					if hs := others[item.PartID]; len(hs) > 0 {
+						line += "；另有在产批次占用 " + holderSummary(hs)
+					}
+					shortages = append(shortages, line)
 					continue
 				}
 				deductions = append(deductions, deduction{item, part, requestedDeduct})

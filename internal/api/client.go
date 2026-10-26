@@ -320,6 +320,19 @@ func (c *Client) UpdateBOMItem(b *model.BOMItem) (*model.BOMItem, error) {
 	return &out, nil
 }
 
+func (c *Client) StockProjection(in usecase.StockProjectionInput) (*usecase.StockProjectionResult, error) {
+	path := "/api/stock/projection"
+	if in.ProductID > 0 && in.PlanQty > 0 {
+		path += "?product_id=" + strconv.FormatInt(in.ProductID, 10) +
+			"&plan_qty=" + strconv.Itoa(in.PlanQty)
+	}
+	var out usecase.StockProjectionResult
+	if err := c.do(http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) GetBOMByProduct(productID int64) ([]model.BOMItem, error) {
 	var out []model.BOMItem
 	err := c.do(http.MethodGet, "/api/bom?product_id="+strconv.FormatInt(productID, 10), nil, &out)

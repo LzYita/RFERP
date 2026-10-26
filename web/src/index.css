@@ -96,6 +96,24 @@
     min-width: var(--spacing-table-min-compact);
     table-layout: fixed;
   }
+  /*
+   * 窄容器（弹窗内的预览表）。双保险：
+   *   - width: 100% + table-layout: fixed，保证不超出弹窗；
+   *   - min-width: 0，避免继承 .data-table 的 720px 最小宽度而撑出横向滚动。
+   * 之前面板式预览在 500px 弹窗里横向溢出，把 auto 列压成 0 宽、文字压到
+   * 相邻单元格上——看起来像"列重叠"，其实是整表比容器宽。
+   */
+  .data-table.is-narrow {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+  /* 单元格内联展示（编码 + 名称），过长时省略而不是压到下一列 */
+  .data-table .tree-inline {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* 列对齐：按**数据语义**定，不按视觉偏好。
      左 = 文本标识（编码/名称/摘要）；右 = 数量（比大小需要数轴位对齐）；

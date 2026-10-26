@@ -1130,6 +1130,192 @@ async function bomTreeGate(page, product, product2) {
   }
 }
 
+/**
+ * 库存投影：未完成批次的占用要提前可见，并在完成被拒时说清占用来源。
+ *
+ * 场景（预置数据）：B-STK-1/2/3 各需 60，零件各 100。
+ *   - 三批都在产 → 完成后 -80：列表三行都应显示「不足」
+ *   - 建第四批时预览应显示"其它占用 180、全部完成后 -140"
+ *   - 完成 B-STK-1（成功，剩 40）后，完成 B-STK-2 应被拒，且文案点名 B-STK-3
+ *   - 零件页：在产占用 120、状态为虚线「将缺料」
+ *   - 工作台：四宫格顺序 + 使用中预警命中该零件 + 生产计划列出剩余两批
+ */
+async function stockProjectionGate(page, product, batchNos) {
+  await page.click('text=批次追溯')
+  await sleep(1200)
+
+  // 1) 三个未完成批次都应在「备料」列显示不足
+  for (const no of batchNos) {
+    const row = page.locator('tbody tr', { hasText: no }).first()
+    const text = (await row.count()) > 0 ? await row.innerText() : ''
+    check(`批次 ${no} 显示备料不足`, text.includes('不足'),
+      text ? `行内容：${text.replace(/\s*\n\s*/g, ' | ')}` : '找不到该行')
+  }
+
+  // 2) 建批预览：把"还没创建的这批"并入投影
+  await page.locator('button', { hasText: '新建批次' }).click()
+  await sleep(700)
+  const modal = page.locator('div[class*="fixed"]').last()
+  await modal.locator('label:has-text("产品名称") select').first().selectOption(product.name)
+  await sleep(250)
+  await modal.locator('label:has-text("产品编码") select').first().selectOption(product.code)
+  await sleep(250)
+  const specSel = modal.locator('label:has-text("规格型号") select').first()
+  if ((await specSel.count()) > 0) await specSel.selectOption(product.spec)
+  await modal.getByLabel('计划数量').fill('60')
+  await sleep(1200)
+  const previewText = await modal.innerText()
+  check('建批预览列出占用与完成后',
+    previewText.includes('其它占用') && previewText.includes('全部完成后'),
+    `弹窗内容：${previewText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  check('建批预览结论为不足（三批共用零件）', previewText.includes('会不足') || previewText.includes('无法完成'),
+    `弹窗内容：${previewText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  check('建批预览的「其它占用」是合计值（180）', previewText.includes('180'),
+    `弹窗内容：${previewText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 预览表不能比弹窗宽：横向溢出会把 auto 列压成 0 宽，文字压到相邻列上
+  // （实测过"装饰圈0"这种重叠）。jsdom 量不到，只有真浏览器能证伪。
+  const overflow = await modal.evaluate((el) => {
+    const table = el.querySelector('table.data-table.is-narrow')
+    if (!table) return null
+    const box = table.parentElement
+    return {
+      tableW: Math.round(table.getBoundingClientRect().width),
+      boxW: Math.round(box.getBoundingClientRect().width),
+      scrollW: box.scrollWidth,
+      clientW: box.clientWidth,
+    }
+  })
+  check('备料预览不横向溢出',
+    overflow !== null && overflow.scrollW <= overflow.clientW + 1,
+    overflow ? `容器 scrollWidth=${overflow.scrollW} clientWidth=${overflow.clientW} 表宽=${overflow.tableW} 容器宽=${overflow.boxW}` : '找不到预览表')
+  check('备料预览的零件列有实际宽度',
+    overflow !== null && overflow.tableW > 0,
+    overflow ? `表宽=${overflow.tableW}` : '找不到预览表')
+
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'batch-preview.png')
+    await page.screenshot({ path: shot })
+    ok(`建批预览截图 ${shot}`)
+  }
+
+  await modal.locator('button', { hasText: '取消' }).click()
+  await sleep(400)
+
+  // 3) 完成第一批：应当成功；它的备料角标随之变成占位符
+  await page.locator('input[aria-label="选择 B-STK-1"]').click()
+  await page.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  await page.locator('div[class*="fixed"]').last().locator('button', { hasText: '确定' }).click()
+  await sleep(1500)
+  const doneRow = await page.locator('tbody tr', { hasText: 'B-STK-1' }).first().innerText()
+  check('完成第一批后状态为已完成', doneRow.includes('已完成'),
+    `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
+  check('已完成批次不再显示备料角标', !doneRow.includes('不足'), `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
+
+  // 4) 完成第二批：库存只剩 40，被拒；文案要点名仍在产的 B-STK-3
+  await page.locator('input[aria-label="选择 B-STK-2"]').click()
+  await page.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  const confirm = page.locator('div[class*="fixed"]').last()
+  await confirm.locator('button', { hasText: '确定' }).click()
+  await sleep(1500)
+  const errText = await page.locator('[role="alert"]').last().innerText().catch(() => '')
+  check('完成被拒时提示库存不足', errText.includes('库存不足'), `提示：${errText.slice(0, 200)}`)
+  check('拒绝文案说出被其它批次占用', errText.includes('另有在产批次占用'), `提示：${errText.slice(0, 240)}`)
+  check('拒绝文案点名占用批次', errText.includes('B-STK-3'), `提示：${errText.slice(0, 240)}`)
+  await page.locator('div[class*="fixed"]').last().locator('button', { hasText: '取消' }).click()
+  await sleep(400)
+
+  // 5) 零件页：占用列 + 虚线「将缺料」
+  await page.click('text=零件管理')
+  await sleep(1200)
+  const headers = await page.locator('table thead th').allInnerTexts()
+  check('零件列表有「在产占用」列', headers.some((h) => h.includes('在产占用')), `表头：${headers.join('/')}`)
+  const partRow = page.locator('tbody tr', { hasText: 'P-0001' }).first()
+  const partText = await partRow.innerText()
+  check('占用列显示两个在产批次的合计 120', partText.includes('120'),
+    `行内容：${partText.replace(/\s*\n\s*/g, ' | ')}`)
+  const dashedBadge = partRow.locator('[data-badge-variant="dashed"]').first()
+  check('在产后缺料用虚线徽章', (await dashedBadge.count()) > 0 && (await dashedBadge.innerText()).includes('将缺料'),
+    `行内容：${partText.replace(/\s*\n\s*/g, ' | ')}`)
+  const borderStyle = await dashedBadge.evaluate((el) => getComputedStyle(el).borderStyle).catch(() => '')
+  check('虚线徽章真的画成虚线', borderStyle.includes('dashed'), `border-style=${borderStyle}`)
+
+  // 6) 工作台：四宫格顺序与两类预警各说各的
+  await page.click('text=工作台')
+  await sleep(1500)
+  const panels = await page.locator('[data-panel]').evaluateAll((els) =>
+    els.map((e) => e.getAttribute('data-panel')),
+  )
+  check('工作台四宫格顺序：现状/计划 在上，未来/操作记录 在下',
+    JSON.stringify(panels) === JSON.stringify(['current-alerts', 'production-plan', 'future-alerts', 'recent-logs']),
+    `实际顺序：${panels.join(' → ')}`)
+
+  const currentPanel = page.locator('[data-panel="current-alerts"]')
+  const currentText = await currentPanel.innerText()
+  check('现状预警只报现在时（不出现"将缺料"）', !currentText.includes('将缺料'),
+    `面板内容：${currentText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  const future = page.locator('[data-panel="future-alerts"]')
+  const futureText = await future.innerText()
+  check('未来预警命中共用零件的批次', futureText.includes('P-0001'),
+    `面板内容：${futureText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 点未来预警里的零件 → 列出正在消耗它的在产计划
+  await future.locator('[data-future-part="P-0001"]').first().click()
+  await sleep(600)
+  const holderDialog = page.locator('div[class*="fixed"]').last()
+  const holderText = await holderDialog.innerText()
+  check('点零件列出对应的在产计划',
+    holderText.includes('B-STK-2') && holderText.includes('B-STK-3'),
+    `弹窗内容：${holderText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  check('弹窗同时给出计划数与本零件占用',
+    holderText.includes('计划数') && holderText.includes('本零件占用'),
+    `弹窗内容：${holderText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  // 列宽回归：弹窗表格若继承 .data-table 的 720px 最小宽度，就会撑出横向
+  // 滚动条、固定列被拉宽（用户截图反馈过）。jsdom 量不到，只有真浏览器能证伪。
+  const holderOverflow = await holderDialog.evaluate((el) => {
+    const table = el.querySelector('table.data-table.is-narrow')
+    if (!table) return null
+    const box = table.parentElement
+    return {
+      tableW: Math.round(table.getBoundingClientRect().width),
+      boxW: Math.round(box.getBoundingClientRect().width),
+      scrollW: box.scrollWidth,
+      clientW: box.clientWidth,
+    }
+  })
+  check('在产占用弹窗不横向溢出',
+    holderOverflow !== null && holderOverflow.scrollW <= holderOverflow.clientW + 1,
+    holderOverflow
+      ? `容器 scrollWidth=${holderOverflow.scrollW} clientWidth=${holderOverflow.clientW} 表宽=${holderOverflow.tableW} 容器宽=${holderOverflow.boxW}`
+      : '找不到占用表')
+  check('在产占用弹窗的表格铺满容器而不是超宽',
+    holderOverflow !== null && holderOverflow.tableW <= holderOverflow.boxW + 1,
+    holderOverflow ? `表宽=${holderOverflow.tableW} 容器宽=${holderOverflow.boxW}` : '找不到占用表')
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'holder-batches.png')
+    await page.screenshot({ path: shot })
+    ok(`在产占用弹窗截图 ${shot}`)
+  }
+  await holderDialog.locator('button', { hasText: '关闭' }).click()
+  await sleep(300)
+
+  const planPanel = page.locator('[data-panel="production-plan"]')
+  const planText = await planPanel.innerText()
+  check('生产计划列出剩余两个在产批次', planText.includes('B-STK-2') && planText.includes('B-STK-3'),
+    `面板内容：${planText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  check('生产计划不再列出已完成的批次', !planText.includes('B-STK-1'),
+    `面板内容：${planText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'dashboard.png')
+    await page.screenshot({ path: shot })
+    ok(`工作台截图 ${shot}`)
+  }
+}
+
 let browser
 try {
   sweepStaleRuns()
@@ -1209,6 +1395,19 @@ try {
   }
   ok('装配产品与 BOM 明细（电子/五金/未分类 + 切换用第二产品）')
 
+  // 库存投影场景：三个待生产批次各需 60，零件各只有 100。
+  // 单看每批都"够"，三批合起来缺 80 —— 正是"没点完成时库存看着充足"的坑。
+  const STOCK_BATCHES = ['B-STK-1', 'B-STK-2', 'B-STK-3']
+  for (const no of STOCK_BATCHES) {
+    const r = await api('/api/batches', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ batch_no: no, product_id: createdProduct.body.id, plan_qty: 60 }),
+    })
+    if (r.code !== 200) throw new Error(`预置批次 ${no} 失败 ${r.code} ${r.text.slice(0, 120)}`)
+  }
+  ok('装配三个共用零件的待生产批次（B-STK-1/2/3）')
+
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
 
@@ -1264,6 +1463,9 @@ try {
 
     // BOM 屏：树状层级与零件主数据入口
     await bomTreeGate(page, BOM_PRODUCT, BOM_PRODUCT2)
+
+    // 库存投影：三批共用零件的场景（必须在 BOM 验证之后跑：它会完成/拒绝批次）
+    await stockProjectionGate(page, BOM_PRODUCT, STOCK_BATCHES)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

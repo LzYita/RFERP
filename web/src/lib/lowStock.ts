@@ -51,3 +51,127 @@ export const STOCK_LEVEL_TEXT: Record<StockLevel, string> = {
   low: '低库存',
   normal: '正常',
 }
+
+/* ---------------- 与「在产占用」合并后的一览状态 ---------------- */
+
+export type StockViewKind =
+  | 'disabled' // 停用：优先于一切库存结论
+  | 'out' // 现在就没货
+  | 'will_short' // 全部在产批次完成后为负
+  | 'low' // 现在已经低于预警线
+  | 'will_low' // 全部在产批次完成后低于预警线
+  | 'normal'
+
+export interface StockView {
+  kind: StockViewKind
+  text: string
+  tone: 'ok' | 'warn' | 'neutral' | 'danger'
+  /** 虚线 = 预计（还没发生）；实心 = 当前事实。 */
+  dashed: boolean
+  /** 在产占用（未完成批次将消耗的量），无投影时为 0。 */
+  committed: number
+  /** 全部在产批次完成后的余量，无投影时等于当前库存。 */
+  after: number
+  /** 悬停说明：用数字讲清「为什么是这个状态」。 */
+  hint: string
+}
+
+/**
+ * 把「当前库存」与「在产占用」合成一个可直接渲染的状态。
+ *
+ * 优先级（自上而下命中即止）决定同一列里谁能覆盖谁：
+ *   停用 → 无库存 → 将缺料 → 低库存 → 将低于预警线 → 正常
+ *
+ * 两条容易写错、已在测试里钉住：
+ *   - 红压黄、**当下压未来**：现在没货比"做完会缺"更急；
+ *   - 预警线为 0 表示"不预警"，但"将缺料"仍然成立——不预警 ≠ 允许欠料。
+ *
+ * 没有投影数据时（接口失败 / 尚未加载）退化为原有三档，绝不因为拿不到
+ * 预测就把零件显示成"正常"。
+ */
+export function stockView(
+  p: StockJudgable & { status?: number; unit?: string },
+  projection?: { committed: number; after: number } | null,
+): StockView {
+  const committed = projection?.committed ?? 0
+  // 没有投影时 after 用当前库存：既有的三档判断不受影响。
+  const after = projection?.after ?? p.stock_qty
+  const unit = p.unit ? ` ${p.unit}` : ''
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const hint =
+    committed > 0
+      ? `在产占用 ${fmt(committed)}${unit}，全部完成后 ${fmt(after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+      : `当前库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+
+  if (p.status !== undefined && p.status !== 1) {
+    return { kind: 'disabled', text: '停用', tone: 'neutral', dashed: false, committed, after, hint }
+  }
+  if (p.stock_qty <= 0) {
+    return { kind: 'out', text: '无库存', tone: 'danger', dashed: false, committed, after, hint }
+  }
+  if (after < 0) {
+    return { kind: 'will_short', text: '将缺料', tone: 'danger', dashed: true, committed, after, hint }
+  }
+  if (p.warn_qty > 0 && p.stock_qty < p.warn_qty) {
+    return { kind: 'low', text: '低库存', tone: 'warn', dashed: false, committed, after, hint }
+  }
+  if (p.warn_qty > 0 && after < p.warn_qty) {
+    return { kind: 'will_low', text: '将预警', tone: 'warn', dashed: true, committed, after, hint }
+  }
+  return { kind: 'normal', text: '正常', tone: 'ok', dashed: false, committed, after, hint }
+}
+
+/** 「在产后将预警」筛选口径：预测维度的两档（缺料也算）。 */
+export function isProjectedAlert(v: StockView): boolean {
+  return v.kind === 'will_short' || v.kind === 'will_low'
+}
+
+/**
+ * 「只看现在」的状态：停用 / 无库存 / 低库存 / 正常。
+ *
+ * 工作台的「现状预警」必须用它，而不是合并后的 stockView：
+ * 一个零件现在 40 个（低于预警线 100）、做完在产后会缺 30 个，
+ * 在"现状"这一栏里应当显示**低库存**。若显示"将缺料"，这一栏就名不副实——
+ * 用户看到的是未来结论，却以为在说眼下。
+ */
+export function currentStockView(
+  p: StockJudgable & { status?: number; unit?: string },
+): StockView {
+  const unit = p.unit ? ` ${p.unit}` : ''
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const hint = `当前库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const base = { committed: 0, after: p.stock_qty, hint }
+  if (p.status !== undefined && p.status !== 1) {
+    return { kind: 'disabled', text: '停用', tone: 'neutral', dashed: false, ...base }
+  }
+  if (p.stock_qty <= 0) {
+    return { kind: 'out', text: '无库存', tone: 'danger', dashed: false, ...base }
+  }
+  if (p.warn_qty > 0 && p.stock_qty < p.warn_qty) {
+    return { kind: 'low', text: '低库存', tone: 'warn', dashed: false, ...base }
+  }
+  return { kind: 'normal', text: '正常', tone: 'ok', dashed: false, ...base }
+}
+
+/**
+ * 「只看以后」的状态：将缺料 / 将预警；两者都不成立时返回 null。
+ *
+ * 工作台的「未来预警」用它：这一栏里的每一行都必须带"将"字与虚线，
+ * 不能混进"低库存"这类现在时的结论。
+ */
+export function projectedStockView(
+  p: StockJudgable & { status?: number; unit?: string },
+  projection: { committed: number; after: number },
+): StockView | null {
+  const unit = p.unit ? ` ${p.unit}` : ''
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const hint = `在产占用 ${fmt(projection.committed)}${unit}，全部完成后 ${fmt(projection.after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const base = { committed: projection.committed, after: projection.after, hint }
+  if (projection.after < 0) {
+    return { kind: 'will_short', text: '将缺料', tone: 'danger', dashed: true, ...base }
+  }
+  if (p.warn_qty > 0 && projection.after < p.warn_qty) {
+    return { kind: 'will_low', text: '将预警', tone: 'warn', dashed: true, ...base }
+  }
+  return null
+}

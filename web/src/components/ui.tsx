@@ -62,9 +62,20 @@ export function classifyLoadError(err: unknown, subject: string): { kind: 'forbi
 export function Badge({
   kind,
   children,
+  dashed,
+  title,
 }: {
   kind: 'ok' | 'warn' | 'neutral' | 'danger'
   children: ReactNode
+  /**
+   * 虚线描边 = 「还没发生、按当前在产批次推算会发生」。
+   *
+   * 库存状态一列里同时装着"现在"与"全部在产完成之后"两种结论：
+   * 颜色表达严重程度（红/黄），线型表达时间维度（实心=已发生、虚线=预计）。
+   * 只靠颜色区分不了这两维，也没法给"将缺料"再分一个新色号。
+   */
+  dashed?: boolean
+  title?: string
 }) {
   const map = {
     ok: 'bg-[var(--color-ok-bg)] text-[var(--color-ok)]',
@@ -73,8 +84,21 @@ export function Badge({
     // 批次状态「已撤销」用。Fyne 版是 badgeError，色值同 --color-danger。
     danger: 'bg-[var(--color-danger-bg)] text-[var(--color-danger)]',
   }
+  const outline = {
+    ok: 'text-[var(--color-ok)]',
+    warn: 'text-[var(--color-warn)]',
+    neutral: 'text-[var(--color-neutral)]',
+    danger: 'text-[var(--color-danger)]',
+  }
   return (
-    <span className={['rounded-[4px] px-[7px] py-px text-[10.5px] font-semibold', map[kind]].join(' ')}>
+    <span
+      title={title}
+      data-badge-variant={dashed ? 'dashed' : 'solid'}
+      className={[
+        'rounded-[4px] border px-[7px] py-px text-[10.5px] font-semibold',
+        dashed ? `border-dashed bg-transparent ${outline[kind]}` : `border-transparent ${map[kind]}`,
+      ].join(' ')}
+    >
       {children}
     </span>
   )
@@ -294,9 +318,19 @@ export function PageHeader({ title, children }: { title: string; children?: Reac
 }
 
 /** 内容区统一外壳：白底、8px 圆角、边框。 */
-export function Panel({ children, className = '' }: { children: ReactNode; className?: string }) {
+export function Panel({
+  children,
+  className = '',
+  panelId,
+}: {
+  children: ReactNode
+  className?: string
+  /** 稳定标识，供浏览器关口断言面板顺序（文字标题会随文案改）。 */
+  panelId?: string
+}) {
   return (
     <section
+      data-panel={panelId}
       className={`rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] ${className}`}
     >
       {children}

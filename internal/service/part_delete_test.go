@@ -15,6 +15,7 @@ type partDeleteStore struct {
 	part    *model.Part
 	usedBy  []model.ProductRef
 	traces  []model.PartTraceRef
+	uses    []model.PartBatchUse
 	deleted bool
 }
 
@@ -35,6 +36,10 @@ func (t *partDeleteTx) BOMProductsForPart(int64) ([]model.ProductRef, error) {
 
 func (t *partDeleteTx) TracesForPart(int64) ([]model.PartTraceRef, error) {
 	return t.store.traces, nil
+}
+
+func (t *partDeleteTx) BatchUsesForPart(int64) ([]model.PartBatchUse, error) {
+	return t.store.uses, nil
 }
 
 func (t *partDeleteTx) DeletePart(int64) error {
@@ -148,5 +153,46 @@ func TestDeletePartPrefersBOMOverTraces(t *testing.T) {
 	}
 	if store.deleted {
 		t.Fatal("被引用时仍执行了删除")
+	}
+}
+
+// 仍被批次的临时/跳过零件引用：拒绝删除，并说清批次与用途。
+func TestDeletePartRefusesWhenReferencedByBatchUse(t *testing.T) {
+	store := &partDeleteStore{
+		part: &model.Part{ID: 7, Code: "M-005"},
+		uses: []model.PartBatchUse{
+			{BatchNo: "B-TMP", Reason: "temp"},
+			{BatchNo: "B-SKP", Reason: "skip"},
+		},
+	}
+	svc := NewWithSnapshot(store, nil, nil)
+
+	err := svc.DeletePart(7, "管理员")
+	if err == nil {
+		t.Fatal("期望拒绝删除")
+	}
+	if store.deleted {
+		t.Fatal("仍被批次使用时执行了删除")
+	}
+	for _, want := range []string{"M-005", "B-TMP", "临时零件", "B-SKP", "跳过零件"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("文案缺少 %q：%v", want, err)
+		}
+	}
+}
+
+// 追溯记录优先于批次使用：追溯是生产历史，建议也不同。
+func TestDeletePartPrefersTracesOverBatchUses(t *testing.T) {
+	store := &partDeleteStore{
+		part:   &model.Part{ID: 7, Code: "M-006"},
+		traces: []model.PartTraceRef{{BatchNo: "B-TRACE", Records: 1}},
+		uses:   []model.PartBatchUse{{BatchNo: "B-TMP", Reason: "temp"}},
+	}
+	svc := NewWithSnapshot(store, nil, nil)
+
+	err := svc.DeletePart(7, "管理员")
+	var inTrace *usecase.PartInTraceError
+	if !errors.As(err, &inTrace) {
+		t.Fatalf("err = %v，期望先报 PartInTraceError", err)
 	}
 }

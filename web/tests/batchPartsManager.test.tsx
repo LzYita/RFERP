@@ -151,8 +151,8 @@ it('computes the total from mode, per-unit quantity and loss rate automatically'
   const dialog = screen.getByRole('dialog')
 
   await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
-  // 用户要求的文案：每台用N个（不是"每台用量"）
-  expect(within(dialog).getByRole('option', { name: '每台用N个' })).toBeTruthy()
+  // 与「每 M 台 1 个」保持同一空格格式：每台用 N 个（不是"每台用量"）
+  expect(within(dialog).getByRole('option', { name: '每台用 N 个' })).toBeTruthy()
   await pickPart(u, dialog, 'M-002')
   // 默认 每台 1 个、无损耗 × 计划 60 → 总量自动 60
   const total = within(dialog).getByPlaceholderText('自动') as HTMLInputElement

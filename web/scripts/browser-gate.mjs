@@ -1171,7 +1171,7 @@ async function stockProjectionGate(page, product, batchNos) {
   await mgr.locator('[role="tab"]', { hasText: '临时零件' }).click()
   await sleep(300)
   const modeOption = await mgr.getByLabel('使用方式').locator('option').first().innerText()
-  check('使用方式首项文案为「每台用N个」', modeOption === '每台用N个', `实际：${modeOption}`)
+  check('使用方式首项文案为「每台用 N 个」', modeOption === '每台用 N 个', `实际：${modeOption}`)
   // 文字查询：输入编码过滤，点带库存信息的候选项
   const combo = mgr.getByRole('combobox', { name: '临时零件' })
   await combo.click()

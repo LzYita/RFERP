@@ -1197,6 +1197,11 @@ async function stockProjectionGate(page, product, batchNos) {
   const mgrText = await mgr.innerText()
   check('临时零件添加成功并列出', mgrText.includes('P-TEMP-G') && mgrText.includes('手填总量'),
     `弹窗内容：${mgrText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'parts-manager.png')
+    await page.screenshot({ path: shot })
+    ok(`零件管理截图 ${shot}`)
+  }
   // 临时分页的 footer 是「关闭」（跳过分页才是 取消/保存）
   await mgr.locator('button', { hasText: '关闭' }).click()
   await sleep(400)

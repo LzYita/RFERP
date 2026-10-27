@@ -56,11 +56,13 @@ func expectMySQLV11WithPendingStep(mock sqlmock.Sqlmock, businessTables int, bac
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT IGNORE INTO schema_migrations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	// v15 本体：information_schema 查列（缺）→ 一次 ALTER 补三列 → 记录版本
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
-	mock.ExpectExec("ALTER TABLE batch_temp_parts").
-		WillReturnResult(sqlmock.NewResult(0, 0))
+	// v15 本体：逐列检查（都缺）→ 每列一次 ALTER → 记录版本
+	for i := 0; i < 3; i++ {
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+		mock.ExpectExec("ALTER TABLE batch_temp_parts").
+			WillReturnResult(sqlmock.NewResult(0, 0))
+	}
 	mock.ExpectExec("INSERT IGNORE INTO schema_migrations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }

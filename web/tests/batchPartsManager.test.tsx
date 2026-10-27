@@ -182,6 +182,23 @@ it('recalculates with the BOM formula when mode/quantity/loss change', async () 
   )
 })
 
+it('rejects an out-of-range loss rate before it reaches the server', async () => {
+  const u = userEvent.setup()
+  const onAddTemp = vi.fn(async () => {})
+  renderManager({ onAddTemp })
+  const dialog = screen.getByRole('dialog')
+
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  await pickPart(u, dialog, 'M-002')
+  const loss = within(dialog).getByPlaceholderText('0')
+  await u.clear(loss)
+  await u.type(loss, '150')
+  await u.click(within(dialog).getByRole('button', { name: '添加' }))
+
+  expect(within(dialog).getByText('损耗率必须在 0 到 100 之间')).toBeTruthy()
+  expect(onAddTemp).not.toHaveBeenCalled()
+})
+
 it('shows the stock-shortage refusal from the server instead of closing silently', async () => {
   const u = userEvent.setup()
   const onAddTemp = vi.fn(async () => {

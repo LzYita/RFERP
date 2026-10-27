@@ -315,3 +315,74 @@ func TestAddTempPartStoresDerivation(t *testing.T) {
 		}
 	}
 }
+
+// 同一零件同时出现在 BOM 与临时零件里：必须合并成一次扣减。
+//
+// 逐条扣会让两次 UpdatePartStock 都基于"扣之前"的库存，后一条覆盖前一条，
+// 库存少扣；而撤销按两条消耗记录回退，又会多退。这里把 15（BOM 10 + 临时 5）
+// 一次扣掉，并只留一条冻结记录。
+func TestTempPartSamePartAsBOMDeductsOnce(t *testing.T) {
+	svc, store := newTempPartFixture(t)
+	var partID, batchID int64
+	if err := store.WithTx(func(tx repository.TxOps) error {
+		pid, err := tx.CreateProduct(&model.Product{Code: "P-T3", Name: "同件产品", Unit: "台", Status: 1})
+		if err != nil {
+			return err
+		}
+		partID, err = tx.CreatePart(&model.Part{Code: "M-T3", Name: "同件零件", Unit: "个", StockQty: 20, WarnQty: 0, Status: 1})
+		if err != nil {
+			return err
+		}
+		// BOM 每台 1 个；计划 10 → BOM 需 10
+		if _, err := tx.CreateBOMItem(&model.BOMItem{ProductID: pid, PartID: partID, Quantity: 1}); err != nil {
+			return err
+		}
+		batchID, err = tx.CreateBatch(&model.ProductBatch{BatchNo: "B-T3", ProductID: pid, PlanQty: 10, Status: batchStatusPending})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 再加临时 5：合计 15 ≤ 库存 20，允许。
+	if err := svc.AddTempPart(usecase.AddTempPartInput{BatchID: batchID, PartID: partID, Qty: 5}); err != nil {
+		t.Fatalf("AddTempPart: %v", err)
+	}
+	res, err := svc.StockProjection(usecase.StockProjectionInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Parts) != 1 || res.Parts[0].Committed != 15 || res.Parts[0].After != 5 {
+		t.Fatalf("projection = %+v，期望 committed=15 after=5", res.Parts)
+	}
+
+	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: batchID, Status: 2, Operator: "测试"}); err != nil {
+		t.Fatalf("完成应当成功：%v", err)
+	}
+	part, err := store.GetPart(partID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.StockQty != 5 {
+		t.Fatalf("库存 = %v，期望 5（一次扣 15，不是 10 或 20）", part.StockQty)
+	}
+	var rows []model.BatchConsumption
+	if err := store.WithTx(func(tx repository.TxOps) error {
+		var err error
+		rows, err = tx.ListBatchConsumptions(batchID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ConsumedQty != 15 {
+		t.Fatalf("消耗记录 = %+v，期望一条 15", rows)
+	}
+
+	// 撤销按这一条回退到 20（若留下两条会退成 25）。
+	if err := svc.RevokeBatch(usecase.RevokeBatchInput{ID: batchID, Operator: "测试"}); err != nil {
+		t.Fatal(err)
+	}
+	part, _ = store.GetPart(partID)
+	if part.StockQty != 20 {
+		t.Fatalf("撤销后库存 = %v，期望 20", part.StockQty)
+	}
+}

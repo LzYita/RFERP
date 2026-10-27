@@ -776,6 +776,28 @@ export function PartsManagerModal({
       setLocalErr('请从列表中选择零件（输入编码或名称搜索）')
       return
     }
+    // 自动模式下先校验公式项：否则非法损耗率会一路走到后端，报错说的
+    // 是看不见的字段，用户对着"本批需要量"发懵。
+    if (!totalDirty) {
+      const per = parseQuantity(perQty, '单位用量')
+      if (!per.ok) {
+        setLocalErr(per.msg)
+        return
+      }
+      if (per.value <= 0) {
+        setLocalErr('单位用量必须是大于0的有限数值')
+        return
+      }
+      const loss = parseQuantity(lossRate.trim() === '' ? '0' : lossRate, '损耗率')
+      if (!loss.ok) {
+        setLocalErr(loss.msg)
+        return
+      }
+      if (loss.value < 0 || loss.value > 100) {
+        setLocalErr('损耗率必须在 0 到 100 之间')
+        return
+      }
+    }
     const t = parseQuantity(totalQty, '本批需要量')
     if (!t.ok) {
       setLocalErr(t.msg)

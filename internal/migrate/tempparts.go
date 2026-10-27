@@ -42,24 +42,39 @@ func applyBatchTempPartsSQLite(db *sqlx.DB) error {
 // 使用方式/单位用量/损耗率并自动算总量，这三列记录推导依据；用户手填
 // 总量时三列为 NULL（总量 qty 永远是扣减依据，推导字段只是给人看的）。
 // v14 已在部分库上落过（列不能 IF NOT EXISTS），所以用 v15 而不是改 v14。
-const tempPartsDerivationMySQL = `ALTER TABLE batch_temp_parts
-	ADD COLUMN use_mode SMALLINT NULL COMMENT '使用方式0每台N个/1每M台1个',
-	ADD COLUMN quantity DECIMAL(12,2) NULL COMMENT '单位用量',
-	ADD COLUMN loss_rate DECIMAL(5,2) NULL COMMENT '损耗率%'`
+//
+// 逐列检查、逐列添加：迁移中途失败重跑时可能只落了一部分列，
+// "看到 use_mode 就收手"会让缺的列永远补不上。
+var tempPartsDerivationColumns = []struct {
+	name string
+	ddl  string // 接在 ALTER TABLE batch_temp_parts 之后
+}{
+	{"use_mode", "ADD COLUMN use_mode SMALLINT NULL COMMENT '使用方式0每台N个/1每M台1个'"},
+	{"quantity", "ADD COLUMN quantity DECIMAL(12,2) NULL COMMENT '单位用量'"},
+	{"loss_rate", "ADD COLUMN loss_rate DECIMAL(5,2) NULL COMMENT '损耗率%'"},
+}
+
+var tempPartsDerivationColumnsSQLite = []struct {
+	name string
+	ddl  string
+}{
+	{"use_mode", "ADD COLUMN use_mode SMALLINT NULL"},
+	{"quantity", "ADD COLUMN quantity NUMERIC NULL"},
+	{"loss_rate", "ADD COLUMN loss_rate NUMERIC NULL"},
+}
 
 func applyTempPartsDerivationMySQL(db *sqlx.DB) error {
-	for _, col := range []string{"use_mode", "quantity", "loss_rate"} {
-		ok, err := columnExists(db, "batch_temp_parts", col)
+	for _, c := range tempPartsDerivationColumns {
+		ok, err := columnExists(db, "batch_temp_parts", c.name)
 		if err != nil {
 			return err
 		}
 		if ok {
 			continue
 		}
-		if _, err := db.Exec(tempPartsDerivationMySQL); err != nil {
+		if _, err := db.Exec("ALTER TABLE batch_temp_parts " + c.ddl); err != nil {
 			return err
 		}
-		return nil
 	}
 	return nil
 }
@@ -84,16 +99,12 @@ func applyTempPartsDerivationSQLite(db *sqlx.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if have["use_mode"] {
-		return nil
-	}
-	// SQLite 的 ALTER TABLE 一次只能加一列，必须拆三条。
-	for _, stmt := range []string{
-		`ALTER TABLE batch_temp_parts ADD COLUMN use_mode SMALLINT NULL`,
-		`ALTER TABLE batch_temp_parts ADD COLUMN quantity NUMERIC NULL`,
-		`ALTER TABLE batch_temp_parts ADD COLUMN loss_rate NUMERIC NULL`,
-	} {
-		if _, err := db.Exec(stmt); err != nil {
+	// SQLite 的 ALTER TABLE 一次只能加一列，逐列补。
+	for _, c := range tempPartsDerivationColumnsSQLite {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE batch_temp_parts " + c.ddl); err != nil {
 			return err
 		}
 	}

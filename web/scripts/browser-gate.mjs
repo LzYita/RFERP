@@ -1173,13 +1173,24 @@ async function stockProjectionGate(page, product, batchNos) {
   // 文字查询：输入编码过滤，点带库存信息的候选项
   const combo = mgr.getByRole('combobox', { name: '临时零件' })
   await combo.click()
+  // 已在 BOM 里、被三个在产批次占用的零件：现有 100、可用 -80。
+  // 两个数都要给，且"可用"必须扣掉在产占用，不能拿现有冒充。
+  await combo.fill('P-0001')
+  await sleep(300)
+  const bomPartOpt = mgr.locator('[role="option"]', { hasText: '测试零件' })
+  const bomOptText = (await bomPartOpt.count()) > 0 ? await bomPartOpt.first().innerText() : ''
+  check('BOM 零件同时显示现有与可用（可用扣掉在产占用）',
+    bomOptText.includes('现有 100') && bomOptText.includes('可用 -80'),
+    `候选：${bomOptText || '(无)'}`)
+
   await combo.fill('P-TEMP-G')
   await sleep(300)
   // ComboInput 会把输入原文也预置成一条候选（"库中原值"），要点的是带
   // 名称与库存的完整标签。
   const tempOpt = mgr.locator('[role="option"]', { hasText: '临时验证零件' })
-  check('零件搜索带出候选并显示库存', (await tempOpt.count()) > 0 && (await tempOpt.first().innerText()).includes('库存 30'),
-    `候选：${await tempOpt.first().innerText().catch(() => '(无)')}`)
+  const tempOptText = (await tempOpt.count()) > 0 ? await tempOpt.first().innerText() : ''
+  check('零件搜索带出候选并显示现有/可用', tempOptText.includes('现有 30') && tempOptText.includes('可用 30'),
+    `候选：${tempOptText || '(无)'}`)
   await tempOpt.first().click()
   await sleep(300)
   // 选中后总量按公式自动算：计划 60 × 每台 1 个 = 60，库存 30 不够 → 拒
@@ -1197,12 +1208,23 @@ async function stockProjectionGate(page, product, batchNos) {
   const mgrText = await mgr.innerText()
   check('临时零件添加成功并列出', mgrText.includes('P-TEMP-G') && mgrText.includes('手填总量'),
     `弹窗内容：${mgrText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+
+  // 添加后占用变了，可用库存必须立刻重算（30 − 10 = 20）。
+  await combo.click()
+  await combo.fill('P-TEMP-G')
+  await sleep(500)
+  const updatedOpt = mgr.locator('[role="option"]', { hasText: '临时验证零件' })
+  const updatedText = (await updatedOpt.count()) > 0 ? await updatedOpt.first().innerText() : ''
+  check('添加临时零件后可用库存立即更新（30→20）', updatedText.includes('可用 20'),
+    `候选：${updatedText || '(无)'}`)
   if (process.env.GATE_SHOTS) {
     const shot = path.join(process.env.GATE_SHOTS, 'parts-manager.png')
     await page.screenshot({ path: shot })
     ok(`零件管理截图 ${shot}`)
   }
-  // 临时分页的 footer 是「关闭」（跳过分页才是 取消/保存）
+  // 先关掉下拉（Esc 只关下拉，不关弹窗），再关弹窗；临时分页的 footer
+  // 是「关闭」（跳过分页才是 取消/保存）。
+  await page.keyboard.press('Escape')
   await mgr.locator('button', { hasText: '关闭' }).click()
   await sleep(400)
 
@@ -1283,6 +1305,25 @@ async function stockProjectionGate(page, product, batchNos) {
   check('完成第一批后状态为已完成', doneRow.includes('已完成'),
     `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
   check('已完成批次不再显示备料角标', !doneRow.includes('不足'), `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
+
+  // 3.5) 触发一条状态守卫提示，验证它带关闭键且能关掉（用户截图反馈）
+  await page.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  await page.locator('div[class*="fixed"]').last().locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const warnBanner = page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' })
+  check('批次警告提示出现', (await warnBanner.count()) === 1,
+    `提示数量：${await warnBanner.count()}`)
+  check('批次警告提示带关闭键', (await warnBanner.getByRole('button', { name: '关闭提示' }).count()) === 1)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'batch-warning.png')
+    await page.screenshot({ path: shot })
+    ok(`批次警告截图 ${shot}`)
+  }
+  await warnBanner.getByRole('button', { name: '关闭提示' }).click()
+  await sleep(300)
+  check('关闭后批次警告提示消失',
+    (await page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' }).count()) === 0)
 
   // 4) 完成第二批：库存只剩 40，被拒；文案要点名仍在产的 B-STK-3
   await page.locator('input[aria-label="选择 B-STK-2"]').click()

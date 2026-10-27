@@ -64,10 +64,11 @@ describe('stockView', () => {
     expect(v.after).toBe(-10)
   })
 
-  it('explains the state with numbers in the hint', () => {
+  it('explains the state with existing, committed and available numbers in the hint', () => {
     const v = stockView(part(), { committed: 130, after: -30 })
+    expect(v.hint).toContain('现有 100')
     expect(v.hint).toContain('在产占用 130')
-    expect(v.hint).toContain('-30')
+    expect(v.hint).toContain('可用 -30')
     expect(v.hint).toContain('预警线 20')
   })
 })
@@ -79,7 +80,7 @@ describe('currentStockView（现状预警专用）', () => {
     expect(v.kind).toBe('low')
     expect(v.text).toBe('低库存')
     expect(v.dashed).toBe(false)
-    expect(v.hint).toContain('当前库存 40')
+    expect(v.hint).toContain('现有库存 40')
   })
 
   it('matches the old three levels and keeps disabled first', () => {
@@ -102,6 +103,10 @@ describe('projectedStockView（未来预警专用）', () => {
     expect(short.kind).toBe('will_short')
     expect(short.text).toBe('将缺料')
     expect(short.dashed).toBe(true)
+    // 预警说明要能同时看到现有与可用，不能只给"完成后"
+    expect(short.hint).toContain('现有 100')
+    expect(short.hint).toContain('在产占用 130')
+    expect(short.hint).toContain('可用 -30')
 
     const low = projectedStockView(part({ stock_qty: 100, warn_qty: 90 }), { committed: 20, after: 80 })!
     expect(low.kind).toBe('will_low')

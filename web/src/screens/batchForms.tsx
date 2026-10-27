@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Checkbox,
   ComboInput,
@@ -13,7 +13,12 @@ import { Badge, Btn, fmtQty } from '../components/ui'
 import { parseQuantity } from '../lib/num'
 import type { BOMItem, Part, Product } from '../lib/catalog'
 import { bom as bomApi } from '../lib/catalog'
-import { buildPreviewRows, projection as projectionApi, type PreviewRow } from '../lib/projection'
+import {
+  buildPreviewRows,
+  projection as projectionApi,
+  type PartProjection,
+  type PreviewRow,
+} from '../lib/projection'
 import {
   bomConsume,
   cascadeFor,
@@ -663,6 +668,8 @@ export function PartsManagerModal({
   parts,
   skipped,
   temps,
+  projection,
+  projectionFailed = false,
   busy,
   onSaveSkips,
   onAddTemp,
@@ -677,6 +684,10 @@ export function PartsManagerModal({
   parts: Part[]
   skipped: ReadonlySet<number>
   temps: ReadonlyArray<TempPart>
+  /** 零件级投影：选择器用它算"可用库存"（after = 现有 − 全部在产占用）。 */
+  projection?: ReadonlyMap<number, PartProjection>
+  /** 投影取不到时把"可用"标成未知，不拿现有库存冒充。 */
+  projectionFailed?: boolean
   busy: boolean
   /** 保存跳过差集。成功后父组件关弹窗；失败会把错误写进弹窗顶部。 */
   onSaveSkips: (next: Set<number>) => void
@@ -703,7 +714,14 @@ export function PartsManagerModal({
   const [totalQty, setTotalQty] = useState(planQty > 0 ? String(planQty) : '')
   const [totalDirty, setTotalDirty] = useState(false)
 
-  const partLabel = (p: Part) => `${p.code} ${p.name}（库存 ${fmtQty(p.stock_qty)} ${p.unit}）`
+  const partLabel = useCallback(
+    (p: Part) => {
+      const available = projectionFailed ? null : (projection?.get(p.id)?.after ?? p.stock_qty)
+      const availText = available === null ? '—' : fmtQty(available)
+      return `${p.code} ${p.name}（现有 ${fmtQty(p.stock_qty)}，可用 ${availText} ${p.unit}）`
+    },
+    [projection, projectionFailed],
+  )
   const q = pickQuery.trim().toLowerCase()
   const partOptions = useMemo(
     () =>
@@ -716,7 +734,7 @@ export function PartsManagerModal({
             (p.spec ?? '').toLowerCase().includes(q),
         )
         .map(partLabel),
-    [parts, q],
+    [parts, q, partLabel],
   )
 
   /** 把公式项换算成本批总量；数量还没填好时返回空串（添加时会被拦）。 */
@@ -941,19 +959,25 @@ export function PartsManagerModal({
           <div className="mb-2.5 rounded-[6px] border border-[var(--color-border-subtle)] bg-[var(--color-canvas)] px-2.5 py-2">
             <div className="flex items-end gap-2">
               <div className="min-w-0 flex-1">
-                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">零件（编码/名称搜索）</label>
+                <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">
+                  零件（编码/名称搜索）
+                </label>
                 <ComboInput
                   aria-label="临时零件"
                   value={pickQuery}
                   onChange={onPickChange}
                   options={partOptions}
                   placeholder="输入编码或名称搜索"
+                  allowCustomValue={false}
                 />
               </div>
               <Btn disabled={pending} onClick={addTemp}>
                 {pending ? '添加中…' : '添加'}
               </Btn>
             </div>
+            {q !== '' && partOptions.length === 0 ? (
+              <div className="mt-1 text-[10px] text-[var(--color-warn)]">没有匹配的零件</div>
+            ) : null}
             <div className="mt-1.5 flex items-end gap-2">
               <div style={{ width: 108 }}>
                 <label className="mb-0.5 block text-[11px] text-[var(--color-fg-muted)]">使用方式</label>
@@ -996,6 +1020,14 @@ export function PartsManagerModal({
                   自动按公式计算；直接修改即手填
                 </div>
               </div>
+            </div>
+            <div className="mt-1 text-[10px] leading-tight text-[var(--color-fg-subtle)]">
+              可用 = 现有 − 全部在产批次的占用；添加/移除后会立即重算。
+              {projectionFailed ? (
+                <span className="ml-1 text-[var(--color-warn)]">
+                  在产占用加载失败，可用库存暂不可用；添加时仍由服务端校验库存。
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="max-h-[220px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">

@@ -295,7 +295,7 @@ export function DashboardScreen() {
                             <Badge
                               kind={r.level === 'short' ? 'danger' : r.level === 'low' ? 'warn' : 'ok'}
                               title={(r.parts ?? [])
-                                .map((p) => `${p.name} [${p.code}]：完成后 ${p.after}`)
+                                .map((p) => `${p.name} [${p.code}]：完成后可用 ${p.after}`)
                                 .join('；') || undefined}
                             >
                               {RESERVE_TEXT[r.level]}
@@ -342,7 +342,13 @@ export function DashboardScreen() {
                     <th style={{ width: 96 }}>编码</th>
                     <th>名称</th>
                     <th className="num" style={{ width: 64 }}>占用</th>
-                    <th className="num" style={{ width: 64 }}>完成后</th>
+                    <th
+                      className="num"
+                      style={{ width: 64 }}
+                      title="全部在产批次完成后的可用库存"
+                    >
+                      可用
+                    </th>
                     <th className="mid" style={{ width: 68 }}>状态</th>
                   </tr>
                 </thead>
@@ -464,7 +470,7 @@ function HolderBatchesModal({
     >
       <div className="mb-2 text-[12px] text-[var(--color-fg-muted)]">
         {part.name}：现有 {fmtQty(row.stock)}，在产占用 {fmtQty(row.committed)}，
-        全部完成后 {fmtQty(row.after)}
+        可用 {fmtQty(row.after)}
         {part.unit ? `（${part.unit}）` : ''}
       </div>
       <div className="max-h-[280px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">

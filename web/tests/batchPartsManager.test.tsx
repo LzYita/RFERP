@@ -12,6 +12,7 @@ import { PartsManagerModal, RecordTraceModal } from '../src/screens/batchForms'
 import { BatchScreen } from '../src/screens/BatchScreen'
 import type { BOMItem, Part } from '../src/lib/catalog'
 import type { TempPart } from '../src/lib/batch'
+import type { PartProjection } from '../src/lib/projection'
 
 vi.mock('../src/lib/api', async (original) => ({
   ...(await original<typeof import('../src/lib/api')>()),
@@ -70,7 +71,7 @@ async function pickPart(u: ReturnType<typeof userEvent.setup>, scope: HTMLElemen
   await u.type(input, code)
   // ComboInput 会把输入原文也预置成一条候选项（aria-selected），真正要点的
   // 是带名称与库存的那条完整标签。
-  await u.click(within(scope).getByRole('option', { name: new RegExp(`${code} .*库存`) }))
+  await u.click(within(scope).getByRole('option', { name: new RegExp(`${code} .*现有`) }))
 }
 
 function renderManager(over: {
@@ -78,6 +79,8 @@ function renderManager(over: {
   temps?: TempPart[]
   skipped?: Set<number>
   planQty?: number
+  projection?: ReadonlyMap<number, PartProjection>
+  projectionFailed?: boolean
   onSaveSkips?: (next: Set<number>) => void
   onAddTemp?: (partId: number, qty: number, derivation?: AddDerivation) => Promise<void>
   onRemoveTemp?: (partId: number) => Promise<void>
@@ -89,6 +92,8 @@ function renderManager(over: {
     parts: [part(), part({ id: 2, code: 'M-002', name: '备用螺丝', stock_qty: 8 })],
     skipped: over.skipped ?? new Set<number>(),
     temps: over.temps ?? [],
+    projection: over.projection,
+    projectionFailed: over.projectionFailed ?? false,
     busy: false,
     onSaveSkips: over.onSaveSkips ?? vi.fn(),
     onAddTemp: over.onAddTemp ?? vi.fn(async () => {}),
@@ -277,6 +282,69 @@ it('explains how each temp quantity was derived in the list', async () => {
 
   expect(within(dialog).getByText('每台 2 个，损耗 5%')).toBeTruthy()
   expect(within(dialog).getByText('手填总量')).toBeTruthy()
+})
+
+it('shows existing and available stock together when picking a temp part', async () => {
+  const u = userEvent.setup()
+  const projection = new Map<number, PartProjection>([
+    [2, { part_id: 2, stock: 8, warn: 10, committed: 3, after: 5 }],
+  ])
+  renderManager({ projection })
+  const dialog = screen.getByRole('dialog')
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  const input = within(dialog).getByRole('combobox', { name: '临时零件' })
+  await u.click(input)
+  await u.type(input, 'M-002')
+
+  // 现有来自零件表，可用来自投影（现有 − 全部在产占用），两个都要给。
+  expect(
+    within(dialog).getByRole('option', { name: /M-002 备用螺丝（现有 8，可用 5 个）/ }),
+  ).toBeTruthy()
+})
+
+it('marks available stock unknown instead of showing existing stock when projection fails', async () => {
+  const u = userEvent.setup()
+  renderManager({ projectionFailed: true })
+  const dialog = screen.getByRole('dialog')
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  const input = within(dialog).getByRole('combobox', { name: '临时零件' })
+  await u.click(input)
+  await u.type(input, 'M-002')
+
+  expect(within(dialog).getByRole('option', { name: /可用 —/ })).toBeTruthy()
+  expect(within(dialog).getByText(/在产占用加载失败，可用库存暂不可用/)).toBeTruthy()
+})
+
+it('lets the user dismiss the batch warning banner', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.startsWith('/api/batches')) {
+        return new Response(
+          JSON.stringify([
+            { id: 1, batch_no: 'B-REV', product_id: 1, plan_qty: 10, produced_qty: 0, status: 4, version: 1 },
+          ]),
+        )
+      }
+      if (url.startsWith('/api/products')) return new Response(JSON.stringify([]))
+      if (url.startsWith('/api/parts')) return new Response(JSON.stringify([]))
+      if (url.startsWith('/api/stock/projection')) {
+        return new Response(JSON.stringify({ parts: [], batches: [], summary: { willWarn: 0, willShort: 0 } }))
+      }
+      return new Response('{}', { status: 404 })
+    }),
+  )
+  const u = userEvent.setup()
+  render(<BatchScreen />)
+  await screen.findByText('B-REV')
+
+  await u.click(screen.getByRole('checkbox', { name: '选择 B-REV' }))
+  await u.click(screen.getByRole('button', { name: '开始生产' }))
+  await u.click(await screen.findByRole('button', { name: '确定' }))
+
+  expect(await screen.findByText('已撤销的批次不能更改状态')).toBeTruthy()
+  await u.click(screen.getByRole('button', { name: '关闭提示' }))
+  expect(screen.queryByText('已撤销的批次不能更改状态')).toBeNull()
 })
 
 it('orders the batch action buttons as requested', async () => {

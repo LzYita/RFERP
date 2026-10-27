@@ -28,7 +28,12 @@ import {
   ShortageModal,
   shortagesOf,
 } from './batchForms'
-import { projection as projectionApi, RESERVE_TEXT, type BatchReserve } from '../lib/projection'
+import {
+  projection as projectionApi,
+  RESERVE_TEXT,
+  type BatchReserve,
+  type PartProjection,
+} from '../lib/projection'
 
 /**
  * 批次追溯。
@@ -76,18 +81,38 @@ export function BatchScreen() {
 
   async function reload() {
     setList(await batches.list())
-    // 状态一变在产占用就变，备料角标必须重新取，不能等下次进页面。
-    setReserve(await loadReserve())
+    // 状态一变在产占用就变，备料角标与临时零件选择器的"可用"都必须重取。
+    const proj = await loadProjection()
+    applyProjection(proj)
   }
 
-  /** 备料角标只依赖投影的批次结论；取不到就不显示，不影响列表本身。 */
-  async function loadReserve(): Promise<Map<number, BatchReserve>> {
+  /**
+   * 投影同时供两处使用：批次备料角标，以及临时零件选择器里的"可用库存"。
+   * 失败不抛错——列表本身不该因为预测挂了打不开；调用方用 ok 决定是否
+   * 把"可用"标成未知，绝不拿 0 冒充。
+   */
+  async function loadProjection(): Promise<{
+    parts: Map<number, PartProjection>
+    batches: BatchReserve[]
+    ok: boolean
+  }> {
     try {
       const res = await projectionApi.get()
-      return new Map(res.batches.map((b) => [b.batch_id, b]))
+      return {
+        parts: new Map(res.parts.map((p) => [p.part_id, p])),
+        batches: res.batches,
+        ok: true,
+      }
     } catch {
-      return new Map()
+      return { parts: new Map(), batches: [], ok: false }
     }
+  }
+
+  function applyProjection(proj: Awaited<ReturnType<typeof loadProjection>>) {
+    setPartsProj(proj.parts)
+    setPartsProjFailed(!proj.ok)
+    // 取不到批次结论时保留角标为空（—），不猜"充足"。
+    setReserve(new Map(proj.batches.map((b) => [b.batch_id, b])))
   }
 
   useEffect(() => {
@@ -99,8 +124,8 @@ export function BatchScreen() {
         setProducts(ps)
         setParts(pts)
         setError(null)
-        loadReserve().then((m) => {
-          if (alive) setReserve(m)
+        loadProjection().then((proj) => {
+          if (alive) applyProjection(proj)
         })
       })
       .catch((e) => {
@@ -136,6 +161,8 @@ export function BatchScreen() {
 
   function open(kind: NonNullable<typeof dialog>) {
     setErr('')
+    // 上一次操作的提示（如"已撤销的批次不能更改状态"）不该跟着新操作一直挂着。
+    setNotice('')
     setDialog(kind)
   }
 
@@ -279,6 +306,9 @@ export function BatchScreen() {
   const [partsBom, setPartsBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
   const [partsSkipped, setPartsSkipped] = useState<Set<number>>(new Set())
   const [partsTemps, setPartsTemps] = useState<TempPart[]>([])
+  // 选择器要同时显示现有与可用库存；可用 = 投影里的 after（全部在产完成后）。
+  const [partsProj, setPartsProj] = useState<Map<number, PartProjection>>(new Map())
+  const [partsProjFailed, setPartsProjFailed] = useState(false)
 
   async function openPartsManager() {
     if (!selected) return
@@ -289,14 +319,16 @@ export function BatchScreen() {
     }
     setBusy(true)
     try {
-      const [bom, already, temps] = await Promise.all([
+      const [bom, already, temps, proj] = await Promise.all([
         bomApi.list(selected.product_id),
         batches.skipped(selected.id),
         batches.tempParts(selected.id),
+        loadProjection(),
       ])
       setPartsBom(bom)
       setPartsSkipped(new Set(already))
       setPartsTemps(temps)
+      applyProjection(proj)
       setErr('')
       setDialog({ kind: 'parts' })
     } catch (e) {
@@ -316,6 +348,8 @@ export function BatchScreen() {
       const toRemove = [...partsSkipped].filter((id) => !next.has(id))
       for (const partId of toAdd) await batches.addSkip(selected.id, partId)
       for (const partId of toRemove) await batches.removeSkip(selected.id, partId)
+      // 跳过会改本批占用，可用库存与备料角标都跟着变。
+      await reload()
       setDialog(null)
       setNotice(`已跳过 ${toAdd.length} 个零件，取消跳过 ${toRemove.length} 个零件`)
     } catch (e) {
@@ -329,14 +363,22 @@ export function BatchScreen() {
     if (!selected) return
     // 不走全局 busy：添加是弹窗内的连续小操作，锁整个屏反而打断节奏。
     await batches.addTempPart(selected.id, partId, qty, derivation)
-    // 后端是 upsert：重加同零件=改数量，直接用返回后的最新列表刷新。
-    setPartsTemps(await batches.tempParts(selected.id))
+    await refreshTempParts()
   }
 
   async function removeTemp(partId: number) {
     if (!selected) return
     await batches.removeTempPart(selected.id, partId)
-    setPartsTemps(await batches.tempParts(selected.id))
+    await refreshTempParts()
+  }
+
+  /** 临时零件一变，占用就变：列表与"可用库存"必须一起刷新，否则显示会停在旧值。 */
+  async function refreshTempParts() {
+    if (!selected) return
+    // 后端是 upsert：重加同零件=改数量，直接用返回后的最新列表刷新。
+    const [temps, proj] = await Promise.all([batches.tempParts(selected.id), loadProjection()])
+    setPartsTemps(temps)
+    applyProjection(proj)
   }
 
   /* ---------- 追溯 ---------- */
@@ -423,9 +465,19 @@ export function BatchScreen() {
       {notice && (
         <div
           role="status"
-          className="rounded-[8px] border border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)] px-3 py-2 text-[12px] text-[var(--color-warn)]"
+          className="flex items-start gap-2 rounded-[8px] border border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)] px-3 py-2 text-[12px] text-[var(--color-warn)]"
         >
-          {notice}
+          <span className="min-w-0 flex-1">{notice}</span>
+          {/* 提示会一直留在页面上挡住列表，必须能手动关掉。 */}
+          <button
+            type="button"
+            aria-label="关闭提示"
+            title="关闭提示"
+            onClick={() => setNotice('')}
+            className="-mr-1 shrink-0 rounded-[4px] px-1 text-[13px] leading-none hover:opacity-70"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -596,6 +648,8 @@ export function BatchScreen() {
           parts={parts}
           skipped={partsSkipped}
           temps={partsTemps}
+          projection={partsProj}
+          projectionFailed={partsProjFailed}
           busy={busy}
           onSaveSkips={(next) => void saveSkips(next)}
           onAddTemp={addTemp}
@@ -661,7 +715,7 @@ function ReserveBadge({ reserve, status }: { reserve?: BatchReserve; status: num
   }
   const kind = reserve.level === 'short' ? 'danger' : reserve.level === 'low' ? 'warn' : 'ok'
   const detail = (reserve.parts ?? [])
-    .map((p) => `${p.name} [${p.code}]：完成后 ${p.after}`)
+    .map((p) => `${p.name} [${p.code}]：完成后可用 ${p.after}`)
     .join('；')
   return (
     <Badge kind={kind} title={detail || undefined}>

@@ -47,6 +47,8 @@ type TxOps interface {
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)
 	// TracesForPart 按批次汇总该零件的生产投料记录，用于删除前的拒绝提示。
 	TracesForPart(partID int64) ([]model.PartTraceRef, error)
+	// BatchUsesForPart 列出临时零件/跳过零件/完成扣料对它的引用，用于删除守卫。
+	BatchUsesForPart(partID int64) ([]model.PartBatchUse, error)
 
 	GetBatchForUpdate(id int64) (*model.ProductBatch, error)
 	CreateBatch(b *model.ProductBatch) (int64, error)

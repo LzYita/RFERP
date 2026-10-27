@@ -1170,6 +1170,8 @@ async function stockProjectionGate(page, product, batchNos) {
 
   await mgr.locator('[role="tab"]', { hasText: '临时零件' }).click()
   await sleep(300)
+  const modeOption = await mgr.getByLabel('使用方式').locator('option').first().innerText()
+  check('使用方式首项文案为「每台用N个」', modeOption === '每台用N个', `实际：${modeOption}`)
   // 文字查询：输入编码过滤，点带库存信息的候选项
   const combo = mgr.getByRole('combobox', { name: '临时零件' })
   await combo.click()
@@ -1361,6 +1363,12 @@ async function stockProjectionGate(page, product, batchNos) {
   const tempText = (await tempRow.count()) > 0 ? await tempRow.innerText() : ''
   check('临时零件随完成生产扣减库存（30→20）', tempText.includes('20 个'),
     `行内容：${tempText.replace(/\s*\n\s*/g, ' | ')}`)
+  const tempBadge = tempRow.locator('[data-badge-variant]').first()
+  const tempBadgeText = (await tempBadge.count()) > 0 ? await tempBadge.innerText() : ''
+  const tempBadgeVariant = (await tempBadge.count()) > 0 ? await tempBadge.getAttribute('data-badge-variant') : ''
+  check('临时零件扣减后状态实时变为低库存（实心）',
+    tempBadgeText === '低库存' && tempBadgeVariant === 'solid',
+    `徽章：${tempBadgeText} / ${tempBadgeVariant}`)
   await page.getByPlaceholder('全部').fill('')
   await sleep(500)
 
@@ -1378,6 +1386,11 @@ async function stockProjectionGate(page, product, batchNos) {
   const currentText = await currentPanel.innerText()
   check('现状预警只报现在时（不出现"将缺料"）', !currentText.includes('将缺料'),
     `面板内容：${currentText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  // 临时零件扣减后 20 < 预警线 25：状态应立刻出现在现状预警里。
+  const tempCurrentRow = currentPanel.locator('tbody tr', { hasText: 'P-TEMP-G' })
+  const tempCurrentText = (await tempCurrentRow.count()) > 0 ? await tempCurrentRow.first().innerText() : ''
+  check('临时零件扣减后进入现状预警且显示低库存', tempCurrentText.includes('低库存'),
+    `行内容：${tempCurrentText.replace(/\s*\n\s*/g, ' | ') || '(未出现)'}`)
 
   const future = page.locator('[data-panel="future-alerts"]')
   const futureText = await future.innerText()
@@ -1477,7 +1490,8 @@ try {
   // 与零件同理，必须在浏览器登录**之前**造好（单用户单会话）。
   await seedPart(auth, 'P-9002', '未分类验证件', '')
   // 临时零件场景用：不在任何 BOM 里，库存 30。
-  await seedPart(auth, 'P-TEMP-G', '临时验证零件', '其他', { stock_qty: 30, warn_qty: 0 })
+  // warn 25 让「扣减后状态变化」可验证：完成后 20 < 25 → 低库存。
+  await seedPart(auth, 'P-TEMP-G', '临时验证零件', '其他', { stock_qty: 30, warn_qty: 25 })
   const seededAll = await api('/api/parts', { headers: auth })
   const allPartRows = Array.isArray(seededAll.body) ? seededAll.body : seededAll.body?.items
   const partByCode = (code) => (Array.isArray(allPartRows) ? allPartRows.find((p) => p.code === code) : undefined)

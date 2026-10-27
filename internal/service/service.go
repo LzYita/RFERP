@@ -364,6 +364,35 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 	return p, nil
 }
 
+// formatPartBatchUses 把删除零件的引用整理成一句可读的话：最多列三批，
+// 每批带用途；同一批次同一用途只出现一次。完整清单不进文案，避免撑爆对话框。
+func formatPartBatchUses(uses []model.PartBatchUse) string {
+	reasonText := map[string]string{
+		"temp":     "临时零件",
+		"skip":     "跳过零件",
+		"consumed": "完成扣料",
+	}
+	seen := make(map[string]bool, len(uses))
+	parts := make([]string, 0, 3)
+	for _, u := range uses {
+		key := u.BatchNo + "/" + u.Reason
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if len(parts) == 3 {
+			parts = append(parts, "等")
+			break
+		}
+		label := reasonText[u.Reason]
+		if label == "" {
+			label = u.Reason
+		}
+		parts = append(parts, fmt.Sprintf("%s（%s）", u.BatchNo, label))
+	}
+	return strings.Join(parts, "、")
+}
+
 func (s *Service) DeletePart(id int64, operator string) error {
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(id)
@@ -391,6 +420,17 @@ func (s *Service) DeletePart(id int64, operator string) error {
 		}
 		if len(traces) > 0 {
 			return &usecase.PartInTraceError{PartCode: old.Code, Batches: traces}
+		}
+		// 第三道：批次里的临时零件、跳过零件，以及完成扣料的冻结记录。
+		// 这三张表都有 parts 外键且不级联；不在这里拦，用户只会得到
+		// FOREIGN KEY constraint failed，不知道去哪个批次里解开。
+		uses, err := tx.BatchUsesForPart(id)
+		if err != nil {
+			return fmt.Errorf("check batch usage: %w", err)
+		}
+		if len(uses) > 0 {
+			return fmt.Errorf("零件 %s 仍被批次使用，无法删除：%s。请先在对应批次的「零件管理」中移除临时/跳过零件；完成扣料记录不能删除，如需保留历史请改为停用",
+				old.Code, formatPartBatchUses(uses))
 		}
 		if err := tx.DeletePart(id); err != nil {
 			return err

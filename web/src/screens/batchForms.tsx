@@ -987,7 +987,7 @@ export function PartsManagerModal({
                   onChange={(e) => updateDerivation({ useMode: Number(e.target.value) })}
                   className={selCls}
                 >
-                  <option value={0}>每台用量</option>
+                  <option value={0}>每台用N个</option>
                   <option value={1}>每 M 台 1 个</option>
                 </select>
               </div>

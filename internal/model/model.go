@@ -49,6 +49,13 @@ type PartTraceRef struct {
 	Records int    `db:"records" json:"records"`
 }
 
+// PartBatchUse 是删除零件时的一条"仍被使用"引用：哪个批次、哪一类用途。
+// Reason 取 temp（临时零件）/ skip（跳过零件）/ consumed（完成扣料）。
+type PartBatchUse struct {
+	BatchNo string `db:"batch_no" json:"batch_no"`
+	Reason  string `db:"reason" json:"reason"`
+}
+
 type BOMItem struct {
 	ID          int64     `db:"id" json:"id"`
 	ProductID   int64     `db:"product_id" json:"product_id"`

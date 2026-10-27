@@ -131,6 +131,7 @@ export function ComboInput({
   placeholder,
   mono,
   autoFocus,
+  allowCustomValue = true,
   'aria-label': ariaLabel,
 }: {
   value: string
@@ -139,6 +140,14 @@ export function ComboInput({
   placeholder?: string
   mono?: boolean
   autoFocus?: boolean
+  /**
+   * 允许把输入原文当成一条"库中原值"候选。
+   *
+   * 默认 true（编辑已有字段时，库里可能存着不在候选里的值，必须能看见）。
+   * 纯搜索框要设 false：输入 "P-1" 时多出一条 "P-1（库中原值）" 会让人
+   * 以为能选，点了却选不中任何实体。
+   */
+  allowCustomValue?: boolean
   // FormRow 会把这个注进来（包裹式 label 不足以给出稳定的可访问名称）
   'aria-label'?: string
 }) {
@@ -148,10 +157,11 @@ export function ComboInput({
   // 但问题出在 WebView2 的原生弹层，与这个 id 无关。）
   const listId = useId()
 
-  // 已填的值不在候选里时，要先把它列出来，否则用户会以为自己填错了
+  // 已填的值不在候选里时，要先把它列出来，否则用户会以为自己填错了。
+  // allowCustomValue=false 的纯搜索框不列——那条不是一个可选项。
   const items = useMemo(
-    () => (value && !options.includes(value) ? [value, ...options] : [...options]),
-    [options, value],
+    () => (allowCustomValue && value && !options.includes(value) ? [value, ...options] : [...options]),
+    [allowCustomValue, options, value],
   )
 
   useEffect(() => {
@@ -392,12 +402,14 @@ export function NumberInput({
   placeholder,
   step,
   autoFocus,
+  disabled,
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   step?: string
   autoFocus?: boolean
+  disabled?: boolean
 }) {
   return (
     <input
@@ -407,6 +419,7 @@ export function NumberInput({
       autoFocus={autoFocus}
       value={value}
       placeholder={placeholder}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
     />
   )

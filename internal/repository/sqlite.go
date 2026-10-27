@@ -422,6 +422,40 @@ func (t *SQLiteTx) RemoveSkipPart(batchID, partID int64) error {
 	return err
 }
 
+func (t *SQLiteTx) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := t.q.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		WHERE t.batch_id=? ORDER BY t.id`, batchID)
+	return rows, err
+}
+
+func (t *SQLiteTx) GetAllTempParts() ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := t.q.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		ORDER BY t.batch_id, t.id`)
+	return rows, err
+}
+
+func (t *SQLiteTx) AddTempPart(tp *model.BatchTempPart) error {
+	// 同一零件重复添加视为改数量（连推导依据一起覆盖）：临时零件没有"编辑"
+	// 入口，重加一次就是改。
+	_, err := t.q.Exec(`INSERT INTO batch_temp_parts (batch_id,part_id,qty,use_mode,quantity,loss_rate) VALUES (?,?,?,?,?,?)
+		ON CONFLICT(batch_id,part_id) DO UPDATE SET qty=excluded.qty, use_mode=excluded.use_mode, quantity=excluded.quantity, loss_rate=excluded.loss_rate`,
+		tp.BatchID, tp.PartID, tp.Qty, tp.UseMode, tp.Quantity, tp.LossRate)
+	return err
+}
+
+func (t *SQLiteTx) RemoveTempPart(batchID, partID int64) error {
+	_, err := t.q.Exec(`DELETE FROM batch_temp_parts WHERE batch_id=? AND part_id=?`, batchID, partID)
+	return err
+}
+
 type connQueryer struct{ c *sqlx.Conn }
 
 func (q connQueryer) Get(dest any, query string, args ...any) error {
@@ -513,6 +547,26 @@ func (s *SQLiteStore) GetSkippedParts(batchID int64) ([]int64, error) {
 func (s *SQLiteStore) GetAllSkippedParts() ([]SkipPartRow, error) {
 	var rows []SkipPartRow
 	err := s.db.Select(&rows, `SELECT batch_id, part_id FROM batch_skip_parts ORDER BY batch_id`)
+	return rows, err
+}
+
+func (s *SQLiteStore) GetTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := s.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		WHERE t.batch_id=? ORDER BY t.id`, batchID)
+	return rows, err
+}
+
+func (s *SQLiteStore) GetAllTempParts() ([]model.BatchTempPart, error) {
+	var rows []model.BatchTempPart
+	err := s.db.Select(&rows, `SELECT t.batch_id, t.part_id, t.qty, t.created_at,
+		t.use_mode, t.quantity, t.loss_rate,
+		p.code, p.name, p.unit
+		FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id
+		ORDER BY t.batch_id, t.id`)
 	return rows, err
 }
 

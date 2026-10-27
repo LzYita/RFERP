@@ -3,7 +3,7 @@ import {
   bomConsume,
   findShortages,
   canChangeStatus,
-  canEditSkips,
+  canManageParts,
   statusText,
   cascadeFor,
   resolveProduct,
@@ -137,10 +137,10 @@ describe('状态机守卫', () => {
     }
   })
 
-  it('已完成/已撤销不能改跳过零件，但可撤销', () => {
-    expect(canEditSkips(mkBatch(BATCH_STATUS.done)).ok).toBe(false)
-    expect(canEditSkips(mkBatch(BATCH_STATUS.revoked)).ok).toBe(false)
-    expect(canEditSkips(mkBatch(BATCH_STATUS.running)).ok).toBe(true)
+  it('已完成/已撤销不能改零件（跳过/临时），但可撤销', () => {
+    expect(canManageParts(mkBatch(BATCH_STATUS.done)).ok).toBe(false)
+    expect(canManageParts(mkBatch(BATCH_STATUS.revoked)).ok).toBe(false)
+    expect(canManageParts(mkBatch(BATCH_STATUS.running)).ok).toBe(true)
   })
 })
 

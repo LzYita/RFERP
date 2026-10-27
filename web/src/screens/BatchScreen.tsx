@@ -10,23 +10,30 @@ import {
   BATCH_STATUS,
   batches,
   canChangeStatus,
-  canEditSkips,
+  canManageParts,
   findShortages,
   statusKind,
   statusText,
   traces,
   type Batch,
   type BatchTrace,
+  type TempPart,
+  type TempPartDerivation,
 } from '../lib/batch'
 import {
   CreateBatchModal,
   type NewBatchInput,
+  PartsManagerModal,
   RecordTraceModal,
   ShortageModal,
-  SkipPartsModal,
   shortagesOf,
 } from './batchForms'
-import { projection as projectionApi, RESERVE_TEXT, type BatchReserve } from '../lib/projection'
+import {
+  projection as projectionApi,
+  RESERVE_TEXT,
+  type BatchReserve,
+  type PartProjection,
+} from '../lib/projection'
 
 /**
  * 批次追溯。
@@ -57,7 +64,7 @@ export function BatchScreen() {
   const [dialog, setDialog] = useState<
     | { kind: 'create' }
     | { kind: 'trace' }
-    | { kind: 'skip' }
+    | { kind: 'parts' }
     | { kind: 'status'; to: number }
     | { kind: 'revoke' }
     | null
@@ -74,18 +81,38 @@ export function BatchScreen() {
 
   async function reload() {
     setList(await batches.list())
-    // 状态一变在产占用就变，备料角标必须重新取，不能等下次进页面。
-    setReserve(await loadReserve())
+    // 状态一变在产占用就变，备料角标与临时零件选择器的"可用"都必须重取。
+    const proj = await loadProjection()
+    applyProjection(proj)
   }
 
-  /** 备料角标只依赖投影的批次结论；取不到就不显示，不影响列表本身。 */
-  async function loadReserve(): Promise<Map<number, BatchReserve>> {
+  /**
+   * 投影同时供两处使用：批次备料角标，以及临时零件选择器里的"可用库存"。
+   * 失败不抛错——列表本身不该因为预测挂了打不开；调用方用 ok 决定是否
+   * 把"可用"标成未知，绝不拿 0 冒充。
+   */
+  async function loadProjection(): Promise<{
+    parts: Map<number, PartProjection>
+    batches: BatchReserve[]
+    ok: boolean
+  }> {
     try {
       const res = await projectionApi.get()
-      return new Map(res.batches.map((b) => [b.batch_id, b]))
+      return {
+        parts: new Map(res.parts.map((p) => [p.part_id, p])),
+        batches: res.batches,
+        ok: true,
+      }
     } catch {
-      return new Map()
+      return { parts: new Map(), batches: [], ok: false }
     }
+  }
+
+  function applyProjection(proj: Awaited<ReturnType<typeof loadProjection>>) {
+    setPartsProj(proj.parts)
+    setPartsProjFailed(!proj.ok)
+    // 取不到批次结论时保留角标为空（—），不猜"充足"。
+    setReserve(new Map(proj.batches.map((b) => [b.batch_id, b])))
   }
 
   useEffect(() => {
@@ -97,8 +124,8 @@ export function BatchScreen() {
         setProducts(ps)
         setParts(pts)
         setError(null)
-        loadReserve().then((m) => {
-          if (alive) setReserve(m)
+        loadProjection().then((proj) => {
+          if (alive) applyProjection(proj)
         })
       })
       .catch((e) => {
@@ -134,6 +161,8 @@ export function BatchScreen() {
 
   function open(kind: NonNullable<typeof dialog>) {
     setErr('')
+    // 上一次操作的提示（如"已撤销的批次不能更改状态"）不该跟着新操作一直挂着。
+    setNotice('')
     setDialog(kind)
   }
 
@@ -272,34 +301,38 @@ export function BatchScreen() {
     }
   }
 
-  /* ---------- 跳过零件 ---------- */
+  /* ---------- 零件管理（跳过 / 临时） ---------- */
 
-  const [skipBom, setSkipBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
-  const [skipAlready, setSkipAlready] = useState<Set<number>>(new Set())
+  const [partsBom, setPartsBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
+  const [partsSkipped, setPartsSkipped] = useState<Set<number>>(new Set())
+  const [partsTemps, setPartsTemps] = useState<TempPart[]>([])
+  // 选择器要同时显示现有与可用库存；可用 = 投影里的 after（全部在产完成后）。
+  const [partsProj, setPartsProj] = useState<Map<number, PartProjection>>(new Map())
+  const [partsProjFailed, setPartsProjFailed] = useState(false)
 
-  async function openSkip() {
+  async function openPartsManager() {
     if (!selected) return
-    const guard = canEditSkips(selected)
+    const guard = canManageParts(selected)
     if (!guard.ok) {
       setNotice(guard.msg)
       return
     }
     setBusy(true)
     try {
-      const [bom, already] = await Promise.all([
+      const [bom, already, temps, proj] = await Promise.all([
         bomApi.list(selected.product_id),
         batches.skipped(selected.id),
+        batches.tempParts(selected.id),
+        loadProjection(),
       ])
-      if (bom.length === 0) {
-        setNotice('该产品没有BOM明细，无需跳过')
-        return
-      }
-      setSkipBom(bom)
-      setSkipAlready(new Set(already))
+      setPartsBom(bom)
+      setPartsSkipped(new Set(already))
+      setPartsTemps(temps)
+      applyProjection(proj)
       setErr('')
-      setDialog({ kind: 'skip' })
+      setDialog({ kind: 'parts' })
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : '查询BOM失败')
+      setNotice(e instanceof Error ? e.message : '查询零件数据失败')
     } finally {
       setBusy(false)
     }
@@ -311,10 +344,12 @@ export function BatchScreen() {
     try {
       // 只提交差集：API 对重复新增/删除缺失都是幂等返回 200，逐条全量提交
       // 会为 N 个零件发 2N 个请求，其中大部分什么都没做。
-      const toAdd = [...next].filter((id) => !skipAlready.has(id))
-      const toRemove = [...skipAlready].filter((id) => !next.has(id))
+      const toAdd = [...next].filter((id) => !partsSkipped.has(id))
+      const toRemove = [...partsSkipped].filter((id) => !next.has(id))
       for (const partId of toAdd) await batches.addSkip(selected.id, partId)
       for (const partId of toRemove) await batches.removeSkip(selected.id, partId)
+      // 跳过会改本批占用，可用库存与备料角标都跟着变。
+      await reload()
       setDialog(null)
       setNotice(`已跳过 ${toAdd.length} 个零件，取消跳过 ${toRemove.length} 个零件`)
     } catch (e) {
@@ -324,15 +359,48 @@ export function BatchScreen() {
     }
   }
 
+  async function addTemp(partId: number, qty: number, derivation?: TempPartDerivation) {
+    if (!selected) return
+    // 不走全局 busy：添加是弹窗内的连续小操作，锁整个屏反而打断节奏。
+    await batches.addTempPart(selected.id, partId, qty, derivation)
+    await refreshTempParts()
+  }
+
+  async function removeTemp(partId: number) {
+    if (!selected) return
+    await batches.removeTempPart(selected.id, partId)
+    await refreshTempParts()
+  }
+
+  /** 临时零件一变，占用就变：列表与"可用库存"必须一起刷新，否则显示会停在旧值。 */
+  async function refreshTempParts() {
+    if (!selected) return
+    // 后端是 upsert：重加同零件=改数量，直接用返回后的最新列表刷新。
+    const [temps, proj] = await Promise.all([batches.tempParts(selected.id), loadProjection()])
+    setPartsTemps(temps)
+    applyProjection(proj)
+  }
+
   /* ---------- 追溯 ---------- */
 
   const [traceBom, setTraceBom] = useState<Awaited<ReturnType<typeof bomApi.list>> | null>(null)
+  // 跳过与临时零件随弹窗打开时一起取：跳过的不给投，临时的加一行，
+  // 「零件管理」里刚改过的内容在这里立刻可见。
+  const [traceSkipped, setTraceSkipped] = useState<Set<number>>(new Set())
+  const [traceTemps, setTraceTemps] = useState<TempPart[]>([])
 
   async function openTrace() {
     if (!selected) return
     setBusy(true)
     try {
-      setTraceBom(await bomApi.list(selected.product_id))
+      const [bom, skipped, temps] = await Promise.all([
+        bomApi.list(selected.product_id),
+        batches.skipped(selected.id),
+        batches.tempParts(selected.id),
+      ])
+      setTraceBom(bom)
+      setTraceSkipped(new Set(skipped))
+      setTraceTemps(temps)
       setErr('')
       setDialog({ kind: 'trace' })
     } catch (e) {
@@ -355,6 +423,12 @@ export function BatchScreen() {
               <Btn primary onClick={() => open({ kind: 'create' })}>
                 新建批次
               </Btn>
+              <Btn disabled={!selected || busy} onClick={() => void openPartsManager()}>
+                零件管理
+              </Btn>
+              <Btn disabled={!selected || busy} onClick={() => void openTrace()}>
+                记录投料
+              </Btn>
               <Btn
                 disabled={!selected || busy}
                 onClick={() => {
@@ -372,12 +446,6 @@ export function BatchScreen() {
                 }}
               >
                 完成生产
-              </Btn>
-              <Btn disabled={!selected || busy} onClick={() => void openTrace()}>
-                记录投料
-              </Btn>
-              <Btn disabled={!selected || busy} onClick={() => void openSkip()}>
-                跳过零件
               </Btn>
               <Btn
                 danger
@@ -397,9 +465,19 @@ export function BatchScreen() {
       {notice && (
         <div
           role="status"
-          className="rounded-[8px] border border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)] px-3 py-2 text-[12px] text-[var(--color-warn)]"
+          className="flex items-start gap-2 rounded-[8px] border border-[var(--color-warn)]/30 bg-[var(--color-warn-bg)] px-3 py-2 text-[12px] text-[var(--color-warn)]"
         >
-          {notice}
+          <span className="min-w-0 flex-1">{notice}</span>
+          {/* 提示会一直留在页面上挡住列表，必须能手动关掉。 */}
+          <button
+            type="button"
+            aria-label="关闭提示"
+            title="关闭提示"
+            onClick={() => setNotice('')}
+            className="-mr-1 shrink-0 rounded-[4px] px-1 text-[13px] leading-none hover:opacity-70"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -553,6 +631,8 @@ export function BatchScreen() {
           batchNo={selected.batch_no}
           planQty={selected.plan_qty}
           items={traceBom}
+          skipped={traceSkipped}
+          temps={traceTemps}
           busy={busy}
           err={err}
           onSubmit={recordTraces}
@@ -560,13 +640,20 @@ export function BatchScreen() {
         />
       ) : null}
 
-      {dialog?.kind === 'skip' && selected && skipBom ? (
-        <SkipPartsModal
+      {dialog?.kind === 'parts' && selected && partsBom ? (
+        <PartsManagerModal
           batchNo={selected.batch_no}
-          items={skipBom}
-          already={skipAlready}
+          planQty={selected.plan_qty}
+          items={partsBom}
+          parts={parts}
+          skipped={partsSkipped}
+          temps={partsTemps}
+          projection={partsProj}
+          projectionFailed={partsProjFailed}
           busy={busy}
-          onSubmit={saveSkips}
+          onSaveSkips={(next) => void saveSkips(next)}
+          onAddTemp={addTemp}
+          onRemoveTemp={removeTemp}
           onClose={() => setDialog(null)}
         />
       ) : null}
@@ -628,7 +715,7 @@ function ReserveBadge({ reserve, status }: { reserve?: BatchReserve; status: num
   }
   const kind = reserve.level === 'short' ? 'danger' : reserve.level === 'low' ? 'warn' : 'ok'
   const detail = (reserve.parts ?? [])
-    .map((p) => `${p.name} [${p.code}]：完成后 ${p.after}`)
+    .map((p) => `${p.name} [${p.code}]：完成后可用 ${p.after}`)
     .join('；')
   return (
     <Badge kind={kind} title={detail || undefined}>

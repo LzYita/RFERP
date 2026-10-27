@@ -73,6 +73,16 @@ func (s *Service) commitmentsAndPlans(excludeBatchID int64) (map[int64]float64, 
 		}
 		skipByBatch[r.BatchID][r.PartID] = true
 	}
+	// 临时零件与本批 BOM 一样会在完成时扣库存，所以必须算成占用：
+	// 漏掉它们，"未来预警"和备料结论就会把实际上做不成的批次说成够用。
+	tempRows, err := s.repo.GetAllTempParts()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("list temp parts: %w", err)
+	}
+	tempByBatch := make(map[int64][]model.BatchTempPart)
+	for _, t := range tempRows {
+		tempByBatch[t.BatchID] = append(tempByBatch[t.BatchID], t)
+	}
 
 	bomCache := make(map[int64][]model.BOMItem)
 	committed := make(map[int64]float64)
@@ -92,6 +102,9 @@ func (s *Service) commitmentsAndPlans(excludeBatchID int64) (map[int64]float64, 
 			bomCache[b.ProductID] = bom
 		}
 		consumption := batchConsumption(bom, b.PlanQty, skipByBatch[b.ID])
+		for _, t := range tempByBatch[b.ID] {
+			consumption[t.PartID] += quantizeQuantity(t.Qty)
+		}
 		plans = append(plans, openBatchPlan{batch: b, parts: consumption})
 		for partID, qty := range consumption {
 			committed[partID] += qty

@@ -393,6 +393,27 @@ func (c *Client) GetSkippedParts(batchID int64) ([]int64, error) {
 	return out, err
 }
 
+func (c *Client) ListTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	var out []model.BatchTempPart
+	err := c.do(http.MethodGet, "/api/batches/temp-parts?batch_id="+strconv.FormatInt(batchID, 10), nil, &out)
+	return out, err
+}
+
+func (c *Client) AddTempPart(in usecase.AddTempPartInput) error {
+	body := map[string]any{"batch_id": in.BatchID, "part_id": in.PartID, "qty": in.Qty}
+	if in.UseMode != nil {
+		body["use_mode"] = *in.UseMode
+		body["quantity"] = *in.Quantity
+		body["loss_rate"] = *in.LossRate
+	}
+	return c.do(http.MethodPost, "/api/batches/temp-parts", body, nil)
+}
+
+func (c *Client) RemoveTempPart(batchID, partID int64) error {
+	path := "/api/batches/temp-parts?batch_id=" + strconv.FormatInt(batchID, 10) + "&part_id=" + strconv.FormatInt(partID, 10)
+	return c.do(http.MethodDelete, path, nil, nil)
+}
+
 func (c *Client) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
 	var out model.BatchTrace
 	if err := c.do(http.MethodPost, "/api/traces", t, &out); err != nil {

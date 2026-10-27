@@ -364,6 +364,35 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 	return p, nil
 }
 
+// formatPartBatchUses 把删除零件的引用整理成一句可读的话：最多列三批，
+// 每批带用途；同一批次同一用途只出现一次。完整清单不进文案，避免撑爆对话框。
+func formatPartBatchUses(uses []model.PartBatchUse) string {
+	reasonText := map[string]string{
+		"temp":     "临时零件",
+		"skip":     "跳过零件",
+		"consumed": "完成扣料",
+	}
+	seen := make(map[string]bool, len(uses))
+	parts := make([]string, 0, 3)
+	for _, u := range uses {
+		key := u.BatchNo + "/" + u.Reason
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if len(parts) == 3 {
+			parts = append(parts, "等")
+			break
+		}
+		label := reasonText[u.Reason]
+		if label == "" {
+			label = u.Reason
+		}
+		parts = append(parts, fmt.Sprintf("%s（%s）", u.BatchNo, label))
+	}
+	return strings.Join(parts, "、")
+}
+
 func (s *Service) DeletePart(id int64, operator string) error {
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(id)
@@ -391,6 +420,17 @@ func (s *Service) DeletePart(id int64, operator string) error {
 		}
 		if len(traces) > 0 {
 			return &usecase.PartInTraceError{PartCode: old.Code, Batches: traces}
+		}
+		// 第三道：批次里的临时零件、跳过零件，以及完成扣料的冻结记录。
+		// 这三张表都有 parts 外键且不级联；不在这里拦，用户只会得到
+		// FOREIGN KEY constraint failed，不知道去哪个批次里解开。
+		uses, err := tx.BatchUsesForPart(id)
+		if err != nil {
+			return fmt.Errorf("check batch usage: %w", err)
+		}
+		if len(uses) > 0 {
+			return fmt.Errorf("零件 %s 仍被批次使用，无法删除：%s。请先在对应批次的「零件管理」中移除临时/跳过零件；完成扣料记录不能删除，如需保留历史请改为停用",
+				old.Code, formatPartBatchUses(uses))
 		}
 		if err := tx.DeletePart(id); err != nil {
 			return err
@@ -647,6 +687,47 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 			for _, pid := range skipParts {
 				skipMap[pid] = true
 			}
+			// 同一零件可能同时来自 BOM 与临时零件：先按零件汇总再查库存、扣减。
+			// 逐条扣会让两条扣减都基于同一份"扣之前"的库存，后一条把前一条的
+			// 结果覆盖掉——库存扣少了，撤销时却按两条记录回退，账实不符。
+			// 汇总口径也与投影一致（batchConsumption 本来就是按零件合并的）。
+			type need struct {
+				part    *model.Part
+				qty     float64
+				bomQty  float64
+				tempQty float64
+			}
+			needs := make(map[int64]*need)
+			var order []int64
+			partsByID := make(map[int64]*model.Part)
+			getPart := func(partID int64) (*model.Part, error) {
+				if p, ok := partsByID[partID]; ok {
+					return p, nil
+				}
+				p, err := tx.GetPartForUpdate(partID)
+				if err != nil {
+					return nil, err
+				}
+				if p != nil {
+					partsByID[partID] = p
+				}
+				return p, nil
+			}
+			addNeed := func(part *model.Part, partID int64, qty float64, fromTemp bool) {
+				n := needs[partID]
+				if n == nil {
+					n = &need{part: part}
+					needs[partID] = n
+					order = append(order, partID)
+				}
+				n.qty = quantizeQuantity(n.qty + qty)
+				if fromTemp {
+					n.tempQty = quantizeQuantity(n.tempQty + qty)
+				} else {
+					n.bomQty = quantizeQuantity(n.bomQty + qty)
+				}
+			}
+
 			// 先按 BOM 算出每个零件应扣多少，并**一次性列出全部缺料**再决定是否扣减。
 			//
 			// 原来这里是"扣到库存为 0"（actualDeduct = min(请求, 现有)），库存不够
@@ -657,66 +738,108 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 			// 现在缺料即拒绝完成（与创建批次时的缺料拦截同一语义，Fyne
 			// internal/ui/batch.go:364 也是中止而非少扣）。一次列全是因为只报第一个
 			// 会让人反复提交、反复失败；列出全部才能一次补齐。
-			type deduction struct {
-				item            model.BOMItem
-				part            *model.Part
-				requestedDeduct float64
-			}
-			var deductions []deduction
-			shortages := make([]string, 0, len(bom))
-			// 缺料时说明"库存还被哪些在产批次占着"：只报"当前 40"会让用户以为
-			// 补 40 就够，而实际缺口可能出自别的批次已经把库存预定完了。
-			// 取不到来源只是少一句解释，不改变"缺料即拒绝"这个结论。
 			for _, item := range bom {
 				if skipMap[item.PartID] {
 					continue
 				}
-				part, err := tx.GetPartForUpdate(item.PartID)
+				part, err := getPart(item.PartID)
 				if err != nil {
 					return fmt.Errorf("get part %d: %w", item.PartID, err)
 				}
 				if part == nil {
 					continue
 				}
-				requestedDeduct := quantizeQuantity(bomConsume(batch.PlanQty, item))
-				if requestedDeduct > part.StockQty {
-					line := fmt.Sprintf("%s [%s]: 需要 %.2f，当前 %.2f",
-						part.Name, part.Code, requestedDeduct, quantizeQuantity(part.StockQty))
-					if hs := others[item.PartID]; len(hs) > 0 {
-						line += "；另有在产批次占用 " + holderSummary(hs)
-					}
-					shortages = append(shortages, line)
+				addNeed(part, item.PartID, quantizeQuantity(bomConsume(batch.PlanQty, item)), false)
+			}
+
+			// 临时零件与本批 BOM 一起扣：投影已把它们算进占用，这里口径一致。
+			tempParts, err := tx.GetTempParts(id)
+			if err != nil {
+				return fmt.Errorf("get temp parts: %w", err)
+			}
+			for _, tp := range tempParts {
+				qty := quantizeQuantity(tp.Qty)
+				if qty <= 0 {
 					continue
 				}
-				deductions = append(deductions, deduction{item, part, requestedDeduct})
+				part, err := getPart(tp.PartID)
+				if err != nil {
+					return fmt.Errorf("get part %d: %w", tp.PartID, err)
+				}
+				if part == nil {
+					continue
+				}
+				addNeed(part, tp.PartID, qty, true)
+			}
+
+			shortages := make([]string, 0, len(needs))
+			// 缺料时说明"库存还被哪些在产批次占着"：只报"当前 40"会让用户以为
+			// 补 40 就够，而实际缺口可能出自别的批次已经把库存预定完了。
+			// 取不到来源只是少一句解释，不改变"缺料即拒绝"这个结论。
+			for _, partID := range order {
+				n := needs[partID]
+				if n.qty <= 0 || n.qty <= quantizeQuantity(n.part.StockQty) {
+					continue
+				}
+				var line string
+				switch {
+				case n.bomQty > 0 && n.tempQty > 0:
+					line = fmt.Sprintf("%s [%s]: BOM %.2f + 临时 %.2f，合计需要 %.2f，当前 %.2f",
+						n.part.Name, n.part.Code, n.bomQty, n.tempQty, n.qty, quantizeQuantity(n.part.StockQty))
+				case n.tempQty > 0:
+					line = fmt.Sprintf("%s [%s]: 临时需要 %.2f，当前 %.2f",
+						n.part.Name, n.part.Code, n.qty, quantizeQuantity(n.part.StockQty))
+				default:
+					line = fmt.Sprintf("%s [%s]: 需要 %.2f，当前 %.2f",
+						n.part.Name, n.part.Code, n.qty, quantizeQuantity(n.part.StockQty))
+				}
+				if hs := others[partID]; len(hs) > 0 {
+					line += "；另有在产批次占用 " + holderSummary(hs)
+				}
+				shortages = append(shortages, line)
 			}
 			if len(shortages) > 0 {
-				return fmt.Errorf("以下零件库存不足，无法完成生产：\n%s\n请先入库补足，或调整 BOM 用量",
+				return fmt.Errorf("以下零件库存不足，无法完成生产：\n%s\n请先入库补足，或调整用量/临时零件",
 					strings.Join(shortages, "\n"))
 			}
 
-			for _, d := range deductions {
-				newStock := quantizeQuantity(d.part.StockQty - d.requestedDeduct)
+			for _, partID := range order {
+				n := needs[partID]
+				if n.qty <= 0 {
+					continue
+				}
+				newStock := quantizeQuantity(n.part.StockQty - n.qty)
 				if newStock < 0 {
 					newStock = 0
 				}
-				if err := tx.UpdatePartStock(d.item.PartID, newStock); err != nil {
-					return fmt.Errorf("update stock for part %d: %w", d.item.PartID, err)
+				if err := tx.UpdatePartStock(partID, newStock); err != nil {
+					return fmt.Errorf("update stock for part %d: %w", partID, err)
 				}
+				// 一个零件一条消耗记录（BOM+临时已合并），撤销按此回退。
 				if err := tx.CreateBatchConsumption(&model.BatchConsumption{
 					BatchID:     id,
-					PartID:      d.item.PartID,
-					ConsumedQty: d.requestedDeduct,
+					PartID:      partID,
+					ConsumedQty: n.qty,
 				}); err != nil {
-					return fmt.Errorf("record consumption for part %d: %w", d.item.PartID, err)
+					return fmt.Errorf("record consumption for part %d: %w", partID, err)
 				}
-				if err := s.writeAuditTx(tx, auditEntry{"parts", d.item.PartID, "STOCK_DEDUCT", d.part, map[string]any{
-					"old_stock":        quantizeQuantity(d.part.StockQty),
-					"requested_deduct": d.requestedDeduct,
-					"deduct":           d.requestedDeduct,
+				detail := map[string]any{
+					"old_stock":        quantizeQuantity(n.part.StockQty),
+					"requested_deduct": n.qty,
+					"deduct":           n.qty,
 					"new_stock":        newStock,
 					"batch_id":         id,
-				}, operator}); err != nil {
+					"source":           "bom",
+				}
+				switch {
+				case n.bomQty > 0 && n.tempQty > 0:
+					detail["source"] = "bom+temp"
+					detail["bom_qty"] = n.bomQty
+					detail["temp_qty"] = n.tempQty
+				case n.tempQty > 0:
+					detail["source"] = "temp"
+				}
+				if err := s.writeAuditTx(tx, auditEntry{"parts", partID, "STOCK_DEDUCT", n.part, detail, operator}); err != nil {
 					return err
 				}
 			}
@@ -833,6 +956,112 @@ func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
 
 func (s *Service) GetSkippedParts(batchID int64) ([]int64, error) {
 	return s.repo.GetSkippedParts(batchID)
+}
+
+func (s *Service) ListTempParts(batchID int64) ([]model.BatchTempPart, error) {
+	return s.repo.GetTempParts(batchID)
+}
+
+// AddTempPart 给批次添加（或改数量）一个临时零件。
+//
+// 库存检测与投影同一口径：stock − Σ(全部在产批次的 BOM+临时占用) − 新数量
+// 为负就拒绝，并点名还占着库存的批次——这正是"两个批次合起来吃穿库存、
+// 单看每批都够"要拦的场景。本批同零件已有的临时数量不算占用：
+// 这次调用就是来改它的。检测在事务外取数（SQLite 单连接，事务内再查会
+// 自锁），完成生产时事务内还会按最终库存再拒一次，所以这里的检测是
+// "把不合法的填单挡在门口"，不是并发意义上的安全边界。
+func (s *Service) AddTempPart(in usecase.AddTempPartInput) error {
+	batchID, partID, qty := in.BatchID, in.PartID, in.Qty
+	if err := validatePositiveQuantity("临时零件数量", qty); err != nil {
+		return err
+	}
+	// 推导三件套要么都给要么都不给：半套多半是调用方写错了表单。
+	derivation := in.UseMode != nil || in.Quantity != nil || in.LossRate != nil
+	if derivation && (in.UseMode == nil || in.Quantity == nil || in.LossRate == nil) {
+		return fmt.Errorf("使用方式、单位用量与损耗率必须同时提供")
+	}
+	if derivation {
+		if *in.UseMode != 0 && *in.UseMode != 1 {
+			return fmt.Errorf("临时零件使用方式不合法")
+		}
+		if err := validatePositiveQuantity("临时零件单位用量", *in.Quantity); err != nil {
+			return err
+		}
+		lr := *in.LossRate
+		if math.IsNaN(lr) || math.IsInf(lr, 0) || lr < 0 || lr > maxLossRate || !representableQuantity(lr) {
+			return fmt.Errorf("损耗率必须在0到%.0f之间", maxLossRate)
+		}
+	}
+	committed, holders, _, err := s.commitmentsAndPlans(0)
+	if err != nil {
+		return err
+	}
+	return s.repo.WithTx(func(tx repository.TxOps) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改临时零件")
+		}
+		part, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
+		oldQty := 0.0
+		olds, err := tx.GetTempParts(batchID)
+		if err != nil {
+			return fmt.Errorf("get temp parts: %w", err)
+		}
+		for _, o := range olds {
+			if o.PartID == partID {
+				oldQty = quantizeQuantity(o.Qty)
+			}
+		}
+		need := quantizeQuantity(qty)
+		after := quantizeQuantity(part.StockQty - committed[partID] + oldQty - need)
+		if after < 0 {
+			msg := fmt.Sprintf("%s [%s] 临时需要 %.2f，全部在产批次完成后将缺 %.2f",
+				part.Name, part.Code, need, -after)
+			if hs := holders[partID]; len(hs) > 0 {
+				msg += "；另有在产批次占用 " + holderSummary(hs)
+			}
+			return fmt.Errorf("%s。请先入库补足或调小数量", msg)
+		}
+		tp := &model.BatchTempPart{BatchID: batchID, PartID: partID, Qty: need}
+		if derivation {
+			tp.UseMode, tp.Quantity, tp.LossRate = in.UseMode, in.Quantity, in.LossRate
+		}
+		if err := tx.AddTempPart(tp); err != nil {
+			return fmt.Errorf("add temp part: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Service) RemoveTempPart(batchID, partID int64) error {
+	return s.repo.WithTx(func(tx repository.TxOps) error {
+		batch, err := tx.GetBatchForUpdate(batchID)
+		if err != nil {
+			return fmt.Errorf("get batch: %w", err)
+		}
+		if batch == nil {
+			return fmt.Errorf("batch not found")
+		}
+		if batch.Status == 2 || batch.Status == 4 {
+			return fmt.Errorf("已完成或已撤销的批次不能修改临时零件")
+		}
+		if err := tx.RemoveTempPart(batchID, partID); err != nil {
+			return fmt.Errorf("remove temp part: %w", err)
+		}
+		return nil
+	})
 }
 
 // ---- 统计 ----

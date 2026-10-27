@@ -49,6 +49,13 @@ type PartTraceRef struct {
 	Records int    `db:"records" json:"records"`
 }
 
+// PartBatchUse 是删除零件时的一条"仍被使用"引用：哪个批次、哪一类用途。
+// Reason 取 temp（临时零件）/ skip（跳过零件）/ consumed（完成扣料）。
+type PartBatchUse struct {
+	BatchNo string `db:"batch_no" json:"batch_no"`
+	Reason  string `db:"reason" json:"reason"`
+}
+
 type BOMItem struct {
 	ID          int64     `db:"id" json:"id"`
 	ProductID   int64     `db:"product_id" json:"product_id"`
@@ -94,6 +101,25 @@ type BatchConsumption struct {
 	PartID      int64     `db:"part_id" json:"part_id"`
 	ConsumedQty float64   `db:"consumed_qty" json:"consumed_qty"`
 	CreatedAt   time.Time `db:"created_at" json:"created_at"`
+}
+
+// BatchTempPart 是批次上的临时零件：不在产品 BOM 里、但这一批实际要用料。
+// Qty 是**本批总量**（不是每台用量）：临时 addition 是一次性的，套用
+// use_mode/损耗率只会让填写的人猜不透口径。完成生产时按 Qty 整笔扣减，
+// 与 BOM 零件走同一套缺料拒绝与撤销回退。
+type BatchTempPart struct {
+	BatchID   int64     `db:"batch_id" json:"batch_id"`
+	PartID    int64     `db:"part_id" json:"part_id"`
+	Qty       float64   `db:"qty" json:"qty"`
+	Code      string    `db:"code" json:"code"`
+	Name      string    `db:"name" json:"name"`
+	Unit      string    `db:"unit" json:"unit"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	// 推导依据（可空）：表单按 BOM 行给出使用方式/单位用量/损耗率并自动算
+	// 总量时记录下来，手填总量时为 NULL。扣减永远以 Qty 为准。
+	UseMode  *int     `db:"use_mode" json:"use_mode,omitempty"`
+	Quantity *float64 `db:"quantity" json:"quantity,omitempty"`
+	LossRate *float64 `db:"loss_rate" json:"loss_rate,omitempty"`
 }
 
 type BatchTrace struct {

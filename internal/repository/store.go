@@ -47,6 +47,8 @@ type TxOps interface {
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)
 	// TracesForPart 按批次汇总该零件的生产投料记录，用于删除前的拒绝提示。
 	TracesForPart(partID int64) ([]model.PartTraceRef, error)
+	// BatchUsesForPart 列出临时零件/跳过零件/完成扣料对它的引用，用于删除守卫。
+	BatchUsesForPart(partID int64) ([]model.PartBatchUse, error)
 
 	GetBatchForUpdate(id int64) (*model.ProductBatch, error)
 	CreateBatch(b *model.ProductBatch) (int64, error)
@@ -61,6 +63,10 @@ type TxOps interface {
 	GetSkippedParts(batchID int64) ([]int64, error)
 	AddSkipPart(batchID, partID int64) error
 	RemoveSkipPart(batchID, partID int64) error
+	GetTempParts(batchID int64) ([]model.BatchTempPart, error)
+	GetAllTempParts() ([]model.BatchTempPart, error)
+	AddTempPart(tp *model.BatchTempPart) error
+	RemoveTempPart(batchID, partID int64) error
 }
 
 // Store is the persistence surface used by the application service.
@@ -81,6 +87,8 @@ type Store interface {
 	ListBatches() ([]model.ProductBatch, error)
 	GetSkippedParts(batchID int64) ([]int64, error)
 	GetAllSkippedParts() ([]SkipPartRow, error)
+	GetTempParts(batchID int64) ([]model.BatchTempPart, error)
+	GetAllTempParts() ([]model.BatchTempPart, error)
 	CreateTrace(t *model.BatchTrace) (int64, error)
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
 	TraceByProduct(batchNo string) ([]model.BatchTrace, error)

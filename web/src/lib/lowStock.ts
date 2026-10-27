@@ -98,10 +98,12 @@ export function stockView(
   const after = projection?.after ?? p.stock_qty
   const unit = p.unit ? ` ${p.unit}` : ''
   const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  // "可用"就是全部在产批次完成后的余量：用户补货/排产看的是这个数，
+  // 而不只是"现在有多少"。
   const hint =
     committed > 0
-      ? `在产占用 ${fmt(committed)}${unit}，全部完成后 ${fmt(after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
-      : `当前库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+      ? `现有 ${fmt(p.stock_qty)}${unit}，在产占用 ${fmt(committed)}${unit}，可用 ${fmt(after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+      : `现有库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
 
   if (p.status !== undefined && p.status !== 1) {
     return { kind: 'disabled', text: '停用', tone: 'neutral', dashed: false, committed, after, hint }
@@ -139,7 +141,7 @@ export function currentStockView(
 ): StockView {
   const unit = p.unit ? ` ${p.unit}` : ''
   const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
-  const hint = `当前库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const hint = `现有库存 ${fmt(p.stock_qty)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
   const base = { committed: 0, after: p.stock_qty, hint }
   if (p.status !== undefined && p.status !== 1) {
     return { kind: 'disabled', text: '停用', tone: 'neutral', dashed: false, ...base }
@@ -165,7 +167,7 @@ export function projectedStockView(
 ): StockView | null {
   const unit = p.unit ? ` ${p.unit}` : ''
   const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
-  const hint = `在产占用 ${fmt(projection.committed)}${unit}，全部完成后 ${fmt(projection.after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
+  const hint = `现有 ${fmt(p.stock_qty)}${unit}，在产占用 ${fmt(projection.committed)}${unit}，可用 ${fmt(projection.after)}${unit}（预警线 ${fmt(p.warn_qty)}${unit}）`
   const base = { committed: projection.committed, after: projection.after, hint }
   if (projection.after < 0) {
     return { kind: 'will_short', text: '将缺料', tone: 'danger', dashed: true, ...base }

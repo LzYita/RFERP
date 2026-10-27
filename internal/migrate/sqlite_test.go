@@ -43,8 +43,9 @@ func TestRunSQLiteBaselineOnEmptyDatabase(t *testing.T) {
 	}
 	want := map[string]bool{
 		"products": true, "parts": true, "bom_items": true, "product_batches": true,
-		"batch_skip_parts": true, "batch_trace": true, "batch_consumptions": true,
-		"users": true, "audit_log": true, "schema_migrations": true,
+		"batch_skip_parts": true, "batch_temp_parts": true, "batch_trace": true,
+		"batch_consumptions": true,
+		"users":              true, "audit_log": true, "schema_migrations": true,
 	}
 	for _, name := range tables {
 		delete(want, name)

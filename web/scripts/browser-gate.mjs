@@ -1152,6 +1152,101 @@ async function stockProjectionGate(page, product, batchNos) {
       text ? `行内容：${text.replace(/\s*\n\s*/g, ' | ')}` : '找不到该行')
   }
 
+  // 1.5) 零件管理：按键顺序 + 临时零件（库存检测、及时入列）+ 投料联动
+  const headerBar = page.locator('.ml-auto.flex').filter({ hasText: '新建批次' }).first()
+  const btnLabels = await headerBar.locator('button').allInnerTexts()
+  check('批次页按键顺序：新建批次/零件管理/记录投料/开始生产/完成生产/撤销',
+    JSON.stringify(btnLabels) === JSON.stringify(['新建批次', '零件管理', '记录投料', '开始生产', '完成生产', '撤销']),
+    `实际顺序：${btnLabels.join(' → ')}`)
+
+  await page.locator('input[aria-label="选择 B-STK-1"]').click()
+  await headerBar.locator('button', { hasText: '零件管理' }).click()
+  await sleep(700)
+  const mgr = page.locator('div[class*="fixed"]').last()
+  check('零件管理弹窗有两个分页', (await mgr.locator('[role="tab"]').count()) === 2,
+    `分页数：${await mgr.locator('[role="tab"]').count()}`)
+  check('跳过分页提示需先标记可替换', (await mgr.innerText()).includes('没有标记为「可替换」'),
+    `弹窗内容：${(await mgr.innerText()).replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  await mgr.locator('[role="tab"]', { hasText: '临时零件' }).click()
+  await sleep(300)
+  const modeOption = await mgr.getByLabel('使用方式').locator('option').first().innerText()
+  check('使用方式首项文案为「每台用 N 个」', modeOption === '每台用 N 个', `实际：${modeOption}`)
+  // 文字查询：输入编码过滤，点带库存信息的候选项
+  const combo = mgr.getByRole('combobox', { name: '临时零件' })
+  await combo.click()
+  // 已在 BOM 里、被三个在产批次占用的零件：现有 100、可用 -80。
+  // 两个数都要给，且"可用"必须扣掉在产占用，不能拿现有冒充。
+  await combo.fill('P-0001')
+  await sleep(300)
+  const bomPartOpt = mgr.locator('[role="option"]', { hasText: '测试零件' })
+  const bomOptText = (await bomPartOpt.count()) > 0 ? await bomPartOpt.first().innerText() : ''
+  check('BOM 零件同时显示现有与可用（可用扣掉在产占用）',
+    bomOptText.includes('现有 100') && bomOptText.includes('可用 -80'),
+    `候选：${bomOptText || '(无)'}`)
+
+  await combo.fill('P-TEMP-G')
+  await sleep(300)
+  // ComboInput 会把输入原文也预置成一条候选（"库中原值"），要点的是带
+  // 名称与库存的完整标签。
+  const tempOpt = mgr.locator('[role="option"]', { hasText: '临时验证零件' })
+  const tempOptText = (await tempOpt.count()) > 0 ? await tempOpt.first().innerText() : ''
+  check('零件搜索带出候选并显示现有/可用', tempOptText.includes('现有 30') && tempOptText.includes('可用 30'),
+    `候选：${tempOptText || '(无)'}`)
+  await tempOpt.first().click()
+  await sleep(300)
+  // 选中后总量按公式自动算：计划 60 × 每台 1 个 = 60，库存 30 不够 → 拒
+  const autoTotal = await mgr.getByPlaceholder('自动').inputValue()
+  check('选中零件后自动算出本批需要量 60', autoTotal === '60', `自动总量：${autoTotal}`)
+  await mgr.locator('button', { hasText: '添加' }).click()
+  await sleep(900)
+  const refusal = await mgr.innerText()
+  check('临时零件库存不足被拒并说明缺口', refusal.includes('临时需要 60.00') && refusal.includes('将缺'),
+    `弹窗内容：${refusal.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  // 手填总量 10（清掉自动值）：这次能过库存检测
+  await mgr.getByPlaceholder('自动').fill('10')
+  await mgr.locator('button', { hasText: '添加' }).click()
+  await sleep(900)
+  const mgrText = await mgr.innerText()
+  check('临时零件添加成功并列出', mgrText.includes('P-TEMP-G') && mgrText.includes('手填总量'),
+    `弹窗内容：${mgrText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+
+  // 添加后占用变了，可用库存必须立刻重算（30 − 10 = 20）。
+  await combo.click()
+  await combo.fill('P-TEMP-G')
+  await sleep(500)
+  const updatedOpt = mgr.locator('[role="option"]', { hasText: '临时验证零件' })
+  const updatedText = (await updatedOpt.count()) > 0 ? await updatedOpt.first().innerText() : ''
+  check('添加临时零件后可用库存立即更新（30→20）', updatedText.includes('可用 20'),
+    `候选：${updatedText || '(无)'}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'parts-manager.png')
+    await page.screenshot({ path: shot })
+    ok(`零件管理截图 ${shot}`)
+  }
+  // 先关掉下拉（Esc 只关下拉，不关弹窗），再关弹窗；临时分页的 footer
+  // 是「关闭」（跳过分页才是 取消/保存）。
+  await page.keyboard.press('Escape')
+  await mgr.locator('button', { hasText: '关闭' }).click()
+  await sleep(400)
+
+  // 记录投料：临时零件作为新增的元组行出现（带「临时」标记与预填数量）
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(800)
+  const traceModal = page.locator('div[class*="fixed"]').last()
+  const traceText = await traceModal.innerText()
+  check('记录投料出现临时零件行', traceText.includes('P-TEMP-G') && traceText.includes('临时'),
+    `弹窗内容：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 300)}`)
+  const tempQty = await traceModal.locator('tr', { hasText: 'P-TEMP-G' }).locator('input').first().inputValue()
+  check('记录投料的临时行预填了本批需要量 10', tempQty === '10',
+    `临时行数量输入值：${tempQty}`)
+  await traceModal.locator('button', { hasText: '取消' }).click()
+  await sleep(400)
+  // 恢复原状：后续既有关卡假设"还没选批次"。选择不撤销，第 3 步再点一次
+  // 复选框会把它取消掉，完成生产就点不动了。
+  await page.locator('input[aria-label="选择 B-STK-1"]').click()
+  await sleep(300)
+
   // 2) 建批预览：把"还没创建的这批"并入投影
   await page.locator('button', { hasText: '新建批次' }).click()
   await sleep(700)
@@ -1213,6 +1308,25 @@ async function stockProjectionGate(page, product, batchNos) {
     `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
   check('已完成批次不再显示备料角标', !doneRow.includes('不足'), `行内容：${doneRow.replace(/\s*\n\s*/g, ' | ')}`)
 
+  // 3.5) 触发一条状态守卫提示，验证它带关闭键且能关掉（用户截图反馈）
+  await page.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  await page.locator('div[class*="fixed"]').last().locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const warnBanner = page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' })
+  check('批次警告提示出现', (await warnBanner.count()) === 1,
+    `提示数量：${await warnBanner.count()}`)
+  check('批次警告提示带关闭键', (await warnBanner.getByRole('button', { name: '关闭提示' }).count()) === 1)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'batch-warning.png')
+    await page.screenshot({ path: shot })
+    ok(`批次警告截图 ${shot}`)
+  }
+  await warnBanner.getByRole('button', { name: '关闭提示' }).click()
+  await sleep(300)
+  check('关闭后批次警告提示消失',
+    (await page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' }).count()) === 0)
+
   // 4) 完成第二批：库存只剩 40，被拒；文案要点名仍在产的 B-STK-3
   await page.locator('input[aria-label="选择 B-STK-2"]').click()
   await page.locator('button', { hasText: '完成生产' }).click()
@@ -1242,6 +1356,22 @@ async function stockProjectionGate(page, product, batchNos) {
   const borderStyle = await dashedBadge.evaluate((el) => getComputedStyle(el).borderStyle).catch(() => '')
   check('虚线徽章真的画成虚线', borderStyle.includes('dashed'), `border-style=${borderStyle}`)
 
+  // 临时零件随完成生产扣减：B-STK-1 完成时 P-TEMP-G 30 − 10 = 20
+  await page.getByPlaceholder('全部').fill('P-TEMP-G')
+  await sleep(700)
+  const tempRow = page.locator('tbody tr', { hasText: 'P-TEMP-G' }).first()
+  const tempText = (await tempRow.count()) > 0 ? await tempRow.innerText() : ''
+  check('临时零件随完成生产扣减库存（30→20）', tempText.includes('20 个'),
+    `行内容：${tempText.replace(/\s*\n\s*/g, ' | ')}`)
+  const tempBadge = tempRow.locator('[data-badge-variant]').first()
+  const tempBadgeText = (await tempBadge.count()) > 0 ? await tempBadge.innerText() : ''
+  const tempBadgeVariant = (await tempBadge.count()) > 0 ? await tempBadge.getAttribute('data-badge-variant') : ''
+  check('临时零件扣减后状态实时变为低库存（实心）',
+    tempBadgeText === '低库存' && tempBadgeVariant === 'solid',
+    `徽章：${tempBadgeText} / ${tempBadgeVariant}`)
+  await page.getByPlaceholder('全部').fill('')
+  await sleep(500)
+
   // 6) 工作台：四宫格顺序与两类预警各说各的
   await page.click('text=工作台')
   await sleep(1500)
@@ -1256,6 +1386,11 @@ async function stockProjectionGate(page, product, batchNos) {
   const currentText = await currentPanel.innerText()
   check('现状预警只报现在时（不出现"将缺料"）', !currentText.includes('将缺料'),
     `面板内容：${currentText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  // 临时零件扣减后 20 < 预警线 25：状态应立刻出现在现状预警里。
+  const tempCurrentRow = currentPanel.locator('tbody tr', { hasText: 'P-TEMP-G' })
+  const tempCurrentText = (await tempCurrentRow.count()) > 0 ? await tempCurrentRow.first().innerText() : ''
+  check('临时零件扣减后进入现状预警且显示低库存', tempCurrentText.includes('低库存'),
+    `行内容：${tempCurrentText.replace(/\s*\n\s*/g, ' | ') || '(未出现)'}`)
 
   const future = page.locator('[data-panel="future-alerts"]')
   const futureText = await future.innerText()
@@ -1354,6 +1489,9 @@ try {
   // BOM 树状屏：一个产品挂三种分类，其中一条零件故意不填分类。
   // 与零件同理，必须在浏览器登录**之前**造好（单用户单会话）。
   await seedPart(auth, 'P-9002', '未分类验证件', '')
+  // 临时零件场景用：不在任何 BOM 里，库存 30。
+  // warn 25 让「扣减后状态变化」可验证：完成后 20 < 25 → 低库存。
+  await seedPart(auth, 'P-TEMP-G', '临时验证零件', '其他', { stock_qty: 30, warn_qty: 25 })
   const seededAll = await api('/api/parts', { headers: auth })
   const allPartRows = Array.isArray(seededAll.body) ? seededAll.body : seededAll.body?.items
   const partByCode = (code) => (Array.isArray(allPartRows) ? allPartRows.find((p) => p.code === code) : undefined)
@@ -1470,7 +1608,7 @@ try {
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()
 } catch (e) {
-  bad('流程中断', e.message.split('\n')[0])
+  bad('流程中断', e.message.split('\n').slice(0, 6).join(' | '))
   if (browser) {
     const pages = browser.contexts().flatMap((c) => c.pages())
     for (const p of pages) await p.screenshot({ path: path.join(WEB, 'gate-failure.png') }).catch(() => {})

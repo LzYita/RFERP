@@ -37,6 +37,8 @@ var permissions = []UseCasePermission{
 	// Inventory
 	{Name: "Inventory.StockIn", Module: auth.ModuleParts, Access: auth.AccessWrite},
 	{Name: "Inventory.AdjustStock", Module: auth.ModuleParts, Access: auth.AccessWrite},
+	// 逐批次盘点：与总量盘点同为仓管本职，写权限同档。
+	{Name: "Inventory.AdjustInbound", Module: auth.ModuleParts, Access: auth.AccessWrite},
 	// 入库批次列表：能看零件列表的角色就能看它的入库台账（详情页）。
 	{Name: "Inventory.PartInbounds", Module: auth.ModuleParts, Access: auth.AccessRead},
 

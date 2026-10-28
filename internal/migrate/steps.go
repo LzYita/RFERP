@@ -45,6 +45,12 @@ var steps = []Step{
 		MySQL:   applyPartInboundsMySQL,
 		SQLite:  applyPartInboundsSQLite,
 	},
+	{
+		Version: 17,
+		Name:    "part_inbound_remaining",
+		MySQL:   applyPartInboundRemainingMySQL,
+		SQLite:  applyPartInboundRemainingSQLite,
+	},
 }
 
 // nextVersion 是下一条应新增迁移的版本号。

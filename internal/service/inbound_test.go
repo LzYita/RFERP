@@ -45,6 +45,20 @@ func seedStockedPart(t *testing.T, store repository.Store, code string, stock fl
 	return id
 }
 
+// stockPart 通过「入库」给零件备货。
+//
+// v17 起库存必须来自入库批次（总量 = 批次剩余之和），直接在
+// CreatePart 里写字面库存会让账本从第一笔起就对不上。
+func stockPart(t *testing.T, svc *Service, partID int64, qty float64) {
+	t.Helper()
+	if qty <= 0 {
+		return
+	}
+	if _, err := svc.StockIn(usecase.StockInInput{PartID: partID, Qty: qty, Operator: "fixture"}); err != nil {
+		t.Fatalf("stock in part %d: %v", partID, err)
+	}
+}
+
 func partStock(t *testing.T, svc *Service, partID int64) float64 {
 	t.Helper()
 	p, err := svc.GetPart(partID)

@@ -421,10 +421,11 @@ async function seedPart(auth, code, name, type, extra = {}) {
 
 
 /**
- * 零件入库批次：新增零件不再填库存、编码可点开详情、入库自动批次号。
+ * 零件入库批次与逐批次盘点：新增零件不再填库存、编码可点开详情、
+ * 入库自动批次号、盘点逐批填写、已用完批次收进二级弹窗。
  *
  * 新模型（2026-10）：数量只能经「入库 / 盘点」变动，每笔入库自动生成
- * RK-日期-序号 的批次号并记入台账，零件详情页按倒序展示。
+ * RK-日期-序号 的批次号并记入台账；库存总量恒等于各批次剩余之和。
  * 只碰浏览器，不发 API 请求（与其它 gate 一致，避免作废浏览器会话）。
  */
 async function inboundDetailGate(page) {
@@ -455,7 +456,8 @@ async function inboundDetailGate(page) {
   const detailText = (await detail.count()) > 0 ? await detail.innerText() : ''
   check('详情展示入库批次号', /RK-\d{8}-\d{4,}/.test(detailText), detailText.slice(0, 200))
   check('详情展示批次数量 100', detailText.includes('100 个'), detailText.slice(0, 200))
-  check('详情有摘要三段', detailText.includes('现有') && detailText.includes('累计入库'), detailText.slice(0, 160))
+  check('详情摘要含现有与剩余合计', detailText.includes('现有') && detailText.includes('剩余合计'), detailText.slice(0, 160))
+  check('一级只列仍有剩余的批次', detailText.includes('仍有剩余的批次（1）'), detailText.slice(0, 160))
   if (process.env.GATE_SHOTS) {
     const shot = path.join(process.env.GATE_SHOTS, 'part-detail.png')
     await page.screenshot({ path: shot })
@@ -483,17 +485,86 @@ async function inboundDetailGate(page) {
   await sleep(200)
   check('通知可关闭', (await page.locator('[role="status"]').count()) === 0, '通知条还在')
 
-  // 4) 再开详情：两笔批次、新的在前，备注随批次记档。
+  // 4) 再开详情：两笔批次都有剩余，备注随批次记档。
   await page.getByLabel('查看 P-8001 详情').click()
   await sleep(500)
   const detail2 = page.locator('div[role="dialog"][aria-label*="零件详情"]')
   const text2 = (await detail2.count()) > 0 ? await detail2.innerText() : ''
-  const pos25 = text2.indexOf('25 个')
-  const pos100 = text2.indexOf('100 个')
-  check('详情列出两笔批次', /RK-\d{8}-\d{4,}/.test(text2) && pos25 >= 0 && pos100 >= 0, text2.slice(0, 220))
-  check('新批次排在前面', pos25 >= 0 && pos100 >= 0 && pos25 < pos100, `pos25=${pos25} pos100=${pos100}`)
+  check('详情列出两笔有剩余的批次', /RK-\d{8}-\d{4,}/.test(text2) && text2.includes('25 个') && text2.includes('100 个'),
+    text2.slice(0, 220))
   check('备注随批次展示', text2.includes('五金补货'), text2.slice(0, 220))
+  check('二级入口常驻（此时为 0 个）', text2.includes('查看已用完批次（0）'), text2.slice(0, 220))
+  check('详情页不放盘点入口', (await detail2.getByRole('button', { name: '盘点', exact: true }).count()) === 0,
+    '详情弹窗里出现了盘点按钮')
   await detail2.locator('button', { hasText: '关闭' }).click()
+  await sleep(200)
+
+  // 5) 逐批次盘点：每笔入库一行，旧批在前；改一批、提交后总量同步。
+  await page.locator('tr', { hasText: '五金验证件' }).first()
+    .getByRole('button', { name: '盘点', exact: true }).click()
+  await sleep(600)
+  const countModal = page.locator('div[role="dialog"][aria-label*="盘点 ·"]')
+  check('盘点弹窗列出逐批次输入', (await countModal.count()) > 0, '没有出现盘点弹窗')
+  const batchInputs = countModal.locator('input[aria-label^="批次 "]')
+  check('盘点弹窗按批次逐行给出输入', (await batchInputs.count()) === 2,
+    `输入框 ${await batchInputs.count()} 个`)
+  const countText = (await countModal.count()) > 0 ? await countModal.innerText() : ''
+  check('盘点弹窗显示账面与实盘合计', countText.includes('账面合计') && countText.includes('实盘合计'),
+    countText.slice(0, 180))
+  // 旧批在前：第一条是入库 100 的那批，把它的实盘改成 90（差 -10）。
+  await batchInputs.first().fill('90')
+  await sleep(200)
+  const countText2 = await countModal.innerText()
+  check('填写后差异实时显示 -10', /差异\s*-10/.test(countText2.replace(/\s+/g, ' ')),
+    countText2.replace(/\s+/g, ' ').slice(0, 200))
+  await countModal.getByRole('button', { name: '确认盘点' }).click()
+  await sleep(800)
+  const countNotice = page.locator('[role="status"]')
+  check('盘点成功通知出现', (await countNotice.count()) > 0 && /库存总量-10/.test(await countNotice.first().innerText()),
+    (await countNotice.count()) > 0 ? await countNotice.first().innerText() : '没有通知条')
+  const rowCounted = page.locator('tr', { hasText: '五金验证件' })
+  const countedText = (await rowCounted.count()) > 0 ? await rowCounted.first().innerText() : ''
+  check('盘点后列表库存 115', countedText.includes('115'), countedText.replace(/\s*\n\s*/g, ' | '))
+  await page.getByLabel('关闭提示').click()
+  await sleep(200)
+
+  // 6) 把新批盘到 0：它应当从一级详情消失，进二级弹窗。
+  await page.locator('tr', { hasText: '五金验证件' }).first()
+    .getByRole('button', { name: '盘点', exact: true }).click()
+  await sleep(600)
+  const countModal2 = page.locator('div[role="dialog"][aria-label*="盘点 ·"]')
+  const inputs2 = countModal2.locator('input[aria-label^="批次 "]')
+  // 旧批在前：第二条是那笔 25。
+  await inputs2.nth(1).fill('0')
+  await countModal2.getByRole('button', { name: '确认盘点' }).click()
+  await sleep(800)
+  await page.getByLabel('关闭提示').click()
+  await sleep(200)
+
+  await page.getByLabel('查看 P-8001 详情').click()
+  await sleep(600)
+  const detail3 = page.locator('div[role="dialog"][aria-label*="零件详情"]')
+  const text3 = (await detail3.count()) > 0 ? await detail3.innerText() : ''
+  check('一级只剩仍有剩余的批次', text3.includes('仍有剩余的批次（1）'), text3.slice(0, 220))
+  check('已用完批次在一级被隐藏', !text3.includes('25 个'), text3.slice(0, 220))
+  const exhaustedBtn = detail3.getByRole('button', { name: /查看已用完批次（1）/ })
+  check('出现二级入口', (await exhaustedBtn.count()) > 0, text3.slice(0, 220))
+  await exhaustedBtn.click()
+  await sleep(500)
+  const nested = page.locator('div[role="dialog"][aria-label*="已用完批次"]')
+  check('二级弹窗打开且盖在详情之上', (await nested.count()) > 0, '没有出现二级弹窗')
+  const nestedText = (await nested.count()) > 0 ? await nested.innerText() : ''
+  check('二级弹窗列出已用完的 25', nestedText.includes('25 个'), nestedText.slice(0, 220))
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'part-detail-exhausted.png')
+    await page.screenshot({ path: shot })
+    ok(`已用完批次截图 ${shot}`)
+  }
+  await nested.locator('button', { hasText: '返回' }).click()
+  await sleep(300)
+  check('返回只收二级弹窗', (await page.locator('div[role="dialog"][aria-label*="已用完批次"]').count()) === 0
+    && (await page.locator('div[role="dialog"][aria-label*="零件详情"]').count()) === 1, '层级关闭不正确')
+  await detail3.locator('button', { hasText: '关闭' }).click()
   await sleep(200)
 }
 

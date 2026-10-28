@@ -9,7 +9,6 @@ import {
 } from '../components/form'
 import { Btn } from '../components/ui'
 import { parts as partsApi, type Part } from '../lib/catalog'
-import { validateCounts, type CountRow } from '../lib/inboundCount'
 import { parseQuantity } from '../lib/num'
 
 /**
@@ -23,8 +22,8 @@ import { parseQuantity } from '../lib/num'
  *   - 入库：在现有数量上**加**。填 0 等于什么都没做。
  *     每笔入库自动生成批次号（RK-日期-序号）并记入 part_inbounds，
  *     零件详情页可查；备注选填、随批次记档。
- *   - 盘点：**逐批次**填实盘数量。每笔入库批次单独填，填 0 是合法的
- *     （这批确实用完了），但不能是负数；服务端按各批差额之和调整库存总量。
+ *   - 盘点：直接设为**绝对值**。填 0 是合法的（盘亏到零），但负数不行。
+ *     盘点调整不产生入库批次。
  *
  * 前置校验与 Fyne 逐字对齐：
  *   - 入库数量必须 > 0        （part.go:462）
@@ -149,139 +148,6 @@ export function StockModal({
           {fmt2(preview)} {part.unit}
         </b>
       </div>
-    </Modal>
-  )
-}
-
-/**
- * 逐批次盘点。
- *
- * 现场就是一批一批数：每个入库批次对着一张货/一箱料，填它实际还剩多少。
- * 因此不提供"总量盘点"输入框——总量由各批实盘之和得出，让用户同时填
- * 总量和明细，迟早会出现两者矛盾而界面不知道该信谁。
- *
- * 已用完（剩余 0）的批次同样列出来：现场翻出一箱旧的、账上已经用光的，
- * 正是要把它改回去的时候。不做筛选，避免用户以为"这里没有就是不能盘"。
- */
-export function BatchCountModal({
-  part,
-  rows,
-  busy,
-  err,
-  onChange,
-  onSubmit,
-  onClose,
-}: {
-  part: Part
-  rows: ReadonlyArray<CountRow>
-  busy: boolean
-  err: string
-  onChange: (next: CountRow[]) => void
-  onSubmit: () => void
-  onClose: () => void
-}) {
-  const [localErr, setLocalErr] = useState('')
-
-  const setRaw = (id: number, raw: string) =>
-    onChange(rows.map((r) => (r.inbound.id === id ? { ...r, raw } : r)))
-
-  const bookTotal = rows.reduce((acc, r) => acc + r.inbound.remaining, 0)
-  const countedTotal = rows.reduce((acc, r) => {
-    const n = parseQuantity(r.raw, '实盘数量')
-    return acc + (n.ok ? n.value : r.inbound.remaining)
-  }, 0)
-  const diff = Math.round((countedTotal - bookTotal) * 100) / 100
-
-  const submit = () => {
-    const v = validateCounts(rows)
-    if (!v.ok) {
-      setLocalErr(v.msg)
-      return
-    }
-    setLocalErr('')
-    onSubmit()
-  }
-
-  return (
-    <Modal
-      title={`盘点 · ${part.code}`}
-      onClose={onClose}
-      width={620}
-      footer={
-        <>
-          <Btn onClick={onClose}>取消</Btn>
-          <Btn primary disabled={busy || rows.length === 0} onClick={submit}>
-            {busy ? '提交中…' : '确认盘点'}
-          </Btn>
-        </>
-      }
-    >
-      <FormError text={err || localErr} />
-
-      <div className="mb-2 flex items-center justify-between rounded-[6px] bg-[var(--color-canvas)] px-3 py-2 text-[11.5px]">
-        <span className="text-[var(--color-fg-muted)]">
-          {part.name} · 现有 <b>{fmt2(part.stock_qty)}</b> {part.unit}
-        </span>
-        <span className="tabular-nums">
-          账面合计 <b>{fmt2(bookTotal)}</b> · 实盘合计 <b>{fmt2(countedTotal)}</b> · 差异{' '}
-          <b style={{ color: diff === 0 ? undefined : 'var(--color-danger)' }}>
-            {diff > 0 ? '+' : ''}
-            {fmt2(diff)}
-          </b>
-        </span>
-      </div>
-
-      {rows.length === 0 ? (
-        <div className="py-6 text-center text-[12px] text-[var(--color-fg-subtle)]">
-          该零件还没有入库批次，无法盘点。请先「入库」建立批次。
-        </div>
-      ) : (
-        <div className="max-h-[320px] overflow-auto rounded-[6px] border border-[var(--color-border-subtle)]">
-          <table className="data-table is-compact">
-            <colgroup>
-              <col style={{ width: 150 }} />
-              <col className="num" style={{ width: 84 }} />
-              <col className="num" style={{ width: 96 }} />
-              <col style={{ width: 112 }} />
-              <col />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>批次号</th>
-                <th className="num">入库量</th>
-                <th className="num">账面剩余</th>
-                <th>实盘数量</th>
-                <th>备注</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.inbound.id}>
-                  <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                    {r.inbound.batch_no}
-                  </td>
-                  <td className="num">{fmt2(r.inbound.qty)}</td>
-                  <td className="num" style={{ color: 'var(--color-fg-muted)' }}>
-                    {fmt2(r.inbound.remaining)}
-                  </td>
-                  <td>
-                    <NumberInput
-                      value={r.raw}
-                      onChange={(v) => setRaw(r.inbound.id, v)}
-                      ariaLabel={`批次 ${r.inbound.batch_no} 的实盘数量`}
-                    />
-                  </td>
-                  <td style={{ color: 'var(--color-fg-muted)' }}>{r.inbound.note || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <p className="mt-2 text-[11px] text-[var(--color-fg-muted)]">
-        只提交改动过的批次；差异按各批之和调整库存总量。已用完的批次也可以填回数量。
-      </p>
     </Modal>
   )
 }

@@ -31,15 +31,15 @@ func TestDeletePartRefusesBatchReferences(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		tempPart, err = tx.CreatePart(&model.Part{Code: "M-TMP", Name: "临时引用件", Unit: "个", Status: 1})
+		tempPart, err = tx.CreatePart(&model.Part{Code: "M-TMP", Name: "临时引用件", Unit: "个", StockQty: 100, Status: 1})
 		if err != nil {
 			return err
 		}
-		skipPart, err = tx.CreatePart(&model.Part{Code: "M-SKP", Name: "跳过引用件", Unit: "个", Status: 1})
+		skipPart, err = tx.CreatePart(&model.Part{Code: "M-SKP", Name: "跳过引用件", Unit: "个", StockQty: 100, Status: 1})
 		if err != nil {
 			return err
 		}
-		consumedPart, err = tx.CreatePart(&model.Part{Code: "M-CON", Name: "扣料引用件", Unit: "个", Status: 1})
+		consumedPart, err = tx.CreatePart(&model.Part{Code: "M-CON", Name: "扣料引用件", Unit: "个", StockQty: 100, Status: 1})
 		if err != nil {
 			return err
 		}
@@ -69,11 +69,6 @@ func TestDeletePartRefusesBatchReferences(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-
-	// 库存经入库建立：完成扣料要按批次扣，删零件后批次随零件级联消失。
-	stockPart(t, svc, tempPart, 100)
-	stockPart(t, svc, skipPart, 100)
-	stockPart(t, svc, consumedPart, 100)
 
 	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: consumedBatch, Status: 2, Operator: "测试"}); err != nil {
 		t.Fatalf("complete consumed batch: %v", err)

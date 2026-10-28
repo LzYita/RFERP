@@ -68,8 +68,6 @@ type Inventory interface {
 	// StockIn 入库并自动生成入库批次号（返回值即批次号，界面用来回显）。
 	StockIn(in StockInInput) (string, error)
 	AdjustStock(in AdjustStockInput) error
-	// AdjustInbounds 逐批次盘点：按批次实盘数量改写剩余，并同步库存总量。
-	AdjustInbounds(in AdjustInboundsInput) error
 	// ListPartInbounds 零件的入库批次列表（零件详情页）。
 	ListPartInbounds(partID int64) ([]model.PartInbound, error)
 }

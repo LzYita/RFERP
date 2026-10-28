@@ -46,14 +46,14 @@ func seedTempFixture(t *testing.T, stock, otherStock float64) *tempFixture {
 			return err
 		}
 		partID, err := tx.CreatePart(&model.Part{
-			Code: "M-TEMP", Name: "临时验证零件", Unit: "个", WarnQty: 0, Status: 1,
+			Code: "M-TEMP", Name: "临时验证零件", Unit: "个", StockQty: stock, WarnQty: 0, Status: 1,
 		})
 		if err != nil {
 			return err
 		}
 		f.partID = partID
 		otherID, err := tx.CreatePart(&model.Part{
-			Code: "M-OTHER", Name: "对照零件", Unit: "个", WarnQty: 0, Status: 1,
+			Code: "M-OTHER", Name: "对照零件", Unit: "个", StockQty: otherStock, WarnQty: 0, Status: 1,
 		})
 		if err != nil {
 			return err
@@ -71,9 +71,6 @@ func seedTempFixture(t *testing.T, stock, otherStock float64) *tempFixture {
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// 库存经入库建立：每个零件一笔批次，扣料/撤销才有批次可扣可还。
-	stockPart(t, svc, f.partID, stock)
-	stockPart(t, svc, f.otherID, otherStock)
 	return f
 }
 
@@ -332,7 +329,7 @@ func TestTempPartSamePartAsBOMDeductsOnce(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		partID, err = tx.CreatePart(&model.Part{Code: "M-T3", Name: "同件零件", Unit: "个", WarnQty: 0, Status: 1})
+		partID, err = tx.CreatePart(&model.Part{Code: "M-T3", Name: "同件零件", Unit: "个", StockQty: 20, WarnQty: 0, Status: 1})
 		if err != nil {
 			return err
 		}
@@ -345,9 +342,6 @@ func TestTempPartSamePartAsBOMDeductsOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	// 库存经入库建立（v17 起扣料要按批次扣）。
-	stockPart(t, svc, partID, 20)
 
 	// 再加临时 5：合计 15 ≤ 库存 20，允许。
 	if err := svc.AddTempPart(usecase.AddTempPartInput{BatchID: batchID, PartID: partID, Qty: 5}); err != nil {

@@ -407,7 +407,6 @@ export function NumberInput({
   step,
   autoFocus,
   disabled,
-  ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
@@ -415,8 +414,6 @@ export function NumberInput({
   step?: string
   autoFocus?: boolean
   disabled?: boolean
-  /** 表格里成排的数字输入没有可见 label，用可访问名区分（逐批次盘点）。 */
-  ariaLabel?: string
 }) {
   return (
     <input
@@ -427,7 +424,6 @@ export function NumberInput({
       value={value}
       placeholder={placeholder}
       disabled={disabled}
-      aria-label={ariaLabel}
       onChange={(e) => onChange(e.target.value)}
     />
   )
@@ -449,23 +445,12 @@ export function Modal({
   footer,
   width = 440,
   dismissible = true,
-  zIndex = 50,
-  topMost = true,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   width?: number
-  /**
-   * 层级。二级弹窗（在弹窗里再开一个）要盖住父弹窗，传更大的值。
-   */
-  zIndex?: number
-  /**
-   * 是否响应 Esc 与遮罩点击。二级弹窗打开时父弹窗要传 false，
-   * 否则一次 Esc 会把两层一起关掉——用户以为自己只取消了一层。
-   */
-  topMost?: boolean
   /**
    * false 时隐藏右上角的 ✕、Esc 与点遮罩都不再关闭。
    *
@@ -475,13 +460,13 @@ export function Modal({
   dismissible?: boolean
 }) {
   useEffect(() => {
-    if (!dismissible || !topMost) return
+    if (!dismissible) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, dismissible, topMost])
+  }, [onClose, dismissible])
 
   useEffect(() => {
     const prev = document.body.style.overflow
@@ -493,13 +478,12 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center bg-[rgba(15,23,42,0.42)] p-4"
-      style={{ zIndex }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(15,23,42,0.42)] p-4"
       role="dialog"
       aria-modal="true"
       aria-label={title}
       onMouseDown={(e) => {
-        if (dismissible && topMost && e.target === e.currentTarget) onClose()
+        if (dismissible && e.target === e.currentTarget) onClose()
       }}
     >
       <div

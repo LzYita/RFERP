@@ -304,15 +304,6 @@ func (c *Client) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
 	return out, err
 }
 
-func (c *Client) AdjustInbounds(in usecase.AdjustInboundsInput) error {
-	items := make([]map[string]any, 0, len(in.Items))
-	for _, it := range in.Items {
-		items = append(items, map[string]any{"inbound_id": it.InboundID, "remaining": it.Remaining})
-	}
-	body := map[string]any{"part_id": in.PartID, "items": items}
-	return c.do(http.MethodPost, "/api/parts/adjust-inbounds", body, nil)
-}
-
 func (c *Client) AdjustStock(in usecase.AdjustStockInput) error {
 	body := map[string]any{"part_id": in.PartID, "new_qty": in.NewQty}
 	return c.do(http.MethodPost, "/api/parts/adjust-stock", body, nil)

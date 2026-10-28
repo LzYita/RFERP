@@ -22,42 +22,7 @@ var (
 	partSelectForUpdate  = regexp.QuoteMeta("SELECT * FROM parts WHERE id=? FOR UPDATE")
 	auditInsert          = regexp.QuoteMeta("INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)")
 	statusUpdate         = regexp.QuoteMeta("UPDATE product_batches SET status=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND status=?")
-	// v17：扣料/撤销/盘点都要读写入库批次剩余。sqlmock 会把空白折叠成单个空格。
-	inboundSelectForUpdate = regexp.QuoteMeta("SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at FROM part_inbounds WHERE part_id = ? ORDER BY id FOR UPDATE")
-	inboundUpdateRemain    = regexp.QuoteMeta("UPDATE part_inbounds SET remaining = ? WHERE id = ?")
-	drawInsert             = regexp.QuoteMeta("INSERT INTO part_inbound_draws (batch_id, inbound_id, qty) VALUES (?, ?, ?)")
-	drawSelectByBatch      = regexp.QuoteMeta("SELECT inbound_id, SUM(qty) AS qty FROM part_inbound_draws WHERE batch_id = ? GROUP BY inbound_id")
-	drawDeleteByBatch      = regexp.QuoteMeta("DELETE FROM part_inbound_draws WHERE batch_id = ?")
-	inboundRestore         = regexp.QuoteMeta("UPDATE part_inbounds SET remaining = COALESCE(remaining, 0) + ? WHERE id = ?")
-	inboundInsert          = regexp.QuoteMeta("INSERT INTO part_inbounds (part_id, qty, remaining, note) VALUES (?, ?, ?, ?)")
-	inboundSetBatchNo      = regexp.QuoteMeta("UPDATE part_inbounds SET batch_no = ? WHERE id = ?")
 )
-
-// inboundRows 造一笔入库批次行；remaining 默认等于 qty。
-func inboundRows(now time.Time, id int64, qty, remaining float64) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{"id", "part_id", "batch_no", "qty", "remaining", "note", "created_at"}).
-		AddRow(id, 20, "RK-20260101-0001", qty, remaining, nil, now)
-}
-
-// expectDrawFIFO 登记"完成生产时按先进先出扣批次"的三条 SQL。
-func expectDrawFIFO(t *testing.T, mock sqlmock.Sqlmock, now time.Time, inboundID int64, qty, remaining, take float64) {
-	t.Helper()
-	mock.ExpectQuery(inboundSelectForUpdate).WithArgs(int64(20)).
-		WillReturnRows(inboundRows(now, inboundID, qty, remaining))
-	mock.ExpectExec(inboundUpdateRemain).WithArgs(remaining-take, inboundID).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(drawInsert).WithArgs(int64(1), inboundID, take).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-}
-
-// expectRestoreDraws 登记"撤销生产批次时按原批次还回"的三条 SQL。
-func expectRestoreDraws(t *testing.T, mock sqlmock.Sqlmock, inboundID int64, qty float64) {
-	t.Helper()
-	rows := sqlmock.NewRows([]string{"inbound_id", "qty"}).AddRow(inboundID, qty)
-	mock.ExpectQuery(drawSelectByBatch).WithArgs(int64(1)).WillReturnRows(rows)
-	mock.ExpectExec(inboundRestore).WithArgs(qty, inboundID).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(drawDeleteByBatch).WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
-}
 
 func newMockService(t *testing.T) (*Service, sqlmock.Sqlmock) {
 	t.Helper()
@@ -206,8 +171,6 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(12), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
-	// 批次剩余同步扣：入库 20，扣 8，剩余 12。
-	expectDrawFIFO(t, mock, now, 5, 20, 20, 8)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(8)).WillReturnResult(sqlmock.NewResult(1, 1))
 	// 实扣数与请求数现在必然相等（缺料即中止），仍记两列是为了让审计读者
@@ -298,7 +261,6 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.98), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
-	expectDrawFIFO(t, mock, now, 5, 1, 1, 0.02)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(0.02)).WillReturnResult(sqlmock.NewResult(1, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_DEDUCT", map[string]any{
@@ -352,7 +314,6 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(92), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
-	expectDrawFIFO(t, mock, now, 5, 100, 100, 8)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO batch_consumptions (batch_id,part_id,consumed_qty) VALUES (?,?,?)")).
 		WithArgs(int64(1), int64(20), float64(8)).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(auditInsert).WillReturnError(errors.New("stock audit failed"))
@@ -380,7 +341,6 @@ func TestRevokeBatchReversesRecordedActualConsumptionAndAuditsStatusFour(t *test
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(4), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
-	expectRestoreDraws(t, mock, 5, 3)
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(1),
 		"new_stock": float64(4),
@@ -421,7 +381,6 @@ func TestRevokeBatchQuantizesRestoredStockBeforePersistence(t *testing.T) {
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.3), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
-	expectRestoreDraws(t, mock, 5, 0.2)
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(0.1),
 		"new_stock": float64(0.3),
@@ -508,9 +467,9 @@ func TestStockInUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(5), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	// 入库批次：先插行（batch_no 置 NULL）再按 id 回填，随后审计里带上批次号。
-	mock.ExpectExec(inboundInsert).
-		WithArgs(int64(20), float64(2), float64(2), nil).WillReturnResult(sqlmock.NewResult(77, 1))
-	mock.ExpectExec(inboundSetBatchNo).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO part_inbounds (part_id, qty, note) VALUES (?, ?, ?)")).
+		WithArgs(int64(20), float64(2), nil).WillReturnResult(sqlmock.NewResult(77, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE part_inbounds SET batch_no = ? WHERE id = ?")).
 		WithArgs(wantBatchNo, int64(77)).WillReturnResult(sqlmock.NewResult(1, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_IN", map[string]any{
 		"old_stock": float64(3),
@@ -533,22 +492,14 @@ func TestAdjustStockUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 3, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
 
-	wantNo := fmt.Sprintf("RK-%s-0088", time.Now().Format("20060102"))
-
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
-	// 差额为正：补一笔「盘点盈余」批次，总量与批次剩余之和保持相等。
-	mock.ExpectExec(inboundInsert).WithArgs(int64(20), float64(5), float64(5), stringPtr("盘点盈余")).
-		WillReturnResult(sqlmock.NewResult(88, 1))
-	mock.ExpectExec(inboundSetBatchNo).WithArgs(wantNo, int64(88)).
-		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(8), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": float64(3),
 		"new_stock": float64(8),
 		"diff":      float64(5),
-		"mode":      "总量盘点",
 	}, "operator")
 	mock.ExpectCommit()
 
@@ -567,18 +518,12 @@ func TestAdjustStockQuantizesAuditDiff(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0.3))
-	// 差额为负：先进先出扣批次剩余，但不记生产扣料明细（盘亏不归属任何批次）。
-	mock.ExpectQuery(inboundSelectForUpdate).WithArgs(int64(20)).
-		WillReturnRows(inboundRows(now, 5, 0.3, 0.3))
-	mock.ExpectExec(inboundUpdateRemain).WithArgs(0.2, int64(5)).
-		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(0.2, int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_ADJUST", map[string]any{
 		"old_stock": 0.3,
 		"new_stock": 0.2,
 		"diff":      -0.1,
-		"mode":      "总量盘点",
 	}, "operator")
 	mock.ExpectCommit()
 

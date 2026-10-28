@@ -5,7 +5,8 @@ import { isStockAlert, isProjectedAlert, stockView } from '../lib/lowStock'
 import { projection as projectionApi, type PartProjection } from '../lib/projection'
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
-import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
+import { StockModal, BatchStockInModal, BatchCountModal } from './stockForm'
+import { countRowsOf, validateCounts, type CountRow } from '../lib/inboundCount'
 import { PartDetailModal } from './partDetail'
 import { ConfirmDialog, Modal } from '../components/form'
 import {
@@ -161,7 +162,10 @@ export function PartsScreen() {
   // 入库 / 盘点 / 批量。三个都是 Round 3 之前完全不存在的入口 ——
   // 后端端点与权限点早就有了，只差 UI。
   const [stockFor, setStockFor] = useState<Part | null>(null)
-  const [stockMode, setStockMode] = useState<StockMode>('in')
+  // 逐批次盘点：先拉该零件的批次，再按行填实盘数量。
+  const [countFor, setCountFor] = useState<Part | null>(null)
+  const [countRows, setCountRows] = useState<CountRow[]>([])
+  const [countBusy, setCountBusy] = useState(false)
   const [batchInOpen, setBatchInOpen] = useState(false)
   const [batchDelList, setBatchDelList] = useState<Part[] | null>(null)
   // 零件详情（入库批次台账）。编码本身可点——比塞进已拥挤的操作列更顺手。
@@ -282,12 +286,49 @@ export function PartsScreen() {
     }
   }
 
-  function openStock(p: Part, mode: StockMode) {
+  function openStock(p: Part) {
     setStockFor(p)
-    setStockMode(mode)
     setFormErr('')
     // 新动作清掉上一笔的回执：通知条讲的是"刚才那一次"，不该跟下一次混在一起。
     setStockNotice('')
+  }
+
+  /** 逐批次盘点：先取批次台账，弹窗里每批一行。 */
+  async function openCount(p: Part) {
+    setFormErr('')
+    setStockNotice('')
+    setCountBusy(true)
+    try {
+      const rows = await partsApi.inbounds(p.id)
+      setCountRows(countRowsOf(rows ?? []))
+      setCountFor(p)
+    } catch (e) {
+      setFormErr(e instanceof Error ? e.message : '入库批次加载失败')
+    } finally {
+      setCountBusy(false)
+    }
+  }
+
+  async function doCount() {
+    if (!countFor) return
+    const v = validateCounts(countRows)
+    if (!v.ok) {
+      setFormErr(v.msg)
+      return
+    }
+    setCountBusy(true)
+    setFormErr('')
+    try {
+      await partsApi.adjustInbounds(countFor.id, v.items)
+      const sign = v.delta > 0 ? '+' : ''
+      setStockNotice(`已盘点 ${v.items.length} 个批次，库存总量${sign}${v.delta} ${countFor.unit}`)
+      setCountFor(null)
+      await reload()
+    } catch (e) {
+      setFormErr(e instanceof Error ? e.message : '盘点失败')
+    } finally {
+      setCountBusy(false)
+    }
   }
 
   function openDetail(p: Part) {
@@ -299,12 +340,8 @@ export function PartsScreen() {
     setBusy(true)
     setFormErr('')
     try {
-      if (stockMode === 'in') {
-        const res = await partsApi.stockIn(stockFor.id, qty, note)
-        setStockNotice(`已入库 ${qty} ${stockFor.unit}，批次号 ${res.batch_no}`)
-      } else {
-        await partsApi.adjustStock(stockFor.id, qty)
-      }
+      const res = await partsApi.stockIn(stockFor.id, qty, note)
+      setStockNotice(`已入库 ${qty} ${stockFor.unit}，批次号 ${res.batch_no}`)
       setStockFor(null)
       await reload()
     } catch (e) {
@@ -684,13 +721,14 @@ export function PartsScreen() {
                               编辑表单里库存是只读的。 */}
                           <button
                             className="mr-2 text-[var(--color-primary)]"
-                            onClick={() => openStock(p, 'in')}
+                            onClick={() => openStock(p)}
                           >
                             入库
                           </button>
+                          {/* 盘点逐批次进行：每笔入库一条，填实盘数量。 */}
                           <button
                             className="mr-2 text-[var(--color-primary)]"
-                            onClick={() => openStock(p, 'adjust')}
+                            onClick={() => openCount(p)}
                           >
                             盘点
                           </button>
@@ -750,7 +788,7 @@ export function PartsScreen() {
       {stockFor ? (
         <StockModal
           part={stockFor}
-          mode={stockMode}
+          mode="in"
           busy={busy}
           err={formErr}
           onSubmit={doStock}
@@ -758,8 +796,31 @@ export function PartsScreen() {
         />
       ) : null}
 
+      {countFor ? (
+        <BatchCountModal
+          key={countFor.id}
+          part={countFor}
+          rows={countRows}
+          busy={countBusy}
+          err={formErr}
+          onChange={setCountRows}
+          onSubmit={doCount}
+          onClose={() => setCountFor(null)}
+        />
+      ) : null}
+
       {detailFor ? (
-        <PartDetailModal key={detailFor.id} part={detailFor} onClose={() => setDetailFor(null)} />
+        <PartDetailModal
+          key={detailFor.id}
+          part={detailFor}
+          onClose={() => setDetailFor(null)}
+          onCount={() => {
+            // 关详情再开盘点：三层弹窗叠在一起会让人分不清正在改哪一层。
+            const p = detailFor
+            setDetailFor(null)
+            void openCount(p)
+          }}
+        />
       ) : null}
 
       {batchInOpen ? (

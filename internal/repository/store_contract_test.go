@@ -200,6 +200,44 @@ func contractCases(t *testing.T, open storeFactory) {
 		}
 	})
 
+	t.Run("part_inbound_batch_no", func(t *testing.T) {
+		s, _ := open(t)
+		partID, err := withTxRet(s, func(tx TxOps) (int64, error) {
+			return tx.CreatePart(&model.Part{Code: "INB", Name: "Part", Unit: "u", Status: 1})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var first string
+		err = s.WithTx(func(tx TxOps) error {
+			bn, err := tx.AddPartInbound(partID, 5, nil)
+			if err != nil {
+				return err
+			}
+			first = bn
+			note := "补货"
+			_, err = tx.AddPartInbound(partID, 2.5, &note)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("tx: %v", err)
+		}
+		if len(first) < 12 || first[:3] != "RK-" {
+			t.Fatalf("batch no %q does not start with RK-", first)
+		}
+		rows, err := s.ListPartInbounds(partID)
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("rows=%v err=%v, want 2", rows, err)
+		}
+		// 倒序：最后插的在前；批次号唯一；备注原样带回。
+		if rows[0].BatchNo == rows[1].BatchNo || rows[0].Qty != 2.5 || rows[1].BatchNo != first {
+			t.Fatalf("rows = %+v / %+v (first=%s)", rows[0], rows[1], first)
+		}
+		if rows[0].Note == nil || *rows[0].Note != "补货" {
+			t.Fatalf("note roundtrip failed: %+v", rows[0])
+		}
+	})
+
 	t.Run("skip_part_idempotent", func(t *testing.T) {
 		s, _ := open(t)
 		pid, _ := withTxRet(s, func(tx TxOps) (int64, error) {

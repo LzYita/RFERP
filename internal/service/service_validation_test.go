@@ -76,7 +76,7 @@ func TestServiceRejectsInvalidQuantitiesBeforeDatabaseAccess(t *testing.T) {
 	if _, err := svc.AddBOMItem(&model.BOMItem{Quantity: -1}); err == nil {
 		t.Fatal("AddBOMItem accepted negative quantity")
 	}
-	if err := svc.StockIn(usecase.StockInInput{PartID: 1, Qty: 0, Operator: "operator"}); err == nil {
+	if _, err := svc.StockIn(usecase.StockInInput{PartID: 1, Qty: 0, Operator: "operator"}); err == nil {
 		t.Fatal("StockIn accepted zero quantity")
 	}
 	if err := svc.AdjustStock(usecase.AdjustStockInput{PartID: 1, NewQty: -1, Operator: "operator"}); err == nil {

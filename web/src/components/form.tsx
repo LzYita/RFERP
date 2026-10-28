@@ -46,6 +46,7 @@ export function TextInput({
   mono,
   disabled,
   autoFocus,
+  maxLength,
   onEnter,
 }: {
   value: string
@@ -54,6 +55,8 @@ export function TextInput({
   mono?: boolean
   disabled?: boolean
   autoFocus?: boolean
+  // 与后端字段长度上限对齐时用（如入库备注 200 字），浏览器原生截断。
+  maxLength?: number
   onEnter?: () => void
 }) {
   return (
@@ -64,6 +67,7 @@ export function TextInput({
       placeholder={placeholder}
       disabled={disabled}
       autoFocus={autoFocus}
+      maxLength={maxLength}
       onChange={(e) => onChange(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' && onEnter) {

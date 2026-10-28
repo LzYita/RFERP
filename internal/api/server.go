@@ -354,6 +354,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
 	mux.HandleFunc("POST /api/parts/adjust-stock", s.auth(s.handleAdjustStock, "Inventory.AdjustStock"))
+	mux.HandleFunc("GET /api/parts/inbounds", s.auth(s.handleListPartInbounds, "Inventory.PartInbounds"))
 	mux.HandleFunc("GET /api/batches", s.auth(s.handleListBatches, "Production.ListBatches"))
 	mux.HandleFunc("POST /api/batches/status", s.auth(s.handleUpdateBatchStatus, "Production.UpdateBatchStatus"))
 	mux.HandleFunc("GET /api/audit/recent", s.auth(s.handleRecentAudit, "Audit.ListRecentAuditLogs"))
@@ -598,21 +599,43 @@ func (s *Server) handleStockIn(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PartID int64   `json:"part_id"`
 		Qty    float64 `json:"qty"`
+		Note   string  `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
 	// C3：操作人来自会话，不用客户端字段。
-	if err := s.apps.StockIn(usecase.StockInInput{
+	batchNo, err := s.apps.StockIn(usecase.StockInInput{
 		PartID:   body.PartID,
 		Qty:      body.Qty,
+		Note:     body.Note,
 		Operator: operatorName(u),
-	}); err != nil {
+	})
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// 批次号带回界面：入库完成的提示要能指认"这一笔记成了哪批"。
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "batch_no": batchNo})
+}
+
+// handleListPartInbounds 返回零件的入库批次列表（零件详情页）。
+// part_id 由调用方带上；缺它说明调用方拼错了 URL，空列表会把
+// "请求错了"伪装成"没有入库记录"，比报错更糟。
+func (s *Server) handleListPartInbounds(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("part_id")
+	pid, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || pid <= 0 {
+		writeErr(w, http.StatusBadRequest, "invalid part_id")
+		return
+	}
+	rows, err := s.apps.ListPartInbounds(pid)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func (s *Server) handleAdjustStock(w http.ResponseWriter, r *http.Request) {

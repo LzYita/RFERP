@@ -65,8 +65,11 @@ type Catalog interface {
 
 // Inventory 零件库存出入与盘点。
 type Inventory interface {
-	StockIn(in StockInInput) error
+	// StockIn 入库并自动生成入库批次号（返回值即批次号，界面用来回显）。
+	StockIn(in StockInInput) (string, error)
 	AdjustStock(in AdjustStockInput) error
+	// ListPartInbounds 零件的入库批次列表（零件详情页）。
+	ListPartInbounds(partID int64) ([]model.PartInbound, error)
 }
 
 // Production 生产批次、投料跳过零件与临时零件。

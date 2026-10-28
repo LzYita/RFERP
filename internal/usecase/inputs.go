@@ -3,10 +3,11 @@ package usecase
 // 写操作入参：传输无关，便于 HTTP API 直接映射（Phase B1）。
 // Operator 由应用上下文/会话注入；未来 API 不得信任客户端随意指定。
 
-// StockInInput 零件入库。
+// StockInInput 零件入库。Note 选填，随入库批次一起记档。
 type StockInInput struct {
 	PartID   int64
 	Qty      float64
+	Note     string
 	Operator string
 }
 

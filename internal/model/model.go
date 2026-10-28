@@ -56,6 +56,19 @@ type PartBatchUse struct {
 	Reason  string `db:"reason" json:"reason"`
 }
 
+// PartInbound 是零件的一笔入库：自动生成的批次号、入库量与备注。
+//
+// 库存以 parts.stock_qty 为准（生产扣料与盘点调整不产生入库记录），
+// 这张表回答"现有库存是哪几笔入库攒出来的"，供零件详情页展示。
+type PartInbound struct {
+	ID        int64     `db:"id" json:"id"`
+	PartID    int64     `db:"part_id" json:"part_id"`
+	BatchNo   string    `db:"batch_no" json:"batch_no"`
+	Qty       float64   `db:"qty" json:"qty"`
+	Note      *string   `db:"note" json:"note,omitempty"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
 type BOMItem struct {
 	ID          int64     `db:"id" json:"id"`
 	ProductID   int64     `db:"product_id" json:"product_id"`

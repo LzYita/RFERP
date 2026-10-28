@@ -65,7 +65,7 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 	if err := apps.DeletePart(partIDByCode(t, db, "GONE-1"), "tester"); err != nil {
 		t.Fatalf("delete part: %v", err)
 	}
-	if err := apps.StockIn(usecase.StockInInput{PartID: keepID, Qty: 999, Operator: "tester"}); err != nil {
+	if _, err := apps.StockIn(usecase.StockInInput{PartID: keepID, Qty: 999, Operator: "tester"}); err != nil {
 		t.Fatalf("stock in: %v", err)
 	}
 	if _, err := apps.CreatePart(&model.Part{Code: "NEW-1", Name: "备份后新增", Unit: "个", Status: 1, Operator: strPtr("tester")}); err != nil {

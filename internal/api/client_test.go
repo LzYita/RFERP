@@ -23,8 +23,8 @@ func TestClientLoginAndListParts(t *testing.T) {
 	if _, err := c.ListParts(); err != nil {
 		t.Fatalf("list parts: %v", err)
 	}
-	if err := c.StockIn(stockInput()); err != nil {
-		t.Fatalf("stock in: %v", err)
+	if bn, err := c.StockIn(stockInput()); err != nil || bn != "RK-20260101-0001" {
+		t.Fatalf("stock in: bn=%q err=%v", bn, err)
 	}
 	if apps.stockIn.Operator == "" {
 		t.Fatal("expected session operator on server side")
@@ -41,7 +41,7 @@ func TestClientErrorOnForbidden(t *testing.T) {
 	if _, err := c.Login("v", "pw"); err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	err := c.StockIn(stockInput())
+	_, err := c.StockIn(stockInput())
 	if err == nil {
 		t.Fatal("viewer stock-in must fail")
 	}

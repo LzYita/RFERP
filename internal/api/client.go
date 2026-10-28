@@ -285,10 +285,23 @@ func (c *Client) DeletePart(id int64, operator string) error {
 	return c.do(http.MethodDelete, "/api/parts?id="+strconv.FormatInt(id, 10), nil, nil)
 }
 
-func (c *Client) StockIn(in usecase.StockInInput) error {
+func (c *Client) StockIn(in usecase.StockInInput) (string, error) {
 	// operator 由服务端会话注入；此处字段仅为兼容签名。
-	body := map[string]any{"part_id": in.PartID, "qty": in.Qty}
-	return c.do(http.MethodPost, "/api/parts/stock-in", body, nil)
+	body := map[string]any{"part_id": in.PartID, "qty": in.Qty, "note": in.Note}
+	var out struct {
+		Status  string `json:"status"`
+		BatchNo string `json:"batch_no"`
+	}
+	if err := c.do(http.MethodPost, "/api/parts/stock-in", body, &out); err != nil {
+		return "", err
+	}
+	return out.BatchNo, nil
+}
+
+func (c *Client) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
+	var out []model.PartInbound
+	err := c.do(http.MethodGet, "/api/parts/inbounds?part_id="+strconv.FormatInt(partID, 10), nil, &out)
+	return out, err
 }
 
 func (c *Client) AdjustStock(in usecase.AdjustStockInput) error {

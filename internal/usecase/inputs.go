@@ -11,10 +11,23 @@ type StockInInput struct {
 	Operator string
 }
 
-// AdjustStockInput 库存盘点/调整到指定数量。
+// AdjustStockInput 库存盘点/调整到指定数量（总量口径）。
 type AdjustStockInput struct {
 	PartID   int64
 	NewQty   float64
+	Operator string
+}
+
+// InboundCount 是逐批次盘点里的一行：把某个入库批次的剩余改成实盘数量。
+type InboundCount struct {
+	InboundID int64
+	Remaining float64
+}
+
+// AdjustInboundsInput 逐批次盘点：一次提交该零件多个批次的实盘数量。
+type AdjustInboundsInput struct {
+	PartID   int64
+	Items    []InboundCount
 	Operator string
 }
 

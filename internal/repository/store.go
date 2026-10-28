@@ -39,6 +39,18 @@ type TxOps interface {
 	AddPartInbound(partID int64, qty float64, note *string) (string, error)
 	// ListPartInbounds 按时间倒序列出零件的入库批次（详情页用）。
 	ListPartInbounds(partID int64) ([]model.PartInbound, error)
+	// GetInbound 读一笔入库批次（逐批次盘点前核对归属与旧值）。
+	GetInbound(inboundID int64) (*model.PartInbound, error)
+	// SetInboundRemaining 把某批次剩余设为指定值。
+	SetInboundRemaining(inboundID int64, remaining float64) error
+	// DrawPartInboundFIFO 按先进先出从零件的入库批次扣减，并记扣料明细。
+	DrawPartInboundFIFO(partID, batchID int64, qty float64) error
+	// ReducePartInboundFIFO 只扣批次剩余、不记扣料明细（盘点调减）。
+	ReducePartInboundFIFO(partID int64, qty float64) error
+	// RestorePartInboundDraws 把某生产批次扣掉的量还回原批次，返回还回总量。
+	RestorePartInboundDraws(batchID int64) (float64, error)
+	// BatchInboundDraws 某生产批次在某零件上已扣的批次量（对账用）。
+	BatchInboundDraws(batchID, partID int64) (float64, error)
 
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	CreateBOMItem(b *model.BOMItem) (int64, error)

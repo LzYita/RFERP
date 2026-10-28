@@ -51,7 +51,7 @@ func seedProjectionFixture(t *testing.T, stock, warn float64, planQty int, batch
 		f.product = pid
 		partID, err := tx.CreatePart(&model.Part{
 			Code: "M-PROJ", Name: "投影验证零件", Unit: "个",
-			StockQty: stock, WarnQty: warn, Status: 1,
+			WarnQty: warn, Status: 1,
 		})
 		if err != nil {
 			return err
@@ -76,6 +76,7 @@ func seedProjectionFixture(t *testing.T, stock, warn float64, planQty int, batch
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	stockPart(t, svc, f.partID, stock)
 	return f
 }
 

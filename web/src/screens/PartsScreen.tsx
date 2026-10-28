@@ -810,17 +810,7 @@ export function PartsScreen() {
       ) : null}
 
       {detailFor ? (
-        <PartDetailModal
-          key={detailFor.id}
-          part={detailFor}
-          onClose={() => setDetailFor(null)}
-          onCount={() => {
-            // 关详情再开盘点：三层弹窗叠在一起会让人分不清正在改哪一层。
-            const p = detailFor
-            setDetailFor(null)
-            void openCount(p)
-          }}
-        />
+        <PartDetailModal key={detailFor.id} part={detailFor} onClose={() => setDetailFor(null)} />
       ) : null}
 
       {batchInOpen ? (

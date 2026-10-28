@@ -493,7 +493,9 @@ async function inboundDetailGate(page) {
   check('详情列出两笔有剩余的批次', /RK-\d{8}-\d{4,}/.test(text2) && text2.includes('25 个') && text2.includes('100 个'),
     text2.slice(0, 220))
   check('备注随批次展示', text2.includes('五金补货'), text2.slice(0, 220))
-  check('还有已用完批次时不显示二级入口', !text2.includes('查看已用完批次'), text2.slice(0, 220))
+  check('二级入口常驻（此时为 0 个）', text2.includes('查看已用完批次（0）'), text2.slice(0, 220))
+  check('详情页不放盘点入口', (await detail2.getByRole('button', { name: '盘点', exact: true }).count()) === 0,
+    '详情弹窗里出现了盘点按钮')
   await detail2.locator('button', { hasText: '关闭' }).click()
   await sleep(200)
 

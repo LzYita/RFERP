@@ -69,12 +69,9 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
 export function PartDetailModal({
   part,
   onClose,
-  onCount,
 }: {
   part: Part
   onClose: () => void
-  /** 打开逐批次盘点（父级关掉详情再开盘点，避免三层弹窗叠在一起）。 */
-  onCount?: () => void
 }) {
   const [rows, setRows] = useState<PartInbound[] | null>(null)
   const [err, setErr] = useState('')
@@ -110,16 +107,7 @@ export function PartDetailModal({
         width={620}
         zIndex={50}
         topMost={!exhaustedOpen}
-        footer={
-          <>
-            <Btn onClick={onClose}>关闭</Btn>
-            {onCount ? (
-              <Btn primary onClick={onCount}>
-                盘点
-              </Btn>
-            ) : null}
-          </>
-        }
+        footer={<Btn onClick={onClose}>关闭</Btn>}
       >
         <FormError text={err} />
 
@@ -140,22 +128,22 @@ export function PartDetailModal({
           <>
             <div className="mb-1.5 flex items-center justify-between text-[11.5px]">
               <span className="text-[var(--color-fg-muted)]">仍有剩余的批次（{active.length}）</span>
-              {exhausted.length > 0 ? (
-                <button
-                  type="button"
-                  className="text-[var(--color-primary)] underline"
-                  onClick={() => setExhaustedOpen(true)}
-                >
-                  查看已用完批次（{exhausted.length}）
-                </button>
-              ) : null}
+              {/* 入口常驻：只在有已用完批次时才出现的话，用户手上全是新批次就
+                  完全看不到这个界面，会以为功能没做。空态由二级弹窗说明。 */}
+              <button
+                type="button"
+                className="text-[var(--color-primary)] underline"
+                onClick={() => setExhaustedOpen(true)}
+              >
+                查看已用完批次（{exhausted.length}）
+              </button>
             </div>
             <InboundTable rows={active} unit={part.unit} empty="没有仍有剩余的入库批次" />
           </>
         )}
 
         <p className="mt-2.5 text-[11px] text-[var(--color-fg-muted)]">
-          生产扣料按先进先出扣批次，盘点可逐批改为实盘数量；现有库存恒等于各批次剩余之和。
+          生产扣料按先进先出扣批次；现有库存恒等于各批次剩余之和。盘点请回零件列表点「盘点」。
         </p>
       </Modal>
 
@@ -172,7 +160,7 @@ export function PartDetailModal({
             这些批次的数量已经用完（剩余为 0），仍保留在台账里供追溯。若现场发现还有存货，
             可关闭本窗口后用「盘点」把实际数量填回去。
           </p>
-          <InboundTable rows={exhausted} unit={part.unit} empty="没有已用完的批次" />
+          <InboundTable rows={exhausted} unit={part.unit} empty="还没有已用完的批次" />
         </Modal>
       ) : null}
     </>

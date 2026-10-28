@@ -112,11 +112,25 @@ it('零件详情：二级弹窗列出已用完的批次，返回后回到一级'
   expect(screen.getByRole('dialog', { name: /零件详情/ })).toBeTruthy()
 })
 
-it('零件详情：没有已用完批次时不出现二级入口', async () => {
+it('零件详情：入口常驻，没有已用完批次时点开是空态', async () => {
+  const user = userEvent.setup()
   stubInbounds([inbound({ id: 1, remaining: 10 })])
   render(<PartDetailModal part={part()} onClose={() => {}} />)
   expect(await screen.findByText('RK-20261001-0001')).toBeTruthy()
-  expect(screen.queryByText(/查看已用完批次/)).toBeNull()
+
+  // 只在有已用完批次时才出现的入口，会让"新批次全是剩余"的用户
+  // 以为这个界面根本不存在。
+  const entry = screen.getByRole('button', { name: '查看已用完批次（0）' })
+  await user.click(entry)
+  const nested = await screen.findByRole('dialog', { name: /已用完批次/ })
+  expect(within(nested).getByText('还没有已用完的批次')).toBeTruthy()
+})
+
+it('零件详情不放盘点入口 —— 盘点只在零件列表', async () => {
+  stubInbounds([inbound({ id: 1, remaining: 10 })])
+  render(<PartDetailModal part={part()} onClose={() => {}} />)
+  await screen.findByText('RK-20261001-0001')
+  expect(screen.queryByRole('button', { name: '盘点' })).toBeNull()
 })
 
 it('零件详情：暂无入库记录', async () => {

@@ -61,7 +61,7 @@ access over VPN, update/rollback behaviour): see [docs/deployment.md](docs/deplo
 3. Click "Initialize and start":
    - Creates the database and tables
    - When connecting as root, creates a dedicated least-privilege account
-   - Stores the connection info locally, encrypted with **Windows DPAPI**
+   - Stores the connection info locally, encrypted on this machine
 
 **3) Create the administrator account**
 
@@ -85,7 +85,7 @@ Once the database is ready, if there are no accounts yet, you are guided to crea
 ## Auto-update
 
 - Checks for a new version on startup
-- The package and manifest are verified with **Ed25519 signatures**; updates are rejected on mismatch
+- Update packages are verified before installation; mismatched or tampered packages are rejected
 - Prompts when a new version is found; you can install immediately
 
 ### Build from source
@@ -132,9 +132,6 @@ Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 | Desktop shell | Wails v2.16 (Microsoft Edge WebView2) |
 | Frontend | React 19, TypeScript 6, Vite 8 |
 | Database | MySQL 8.0, or embedded SQLite (`modernc.org/sqlite`, pure Go, no CGO) |
-| Password hashing | PBKDF2-SHA256 |
-| Credential protection | Windows DPAPI |
-| Update signing | Ed25519 |
 | Installer | Inno Setup 6 |
 
 ## Layout
@@ -142,13 +139,11 @@ Output: `cmd\desktop-wails\build\bin\RFERP.exe`
 ```
 cmd/
   desktop-wails/  Wails application entry point (window and headless -serve)
-  keygen/        generate the update signing keypair
-  signmanifest/  generate and sign the update manifest
 internal/
-  auth/          users, roles, permissions, password hashing, remember-me
-  config/        config loading and encrypted storage
+  auth/          users, roles, permissions, remember-me
+  config/        config loading and local storage
   dbfile/        local database file sniffing (SQLite magic)
-  secret/        DPAPI encrypt/decrypt
+  secret/        local credential protection
   repository/    data access
   service/       business logic
   migrate/       versioned database migrations

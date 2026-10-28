@@ -60,7 +60,7 @@
 3. 点击「初始化并启动」：
    - 自动创建数据库与数据表
    - 使用 root 连接时，自动创建专用最小权限账号
-   - 连接信息以 **Windows DPAPI 加密**后保存在本机
+   - 连接信息加密后保存在本机
 
 **③ 创建管理员账号**
 
@@ -85,7 +85,7 @@
 ## 自动更新
 
 - 程序启动后会自动检查新版本
-- 更新包与更新清单使用 **Ed25519 签名**校验，签名不符则拒绝更新
+- 更新包在安装前完成校验，来源不明或被篡改的包会被拒绝
 - 发现新版本时弹窗提示，可选择立即更新
 
 ## 从源码构建
@@ -127,9 +127,6 @@ cd cmd\desktop-wails && wails build -s
 | 桌面外壳 | Wails v2.16（Microsoft Edge WebView2） |
 | 前端 | React 19、TypeScript 6、Vite 8 |
 | 数据库 | MySQL 8.0，或内嵌 SQLite（`modernc.org/sqlite`，纯 Go、无 CGO） |
-| 密码哈希 | PBKDF2-SHA256 |
-| 凭据保护 | Windows DPAPI |
-| 更新签名 | Ed25519 |
 | 安装包 | Inno Setup 6 |
 
 ## 目录结构
@@ -137,13 +134,11 @@ cd cmd\desktop-wails && wails build -s
 ```
 cmd/
   desktop-wails/ Wails 程序入口（窗口与无头 -serve 两种形态）
-  keygen/        生成更新签名密钥对
-  signmanifest/  生成并签名更新清单
 internal/
-  auth/          用户、角色、权限、密码哈希、记住登录
-  config/        配置加载与加密保存
+  auth/          用户、角色、权限、记住登录
+  config/        配置加载与本地保存
   dbfile/        本地数据库文件识别（SQLite 魔数）
-  secret/        DPAPI 加解密
+  secret/        本机凭据保护
   repository/    数据访问
   service/       业务逻辑
   migrate/       版本化数据库迁移

@@ -512,14 +512,111 @@ func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
+		// 总量与批次剩余必须同步改：差额为负时先进先出扣批次（不记生产
+		// 扣料明细——盘亏不归属任何批次，撤销生产批次也不该把它加回来）；
+		// 差额为正时补一笔「盘点盈余」批次，否则次日的批次视图会凭空
+		// 多出没有来源的库存。
+		diff := quantizeQuantity(newQty - old.StockQty)
+		if diff < 0 {
+			if err := tx.ReducePartInboundFIFO(in.PartID, -diff); err != nil {
+				return fmt.Errorf("reduce inbound batches: %w", err)
+			}
+		} else if diff > 0 {
+			note := "盘点盈余"
+			if _, err := tx.AddPartInbound(in.PartID, diff, &note); err != nil {
+				return fmt.Errorf("record surplus inbound: %w", err)
+			}
+		}
 		if err := tx.UpdatePartStock(in.PartID, newQty); err != nil {
 			return fmt.Errorf("adjust stock: %w", err)
 		}
 		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_ADJUST", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
 			"new_stock": newQty,
-			"diff":      quantizeQuantity(newQty - old.StockQty),
+			"diff":      diff,
+			"mode":      "总量盘点",
 		}, in.Operator})
+	})
+}
+
+// AdjustInbounds 逐批次盘点：把若干批次的剩余改成实盘数量。
+//
+// 与总量盘点的关系：两者改的是同一本账（parts.stock_qty = Σ remaining），
+// 逐批次盘点按各批差额之和调整总量，因此不需要再单独填总量。
+// 一次提交多批是刻意的——现场就是一次数完所有批次再一起确认，
+// 逐批提交会让中途失败后的账面停在"数了一半"的状态。
+func (s *Service) AdjustInbounds(req usecase.AdjustInboundsInput) error {
+	if len(req.Items) == 0 {
+		return fmt.Errorf("没有要盘点的批次")
+	}
+	seen := make(map[int64]bool, len(req.Items))
+	for _, item := range req.Items {
+		if item.InboundID <= 0 {
+			return fmt.Errorf("批次参数不合法")
+		}
+		if seen[item.InboundID] {
+			return fmt.Errorf("同一批次出现了两次")
+		}
+		seen[item.InboundID] = true
+		if err := validateNonNegativeQuantity("实盘数量", item.Remaining); err != nil {
+			return err
+		}
+	}
+	return s.repo.WithTx(func(tx repository.TxOps) error {
+		part, err := tx.GetPartForUpdate(req.PartID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
+		type change struct {
+			inboundID int64
+			batchNo   string
+			oldVal    float64
+			newVal    float64
+		}
+		changes := make([]change, 0, len(req.Items))
+		var delta float64
+		for _, item := range req.Items {
+			batch, err := tx.GetInbound(item.InboundID)
+			if err != nil {
+				return fmt.Errorf("get inbound %d: %w", item.InboundID, err)
+			}
+			if batch == nil || batch.PartID != req.PartID {
+				// 批次不存在，或不属于这个零件：拒绝而不是静默跳过，
+				// 否则用户会以为"数的那批"已经记下了。
+				return fmt.Errorf("批次 %d 不属于零件 %s，无法盘点", item.InboundID, part.Code)
+			}
+			newVal := quantizeQuantity(item.Remaining)
+			changes = append(changes, change{batch.ID, batch.BatchNo, batch.Remaining, newVal})
+			delta = quantizeQuantity(delta + newVal - batch.Remaining)
+			if err := tx.SetInboundRemaining(batch.ID, newVal); err != nil {
+				return fmt.Errorf("set inbound remaining: %w", err)
+			}
+		}
+		newStock := quantizeQuantity(part.StockQty + delta)
+		if newStock < 0 {
+			return fmt.Errorf("盘后库存为负，请检查填写")
+		}
+		if err := tx.UpdatePartStock(req.PartID, newStock); err != nil {
+			return fmt.Errorf("adjust stock: %w", err)
+		}
+		detail := make([]map[string]any, 0, len(changes))
+		for _, c := range changes {
+			detail = append(detail, map[string]any{
+				"batch_no": c.batchNo,
+				"old":      c.oldVal,
+				"new":      c.newVal,
+			})
+		}
+		return s.writeAuditTx(tx, auditEntry{"parts", req.PartID, "STOCK_ADJUST", part, map[string]any{
+			"old_stock": quantizeQuantity(part.StockQty),
+			"new_stock": newStock,
+			"diff":      delta,
+			"mode":      "逐批次盘点",
+			"batches":   detail,
+		}, req.Operator})
 	})
 }
 
@@ -851,6 +948,12 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 				if err := tx.UpdatePartStock(partID, newStock); err != nil {
 					return fmt.Errorf("update stock for part %d: %w", partID, err)
 				}
+				// 总量减了，批次剩余也要跟着减：先进先出，并逐笔记下
+				// "本批从哪笔入库扣了多少"，撤销时按原批次还回去。
+				// 少了这一步，次日的逐批次盘点会看到批次剩余之和仍等于旧总量。
+				if err := tx.DrawPartInboundFIFO(partID, id, n.qty); err != nil {
+					return fmt.Errorf("draw inbound batches for part %d: %w", partID, err)
+				}
 				// 一个零件一条消耗记录（BOM+临时已合并），撤销按此回退。
 				if err := tx.CreateBatchConsumption(&model.BatchConsumption{
 					BatchID:     id,
@@ -955,6 +1058,19 @@ func (s *Service) RevokeBatch(in usecase.RevokeBatchInput) error {
 				newStock := quantizeQuantity(part.StockQty + consumption.ConsumedQty)
 				if err := tx.UpdatePartStock(consumption.PartID, newStock); err != nil {
 					return fmt.Errorf("update stock for part %d: %w", consumption.PartID, err)
+				}
+				// 批次剩余同样要还：按扣料明细还回原批次。v17 之前完成的批次
+				// 没有明细，差额补一笔「批次撤销回补」，否则总量与批次剩余
+				// 之和会永久对不上。
+				restored, err := tx.RestorePartInboundDraws(id)
+				if err != nil {
+					return fmt.Errorf("restore inbound batches for part %d: %w", consumption.PartID, err)
+				}
+				if gap := quantizeQuantity(consumption.ConsumedQty - restored); gap > 0 {
+					note := "批次撤销回补"
+					if _, err := tx.AddPartInbound(consumption.PartID, gap, &note); err != nil {
+						return fmt.Errorf("record restore inbound for part %d: %w", consumption.PartID, err)
+					}
 				}
 				if err := s.writeAuditTx(tx, auditEntry{"parts", consumption.PartID, "STOCK_ADJUST", part, map[string]any{
 					"old_stock": quantizeQuantity(part.StockQty),

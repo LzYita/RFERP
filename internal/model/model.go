@@ -56,16 +56,28 @@ type PartBatchUse struct {
 	Reason  string `db:"reason" json:"reason"`
 }
 
-// PartInbound 是零件的一笔入库：自动生成的批次号、入库量与备注。
+// PartInbound 是零件的一笔入库：自动生成的批次号、入库量、剩余量与备注。
 //
-// 库存以 parts.stock_qty 为准（生产扣料与盘点调整不产生入库记录），
-// 这张表回答"现有库存是哪几笔入库攒出来的"，供零件详情页展示。
+// 库存总量仍是 parts.stock_qty，恒等于该零件全部批次 Remaining 之和：
+// 生产扣料按先进先出扣批次，逐批次盘点直接改 Remaining。Remaining 为 0
+// 的批次称为"已用完"，零件详情的一级界面只列还有剩余的批次。
 type PartInbound struct {
 	ID        int64     `db:"id" json:"id"`
 	PartID    int64     `db:"part_id" json:"part_id"`
 	BatchNo   string    `db:"batch_no" json:"batch_no"`
 	Qty       float64   `db:"qty" json:"qty"`
+	Remaining float64   `db:"remaining" json:"remaining"`
 	Note      *string   `db:"note" json:"note,omitempty"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+}
+
+// PartInboundDraw 是一笔"生产批次从某入库批次扣了多少"的明细。
+// 撤销批次按它把数量还回原批次，而不是笼统加回总量。
+type PartInboundDraw struct {
+	ID        int64     `db:"id" json:"id"`
+	BatchID   int64     `db:"batch_id" json:"batch_id"`
+	InboundID int64     `db:"inbound_id" json:"inbound_id"`
+	Qty       float64   `db:"qty" json:"qty"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 

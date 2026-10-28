@@ -82,14 +82,26 @@ export interface ProductWrite {
   version?: number
 }
 
-/** PartInbound 是零件的一笔入库：自动批次号、数量与备注（零件详情页展示）。 */
+/**
+ * PartInbound 是零件的一笔入库：自动批次号、入库量、剩余量与备注。
+ *
+ * remaining 是给逐批次盘点用的：总量恒等于该零件全部批次 remaining 之和。
+ * remaining 为 0 的批次叫"已用完"，详情一级界面不列，收进二级弹窗。
+ */
 export interface PartInbound {
   id: number
   part_id: number
   batch_no: string
   qty: number
+  remaining: number
   note?: string
   created_at: string
+}
+
+/** 逐批次盘点提交的一行：把这批的剩余改成实盘数量。 */
+export interface InboundCount {
+  inbound_id: number
+  remaining: number
 }
 
 export interface PartWrite {
@@ -129,6 +141,9 @@ export const parts = {
   // 入库批次列表（零件详情页）。
   inbounds: (part_id: number) =>
     api.get<PartInbound[]>(`/api/parts/inbounds?part_id=${part_id}`),
+  // 逐批次盘点：一次提交多个批次的实盘数量，服务端按差额同步库存总量。
+  adjustInbounds: (part_id: number, items: InboundCount[]) =>
+    api.post<{ status: string }>('/api/parts/adjust-inbounds', { part_id, items }),
 }
 
 export const bom = {

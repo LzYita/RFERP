@@ -354,6 +354,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/parts", s.auth(s.handleListParts, "Catalog.ListParts"))
 	mux.HandleFunc("POST /api/parts/stock-in", s.auth(s.handleStockIn, "Inventory.StockIn"))
 	mux.HandleFunc("POST /api/parts/adjust-stock", s.auth(s.handleAdjustStock, "Inventory.AdjustStock"))
+	mux.HandleFunc("POST /api/parts/adjust-inbounds", s.auth(s.handleAdjustInbounds, "Inventory.AdjustInbound"))
 	mux.HandleFunc("GET /api/parts/inbounds", s.auth(s.handleListPartInbounds, "Inventory.PartInbounds"))
 	mux.HandleFunc("GET /api/batches", s.auth(s.handleListBatches, "Production.ListBatches"))
 	mux.HandleFunc("POST /api/batches/status", s.auth(s.handleUpdateBatchStatus, "Production.UpdateBatchStatus"))
@@ -636,6 +637,41 @@ func (s *Server) handleListPartInbounds(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// handleAdjustInbounds 逐批次盘点：一次提交多个批次的实盘数量。
+//
+// 与 adjust-stock（总量）分开而不是合并成一个端点：两者的入参形状
+// 完全不同，混在一起就要靠字段有无猜模式，猜错会把逐批次盘点退回成
+// 总量盘点——账面看不出差别，用户却以为批次剩余已经核过。
+func (s *Server) handleAdjustInbounds(w http.ResponseWriter, r *http.Request) {
+	u, _ := s.userFromRequest(r)
+	var body struct {
+		PartID int64 `json:"part_id"`
+		Items  []struct {
+			InboundID int64   `json:"inbound_id"`
+			Remaining float64 `json:"remaining"`
+		} `json:"items"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	items := make([]usecase.InboundCount, 0, len(body.Items))
+	for _, it := range body.Items {
+		items = append(items, usecase.InboundCount{InboundID: it.InboundID, Remaining: it.Remaining})
+	}
+	if err := s.apps.AdjustInbounds(usecase.AdjustInboundsInput{
+		PartID:   body.PartID,
+		Items:    items,
+		Operator: operatorName(u),
+	}); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleAdjustStock(w http.ResponseWriter, r *http.Request) {

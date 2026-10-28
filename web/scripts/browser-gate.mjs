@@ -457,6 +457,9 @@ async function inboundDetailGate(page) {
   check('详情展示入库批次号', /RK-\d{8}-\d{4,}/.test(detailText), detailText.slice(0, 200))
   check('详情展示批次数量 100', detailText.includes('100 个'), detailText.slice(0, 200))
   check('详情摘要含现有与剩余合计', detailText.includes('现有') && detailText.includes('剩余合计'), detailText.slice(0, 160))
+  check('详情摘要有在产占用与可用', detailText.includes('在产占用') && detailText.includes('可用'),
+    detailText.slice(0, 200))
+  check('详情批次表有「已排定」列', detailText.includes('已排定'), detailText.slice(0, 200))
   check('一级只列仍有剩余的批次', detailText.includes('仍有剩余的批次（1）'), detailText.slice(0, 160))
   if (process.env.GATE_SHOTS) {
     const shot = path.join(process.env.GATE_SHOTS, 'part-detail.png')
@@ -1405,8 +1408,39 @@ async function stockProjectionGate(page, product, batchNos) {
   const tempQty = await traceModal.locator('tr', { hasText: 'P-TEMP-G' }).locator('input').first().inputValue()
   check('记录投料的临时行预填了本批需要量 10', tempQty === '10',
     `临时行数量输入值：${tempQty}`)
-  await traceModal.locator('button', { hasText: '取消' }).click()
-  await sleep(400)
+
+  // 入库批次分配：临时零件有 30 个（一笔入库），本次用 10 → 消耗 10、剩余 20。
+  // 分配行是 draggable 的子行；按 tbody 限定到临时零件，避免命中别行的"添加批次"下拉。
+  const tempBody = traceModal.locator('tbody', { hasText: 'P-TEMP-G' })
+  const allocRow = tempBody.locator('tr[draggable="true"]').first()
+  const allocText = (await allocRow.count()) > 0 ? (await allocRow.innerText()).replace(/\s*\n\s*/g, ' ') : ''
+  check('记录投料列出入库批次号', /RK-\d{8}-\d{4,}/.test(allocText), `分配行：${allocText || '(无)'}`)
+  check('记录投料显示消耗与消耗后剩余', allocText.includes('消耗 10') && allocText.includes('剩余 20'),
+    `分配行：${allocText || '(无)'}`)
+
+  // 保存 → 追溯表按零件一行；再打开是回显，再保存仍是一样多条（覆盖不追加）。
+  await traceModal.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const traceSection = page.locator('section', { hasText: '投料追溯记录' }).first()
+  const traceAfterSave = (await traceSection.count()) > 0 ? await traceSection.innerText() : ''
+  const firstCount = /共 (\d+) 条/.exec(traceAfterSave)
+  check('保存后追溯表按零件一行', firstCount !== null && Number(firstCount[1]) >= 3,
+    `追溯区：${traceAfterSave.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表展示批次分配', traceAfterSave.includes('批次分配') && /RK-\d{8}/.test(traceAfterSave),
+    traceAfterSave.slice(0, 260))
+
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const traceModal2 = page.locator('div[class*="fixed"]').last()
+  const tempQty2 = await traceModal2.locator('tr', { hasText: 'P-TEMP-G' }).locator('input').first().inputValue()
+  check('再次打开记录投料回显已保存的用量', tempQty2 === '10', `临时行数量输入值：${tempQty2}`)
+  await traceModal2.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const traceAgain = (await traceSection.count()) > 0 ? await traceSection.innerText() : ''
+  const secondCount = /共 (\d+) 条/.exec(traceAgain)
+  check('重复记录投料是覆盖而不是追加',
+    firstCount !== null && secondCount !== null && firstCount[1] === secondCount[1],
+    `第一次 ${firstCount?.[1]} 条，第二次 ${secondCount?.[1]} 条`)
   // 恢复原状：后续既有关卡假设"还没选批次"。选择不撤销，第 3 步再点一次
   // 复选框会把它取消掉，完成生产就点不动了。
   await page.locator('input[aria-label="选择 B-STK-1"]').click()

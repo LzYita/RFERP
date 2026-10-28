@@ -246,6 +246,8 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
       items={[bomItem(), bomItem({ id: 2, part_id: 3, part_code: 'M-003', part_name: '彩盒', quantity: 1 })]}
       skipped={new Set([1])}
       temps={[tempPart()]}
+      inbounds={new Map()}
+      existing={new Map()}
       busy={false}
       err=""
       onSubmit={onSubmit}
@@ -266,8 +268,8 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
   await userEvent.click(within(dialog).getByRole('button', { name: '确定' }))
   await waitFor(() =>
     expect(onSubmit).toHaveBeenCalledWith([
-      { partId: 3, usedQty: 10, partBatchNo: '', supplier: '' },
-      { partId: 2, usedQty: 50, partBatchNo: '', supplier: '' },
+      { partId: 3, usedQty: 10, supplier: '', allocations: [] },
+      { partId: 2, usedQty: 50, supplier: '', allocations: [] },
     ]),
   )
 })

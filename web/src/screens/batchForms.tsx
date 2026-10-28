@@ -11,7 +11,7 @@ import {
 } from '../components/form'
 import { Badge, Btn, fmtQty } from '../components/ui'
 import { parseQuantity } from '../lib/num'
-import type { BOMItem, Part, Product } from '../lib/catalog'
+import type { BOMItem, Part, PartInbound, Product } from '../lib/catalog'
 import { bom as bomApi } from '../lib/catalog'
 import {
   buildPreviewRows,
@@ -24,10 +24,20 @@ import {
   cascadeFor,
   defaultBatchNo,
   resolveProduct,
+  type BatchTrace,
   type Shortage,
   type TempPart,
   type TempPartDerivation,
 } from '../lib/batch'
+import {
+  allocatedTotal,
+  candidatesFor,
+  fillAllocations,
+  moveRow,
+  remainingAfter,
+  type AllocCandidate,
+  type AllocRow,
+} from '../lib/traceAlloc'
 
 /* ============================================================
  * 新建生产批次
@@ -466,22 +476,63 @@ export function ShortageModal({
 }
 
 /* ============================================================
- * 记录投料
+ * 记录投料（同一零件可排多个入库批次）
  * ============================================================ */
 
 /**
- * 投料行的展示元数据，与 rows 一一对应（同下标）。
- * tag 告诉渲染层这一行是什么：BOM 常规行 / 已跳过（禁用）/ 临时零件（新增行）。
+ * 投料行的展示元数据。tag 告诉渲染层这一行是什么：
+ * BOM 常规行 / 已跳过（禁用）/ 临时零件（新增行）。
  */
-type TraceLine = { partId: number; code: string; name: string; tag: 'bom' | 'skipped' | 'temp' }
-type TraceRow = { partId: number; usedQty: string; partBatchNo: string; supplier: string; locked: boolean }
+type TraceLine = {
+  partId: number
+  code: string
+  name: string
+  tag: 'bom' | 'skipped' | 'temp'
+  defaultQty: number
+}
 
+/** 一个零件在弹窗里的编辑状态。 */
+type LineState = {
+  usedQty: string
+  supplier: string
+  locked: boolean
+  /** 该零件全部可用入库批次（打开时定死，避免编辑途中数量跳变） */
+  all: AllocCandidate[]
+  /** 当前参与分配的批次，数组顺序就是扣料顺序 */
+  alloc: AllocRow[]
+}
+
+/** 重算分配数量但保留当前行的顺序与取舍。 */
+function refill(usage: number, rows: AllocRow[]): AllocRow[] {
+  return fillAllocations(
+    usage,
+    rows.map((r) => ({ inboundId: r.inboundId, batchNo: r.batchNo, available: r.available })),
+  )
+}
+
+/** 输入框里的用量（解析失败按 0 处理，提交时才报错）。 */
+function usageOf(text: string): number {
+  const q = parseQuantity(text, '投料数量')
+  return q.ok ? Math.max(0, q.value) : 0
+}
+
+/**
+ * 记录投料：一个零件一行，用量下面挂着「从哪几个入库批次扣、先后顺序」。
+ *
+ * 与旧版的三个差别：
+ *  1. 打开时带出已保存的记录（用量/供应商/批次顺序），在这里直接改，
+ *     保存是按零件覆盖——追溯表不再因为反复记录而堆出好几行；
+ *  2. 批次号来自该零件的入库台账，不再手打自由文本；
+ *  3. 每行显示「消耗多少 / 消耗后剩多少」，顺序可拖动（也有上下移按钮）。
+ */
 export function RecordTraceModal({
   batchNo,
   planQty,
   items,
   skipped,
   temps,
+  inbounds,
+  existing,
   busy,
   err,
   onSubmit,
@@ -490,54 +541,108 @@ export function RecordTraceModal({
   batchNo: string
   planQty: number
   items: BOMItem[]
-  /** 已跳过的零件：完成时不扣库存，也不允许记投料。行保留但禁用——
-      直接消失会让人以为漏了，摆出来带「已跳过」标记才看得懂状态变化。 */
+  /** 已跳过的零件：完成时不扣库存，也不允许记投料。 */
   skipped: ReadonlySet<number>
   /** 临时零件：不在 BOM 里、这批实际要用，作为新增的元组行参与投料。 */
   temps: ReadonlyArray<TempPart>
+  /** 各零件的入库批次（含在产占用），用于列出可分配的批次。 */
+  inbounds: ReadonlyMap<number, PartInbound[]>
+  /** 本批已有的投料记录（按零件），用于回显。 */
+  existing: ReadonlyMap<number, BatchTrace>
   busy: boolean
   err: string
-  onSubmit: (rows: { partId: number; usedQty: number; partBatchNo: string; supplier: string }[]) => void
+  onSubmit: (
+    rows: {
+      partId: number
+      usedQty: number
+      supplier: string
+      allocations: { inbound_id: number; qty: number }[]
+    }[],
+  ) => void
   onClose: () => void
 }) {
   // 行清单在打开时定死：BOM 行在前（被跳过的行禁用），临时零件行跟在后面。
-  // 「零件管理」里刚加的跳过/临时零件，下次打开这里自然生效。
   const lines: TraceLine[] = [
     ...items.map((b) => ({
       partId: b.part_id,
       code: b.part_code ?? '—',
       name: b.part_name ?? '—',
       tag: (skipped.has(b.part_id) ? 'skipped' : 'bom') as TraceLine['tag'],
+      defaultQty: Math.round(bomConsume(planQty, b)),
     })),
-    ...temps.map((tp) => ({ partId: tp.part_id, code: tp.code, name: tp.name, tag: 'temp' as const })),
-  ]
-  const [rows, setRows] = useState<TraceRow[]>(() => {
-    const bomRows: TraceRow[] = items.map((b) => ({
-      partId: b.part_id,
-      // 用量预填按 BOM 算出的消耗量，四舍五入到整数（Fyne batch.go:434 用 %.0f）
-      usedQty: String(Math.round(bomConsume(planQty, b))),
-      partBatchNo: '',
-      supplier: '',
-      locked: skipped.has(b.part_id),
-    }))
-    const tempRows: TraceRow[] = temps.map((tp) => ({
+    ...temps.map((tp) => ({
       partId: tp.part_id,
-      usedQty: String(tp.qty),
-      partBatchNo: '',
-      supplier: '',
-      locked: false,
-    }))
-    return [...bomRows, ...tempRows]
-  })
+      code: tp.code,
+      name: tp.name,
+      tag: 'temp' as const,
+      defaultQty: tp.qty,
+    })),
+  ]
+
+  const [state, setState] = useState<LineState[]>(() =>
+    lines.map((line) => {
+      const saved = existing.get(line.partId)
+      const usedQty = saved ? fmtQty(saved.used_qty) : String(line.defaultQty)
+      const all = candidatesFor(inbounds.get(line.partId) ?? [], saved?.allocations)
+      return {
+        usedQty,
+        supplier: saved?.supplier ?? '',
+        locked: line.tag === 'skipped',
+        all,
+        alloc: fillAllocations(usageOf(usedQty), all),
+      }
+    }),
+  )
   const [localErr, setLocalErr] = useState('')
+  // 拖动中的行：line 是零件行下标，from 是该零件分配表里的位置。
+  const [drag, setDrag] = useState<{ line: number; from: number } | null>(null)
+
+  function patch(i: number, fn: (s: LineState) => LineState) {
+    setState((prev) => prev.map((s, j) => (j === i ? fn(s) : s)))
+  }
+
+  function changeUsage(i: number, v: string) {
+    patch(i, (s) => ({ ...s, usedQty: v, alloc: refill(usageOf(v), s.alloc) }))
+  }
+
+  function reorder(i: number, from: number, to: number) {
+    patch(i, (s) => ({
+      ...s,
+      alloc: refill(usageOf(s.usedQty), moveRow(s.alloc, from, to)),
+    }))
+  }
+
+  function addBatch(i: number, inboundId: number) {
+    patch(i, (s) => {
+      const c = s.all.find((x) => x.inboundId === inboundId)
+      if (!c || s.alloc.some((r) => r.inboundId === inboundId)) return s
+      return { ...s, alloc: refill(usageOf(s.usedQty), [...s.alloc, { ...c, qty: 0 }]) }
+    })
+  }
+
+  function removeBatch(i: number, inboundId: number) {
+    patch(i, (s) => ({
+      ...s,
+      alloc: refill(
+        usageOf(s.usedQty),
+        s.alloc.filter((r) => r.inboundId !== inboundId),
+      ),
+    }))
+  }
 
   function submit() {
     // 先就地校验，出错时留在弹窗里并把错误显示出来，而不是把坏数据交给
     // 父组件再等它报错——用户已经填了一屏，弹回去才知道第几行错了很糟。
-    const out: { partId: number; usedQty: number; partBatchNo: string; supplier: string }[] = []
-    for (const r of rows) {
-      if (r.locked) continue // 已跳过的零件不能记投料（完成时也不扣它）
-      const raw = r.usedQty.trim()
+    const out: {
+      partId: number
+      usedQty: number
+      supplier: string
+      allocations: { inbound_id: number; qty: number }[]
+    }[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const s = state[i]
+      if (s.locked) continue // 已跳过的零件不能记投料（完成时也不扣它）
+      const raw = s.usedQty.trim()
       if (raw === '') continue // Fyne batch.go:455-457：空用量静默跳过该行
       const q = parseQuantity(raw, '投料数量')
       if (!q.ok) {
@@ -548,7 +653,14 @@ export function RecordTraceModal({
         setLocalErr('投料数量必须是大于0的有限数值')
         return
       }
-      out.push({ partId: r.partId, usedQty: q.value, partBatchNo: r.partBatchNo, supplier: r.supplier })
+      out.push({
+        partId: lines[i].partId,
+        usedQty: q.value,
+        supplier: s.supplier,
+        allocations: s.alloc
+          .filter((r) => r.qty > 0)
+          .map((r) => ({ inbound_id: r.inboundId, qty: r.qty })),
+      })
     }
     setLocalErr('')
     onSubmit(out)
@@ -558,7 +670,7 @@ export function RecordTraceModal({
     <Modal
       title={`记录投料 - ${batchNo}`}
       onClose={onClose}
-      width={620}
+      width={720}
       footer={
         <>
           <Btn onClick={onClose}>取消</Btn>
@@ -570,39 +682,41 @@ export function RecordTraceModal({
     >
       <FormError text={localErr || err} />
       <div className="mb-2 text-[11px] text-[var(--color-fg-muted)]">
-        留空表示不记录该零件。投料记录只作追溯，不影响库存——库存只在「完成生产」时扣除。
-        标记「已跳过」的零件完成时不扣库存，不能记录投料。
+        留空表示不记录该零件。保存会覆盖本批该零件的上一条记录，不会追加。
+        批次按从上到下的顺序消耗：上一批扣满才轮到下一批，每行右侧是扣完后的剩余。
+        投料记录只作追溯，不影响库存——库存只在「完成生产」时扣除。
       </div>
-      <div className="max-h-[320px] overflow-auto rounded-[6px] border border-[var(--color-border)]">
+      <div className="max-h-[380px] overflow-auto rounded-[6px] border border-[var(--color-border)]">
         <table className="data-table is-compact">
           <colgroup>
-            <col style={{ width: 150 }} />
-            <col style={{ width: 90 }} />
-            <col style={{ width: 130 }} />
+            <col style={{ width: 210 }} />
+            <col style={{ width: 96 }} />
+            <col style={{ width: 120 }} />
             <col />
           </colgroup>
           <thead>
             <tr>
               <th>零件</th>
               <th className="num">用量</th>
-              <th>批次号</th>
               <th>供应商</th>
+              <th>批次分配（按顺序扣）</th>
             </tr>
           </thead>
-          <tbody>
-            {lines.map((line, i) => {
-              const row = rows[i]
-              const tag =
-                line.tag === 'skipped' ? (
-                  <Badge kind="neutral">已跳过</Badge>
-                ) : line.tag === 'temp' ? (
-                  <Badge kind="warn">临时</Badge>
-                ) : null
-              return (
-                <tr
-                  key={`${line.tag}-${line.partId}-${i}`}
-                  style={row.locked ? { opacity: 0.55 } : undefined}
-                >
+          {lines.map((line, i) => {
+            const s = state[i]
+            const tag =
+              line.tag === 'skipped' ? (
+                <Badge kind="neutral">已跳过</Badge>
+              ) : line.tag === 'temp' ? (
+                <Badge kind="warn">临时</Badge>
+              ) : null
+            const usage = usageOf(s.usedQty)
+            const allocated = allocatedTotal(s.alloc)
+            const rest = Math.max(0, Math.round((usage - allocated) * 100) / 100)
+            const unused = s.all.filter((c) => !s.alloc.some((r) => r.inboundId === c.inboundId))
+            return (
+              <tbody key={`${line.tag}-${line.partId}`}>
+                <tr style={s.locked ? { opacity: 0.55 } : undefined}>
                   <td>
                     <div className="flex items-center gap-1.5">
                       <div style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{line.code}</div>
@@ -612,37 +726,119 @@ export function RecordTraceModal({
                   </td>
                   <td>
                     <NumberInput
-                      value={row.usedQty}
-                      disabled={row.locked}
-                      onChange={(v) =>
-                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, usedQty: v } : r)))
-                      }
+                      value={s.usedQty}
+                      disabled={s.locked}
+                      onChange={(v) => changeUsage(i, v)}
                     />
                   </td>
                   <td>
                     <TextInput
-                      value={row.partBatchNo}
-                      placeholder="批次号"
-                      disabled={row.locked}
-                      onChange={(v) =>
-                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, partBatchNo: v } : r)))
-                      }
-                    />
-                  </td>
-                  <td>
-                    <TextInput
-                      value={row.supplier}
+                      value={s.supplier}
                       placeholder="供应商"
-                      disabled={row.locked}
-                      onChange={(v) =>
-                        setRows((prev) => prev.map((r, j) => (j === i ? { ...r, supplier: v } : r)))
-                      }
+                      disabled={s.locked}
+                      onChange={(v) => patch(i, (x) => ({ ...x, supplier: v }))}
                     />
+                  </td>
+                  <td>
+                    {s.locked ? (
+                      <span className="text-[11px] text-[var(--color-fg-subtle)]">
+                        已跳过，完成时不扣库存
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[11px] text-[var(--color-fg-muted)]">
+                          {s.all.length === 0
+                            ? '没有可用的入库批次：完成时按现有库存记账'
+                            : rest > 0
+                              ? `已分配 ${fmtQty(allocated)} / 用量 ${fmtQty(usage)}，还差 ${fmtQty(rest)} 将按先进先出扣`
+                              : `已分配 ${fmtQty(allocated)} / 用量 ${fmtQty(usage)}`}
+                        </span>
+                        {unused.length > 0 ? (
+                          <select
+                            aria-label={`为 ${line.code} 添加批次`}
+                            className="rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-1 text-[11px]"
+                            value=""
+                            onChange={(e) => {
+                              const v = Number(e.target.value)
+                              if (v > 0) addBatch(i, v)
+                            }}
+                          >
+                            <option value="">添加批次…</option>
+                            {unused.map((c) => (
+                              <option key={c.inboundId} value={c.inboundId}>
+                                {c.batchNo}（可用 {fmtQty(c.available)}）
+                              </option>
+                            ))}
+                          </select>
+                        ) : null}
+                      </div>
+                    )}
                   </td>
                 </tr>
-              )
-            })}
-          </tbody>
+                {!s.locked
+                  ? s.alloc.map((row, idx) => (
+                      <tr
+                        key={`${line.partId}-${row.inboundId}`}
+                        draggable
+                        onDragStart={() => setDrag({ line: i, from: idx })}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          if (drag && drag.line === i) reorder(i, drag.from, idx)
+                          setDrag(null)
+                        }}
+                        onDragEnd={() => setDrag(null)}
+                        className="cursor-move bg-[var(--color-canvas)]"
+                        style={
+                          drag && drag.line === i && drag.from === idx ? { opacity: 0.45 } : undefined
+                        }
+                      >
+                        <td title={row.batchNo} style={{ paddingLeft: 20 }}>
+                          <span aria-hidden="true" style={{ color: 'var(--color-fg-subtle)' }}>
+                            ⠿{' '}
+                          </span>
+                          <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
+                            {row.batchNo}
+                          </span>
+                        </td>
+                        <td className="num">消耗 {fmtQty(row.qty)}</td>
+                        <td className="num">剩余 {fmtQty(remainingAfter(row))}</td>
+                        <td>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              aria-label={`上移批次 ${row.batchNo}`}
+                              className="rounded border border-[var(--color-border)] px-1 text-[11px] leading-4 disabled:opacity-40"
+                              disabled={idx === 0}
+                              onClick={() => reorder(i, idx, idx - 1)}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`下移批次 ${row.batchNo}`}
+                              className="rounded border border-[var(--color-border)] px-1 text-[11px] leading-4 disabled:opacity-40"
+                              disabled={idx === s.alloc.length - 1}
+                              onClick={() => reorder(i, idx, idx + 1)}
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`移除批次 ${row.batchNo}`}
+                              className="rounded border border-[var(--color-border)] px-1 text-[11px] leading-4 text-[var(--color-danger)]"
+                              onClick={() => removeBatch(i, row.inboundId)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  : null}
+              </tbody>
+            )
+          })}
         </table>
       </div>
     </Modal>

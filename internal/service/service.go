@@ -494,9 +494,30 @@ func (s *Service) StockIn(in usecase.StockInInput) (string, error) {
 	return batchNo, nil
 }
 
-// ListPartInbounds 零件的入库批次列表（零件详情页）。
+// ListPartInbounds 零件的入库批次列表（零件详情页），并标出每个批次被
+// 未完成批次预定了多少——"这批还剩 40，其中 30 是别的批次等着用的"。
 func (s *Service) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
-	return s.repo.ListPartInbounds(partID)
+	rows, err := s.repo.ListPartInbounds(partID)
+	if err != nil {
+		return nil, err
+	}
+	occ, err := s.repo.InboundOccupancy(partID)
+	if err != nil {
+		return nil, fmt.Errorf("load inbound occupancy: %w", err)
+	}
+	for i := range rows {
+		holders := occ[rows[i].ID]
+		if len(holders) == 0 {
+			continue
+		}
+		total := 0.0
+		for _, h := range holders {
+			total += h.Qty
+		}
+		rows[i].Occupied = quantizeQuantity(total)
+		rows[i].OccupiedBy = holders
+	}
+	return rows, nil
 }
 
 func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
@@ -948,10 +969,10 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 				if err := tx.UpdatePartStock(partID, newStock); err != nil {
 					return fmt.Errorf("update stock for part %d: %w", partID, err)
 				}
-				// 总量减了，批次剩余也要跟着减：先进先出，并逐笔记下
-				// "本批从哪笔入库扣了多少"，撤销时按原批次还回去。
-				// 少了这一步，次日的逐批次盘点会看到批次剩余之和仍等于旧总量。
-				if err := tx.DrawPartInboundFIFO(partID, id, n.qty); err != nil {
+				// 总量减了，批次剩余也要跟着减：按本批投料记录里排好的批次
+				// 顺序扣（记录投料时拖出来的先后），没排到的部分走先进先出，
+				// 并逐笔记下"本批从哪笔入库扣了多少"，撤销时按原批次还回去。
+				if err := tx.DrawPartInboundForBatch(partID, id, n.qty); err != nil {
 					return fmt.Errorf("draw inbound batches for part %d: %w", partID, err)
 				}
 				// 一个零件一条消耗记录（BOM+临时已合并），撤销按此回退。
@@ -1533,23 +1554,71 @@ func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
 	return t, nil
 }
 
+// RecordTraces 保存一批投料记录。
+//
+// v18 起语义是**按零件覆盖**：同一 (batch, part) 只会有一条记录，
+// 再记录一次就是改，不是追加——否则追溯表里同一个零件会出现好几行
+// 各说各的，用户分不清哪条是当前状态。批次分配随记录整体替换。
 func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 	if len(traces) == 0 {
 		return nil
 	}
+	type key struct{ batchID, partID int64 }
+	seen := make(map[key]bool, len(traces))
 	for i, trace := range traces {
 		if trace == nil {
 			return fmt.Errorf("第%d条投料记录不能为空", i+1)
 		}
+		if trace.BatchID <= 0 || trace.PartID <= 0 {
+			return fmt.Errorf("第%d条投料记录缺少批次或零件", i+1)
+		}
 		if err := validatePositiveQuantity("投料数量", trace.UsedQty); err != nil {
 			return fmt.Errorf("第%d条投料记录无效: %w", i+1, err)
+		}
+		k := key{trace.BatchID, trace.PartID}
+		if seen[k] {
+			return fmt.Errorf("第%d条投料记录重复：同一批次同一零件只能有一条记录，多个批次请在同一行内调整顺序", i+1)
+		}
+		seen[k] = true
+
+		var allocTotal float64
+		allocSeen := make(map[int64]bool, len(trace.Allocations))
+		for j, a := range trace.Allocations {
+			if a.InboundID <= 0 {
+				return fmt.Errorf("第%d条投料记录的第%d个批次分配缺少批次号", i+1, j+1)
+			}
+			if err := validatePositiveQuantity("批次分配数量", a.Qty); err != nil {
+				return fmt.Errorf("第%d条投料记录的第%d个批次分配无效: %w", i+1, j+1, err)
+			}
+			if allocSeen[a.InboundID] {
+				return fmt.Errorf("第%d条投料记录里同一个入库批次出现了两次", i+1)
+			}
+			allocSeen[a.InboundID] = true
+			allocTotal += a.Qty
+		}
+		// 允许少量浮点误差；分配不足用量是合法的（余量完成时按先进先出兜底），
+		// 超过用量一定是表单算错了。
+		if allocTotal > trace.UsedQty+0.005 {
+			return fmt.Errorf("第%d条投料记录的批次分配合计 %.2f 超过了用量 %.2f", i+1, allocTotal, trace.UsedQty)
 		}
 	}
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		for i, trace := range traces {
-			id, err := tx.CreateTrace(trace)
+			for _, a := range trace.Allocations {
+				in, err := tx.GetInbound(a.InboundID)
+				if err != nil {
+					return fmt.Errorf("第%d条投料记录读取入库批次失败: %w", i+1, err)
+				}
+				if in == nil {
+					return fmt.Errorf("第%d条投料记录的入库批次 #%d 不存在", i+1, a.InboundID)
+				}
+				if in.PartID != trace.PartID {
+					return fmt.Errorf("第%d条投料记录的批次 %s 不属于该零件（请重新选择）", i+1, in.BatchNo)
+				}
+			}
+			id, err := tx.ReplacePartTrace(trace)
 			if err != nil {
-				return fmt.Errorf("create trace %d: %w", i+1, err)
+				return fmt.Errorf("save trace %d: %w", i+1, err)
 			}
 			trace.ID = id
 		}
@@ -1557,8 +1626,21 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 	})
 }
 
+// GetTraceByBatch 返回某批次的投料记录，并挂上每条记录的批次分配。
+// 分配与记录分表读、在这里合：记录只有一条，分配可能有多条。
 func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
-	return s.repo.GetTraceByBatch(batchID)
+	rows, err := s.repo.GetTraceByBatch(batchID)
+	if err != nil {
+		return nil, err
+	}
+	allocs, err := s.repo.ListBatchTraceAllocs(batchID)
+	if err != nil {
+		return nil, fmt.Errorf("load trace allocations: %w", err)
+	}
+	for i := range rows {
+		rows[i].Allocations = allocs[rows[i].PartID]
+	}
+	return rows, nil
 }
 
 func (s *Service) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {

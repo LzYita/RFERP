@@ -40,6 +40,7 @@ const inbound = (over: Partial<PartInbound> = {}): PartInbound => ({
   remaining: 100,
   note: '历史库存初始化',
   created_at: '2026-10-01T08:00:00Z',
+  occupied: 0,
   ...over,
 })
 
@@ -85,10 +86,11 @@ it('零件详情：一级只列仍有剩余的批次，并给出剩余合计', a
   expect(screen.queryByText('RK-20261010-0002')).toBeNull()
   expect(screen.queryByText('RK-20261001-0001')).toBeNull()
 
-  // 摘要：现有与剩余合计都显示（两者不等时也要如实给出，别把差异藏起来）。
-  const summary = screen.getByText(/剩余合计/).closest('div')!
+  // 摘要把三件事分开说：现有 / 在产占用 / 可用（别把差异藏起来）。
+  const summary = screen.getByTestId('part-detail-summary')
   expect(summary.textContent).toContain('现有')
   expect(summary.textContent).toContain('25')
+  expect(summary.textContent).toContain('可用')
   expect(screen.getByText('仍有剩余的批次（1）')).toBeTruthy()
 })
 

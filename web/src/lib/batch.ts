@@ -45,6 +45,19 @@ export interface Batch {
   product_code?: string
 }
 
+/** 一条投料分配：从哪笔入库批次扣、扣多少、第几顺位（0 起）。 */
+export interface BatchTraceAlloc {
+  inbound_id: number
+  batch_no: string
+  qty: number
+  position: number
+}
+
+/**
+ * 一个批次的投料记录：同一 (batch_id, part_id) 只有一条，再记录就是覆盖。
+ * allocations 是完成生产时的扣料顺序与数量；part_batch_no 是 v18 之前的
+ * 自由文本批次号，只在历史记录里出现。
+ */
 export interface BatchTrace {
   id: number
   batch_id: number
@@ -54,6 +67,7 @@ export interface BatchTrace {
   supplier?: string
   created_at?: string
   operator?: string
+  allocations?: BatchTraceAlloc[]
 }
 
 /* ---------------- 状态 ---------------- */
@@ -290,13 +304,17 @@ export const traces = {
   byBatch: async (batchId: number): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
 
-  /** 整批提交，一个事务：任一条失败则全部回滚。 */
+  /**
+   * 整批提交，一个事务：任一条失败则全部回滚。
+   * 同一 (batch_id, part_id) 再次提交是覆盖（含批次分配），不是追加。
+   */
   recordBatch: (rows: {
     batch_id: number
     part_id: number
     used_qty: number
     part_batch_no?: string
     supplier?: string
+    allocations?: { inbound_id: number; qty: number }[]
   }[]) => api.post<{ status: string }>('/api/traces/batch', rows),
 }
 

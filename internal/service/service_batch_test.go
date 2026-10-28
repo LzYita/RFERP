@@ -31,6 +31,8 @@ var (
 	inboundRestore         = regexp.QuoteMeta("UPDATE part_inbounds SET remaining = COALESCE(remaining, 0) + ? WHERE id = ?")
 	inboundInsert          = regexp.QuoteMeta("INSERT INTO part_inbounds (part_id, qty, remaining, note) VALUES (?, ?, ?, ?)")
 	inboundSetBatchNo      = regexp.QuoteMeta("UPDATE part_inbounds SET batch_no = ? WHERE id = ?")
+	// v18：完成生产先读本批投料计划里的批次顺序，再按顺序扣。
+	allocSelectForBatch = regexp.QuoteMeta("SELECT inbound_id AS inbound_id, qty AS qty FROM batch_trace_allocs WHERE batch_id = ? AND part_id = ? ORDER BY position, id")
 )
 
 // inboundRows 造一笔入库批次行；remaining 默认等于 qty。
@@ -39,9 +41,12 @@ func inboundRows(now time.Time, id int64, qty, remaining float64) *sqlmock.Rows 
 		AddRow(id, 20, "RK-20260101-0001", qty, remaining, nil, now)
 }
 
-// expectDrawFIFO 登记"完成生产时按先进先出扣批次"的三条 SQL。
+// expectDrawFIFO 登记"完成生产时按先进先出扣批次"的 SQL。
+// 先查本批的分配顺序（这里没有计划，返回空 → 走先进先出兜底）。
 func expectDrawFIFO(t *testing.T, mock sqlmock.Sqlmock, now time.Time, inboundID int64, qty, remaining, take float64) {
 	t.Helper()
+	mock.ExpectQuery(allocSelectForBatch).WithArgs(int64(1), int64(20)).
+		WillReturnRows(sqlmock.NewRows([]string{"inbound_id", "qty"}))
 	mock.ExpectQuery(inboundSelectForUpdate).WithArgs(int64(20)).
 		WillReturnRows(inboundRows(now, inboundID, qty, remaining))
 	mock.ExpectExec(inboundUpdateRemain).WithArgs(remaining-take, inboundID).

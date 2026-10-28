@@ -6,6 +6,7 @@ import { projection as projectionApi, type PartProjection } from '../lib/project
 import { parts as partsApi, type Part } from '../lib/catalog'
 import { PartFormModal, emptyPartDraft, partToDraft, validatePartDraft, draftToWrite, type PartDraft } from './partForm'
 import { StockModal, BatchStockInModal, type StockMode } from './stockForm'
+import { PartDetailModal } from './partDetail'
 import { ConfirmDialog, Modal } from '../components/form'
 import {
   Badge,
@@ -163,6 +164,10 @@ export function PartsScreen() {
   const [stockMode, setStockMode] = useState<StockMode>('in')
   const [batchInOpen, setBatchInOpen] = useState(false)
   const [batchDelList, setBatchDelList] = useState<Part[] | null>(null)
+  // 零件详情（入库批次台账）。编码本身可点——比塞进已拥挤的操作列更顺手。
+  const [detailFor, setDetailFor] = useState<Part | null>(null)
+  // 入库成功的回执：把自动生成的批次号摆出来，用户不必去详情里翻刚才那笔。
+  const [stockNotice, setStockNotice] = useState('')
 
   useEffect(() => {
     let alive = true
@@ -256,7 +261,7 @@ export function PartsScreen() {
   }
 
   async function submit() {
-    const v = validatePartDraft(draft, editing !== null)
+    const v = validatePartDraft(draft)
     if (!v.ok) {
       setFormErr(v.msg)
       return
@@ -281,15 +286,25 @@ export function PartsScreen() {
     setStockFor(p)
     setStockMode(mode)
     setFormErr('')
+    // 新动作清掉上一笔的回执：通知条讲的是"刚才那一次"，不该跟下一次混在一起。
+    setStockNotice('')
   }
 
-  async function doStock(qty: number) {
+  function openDetail(p: Part) {
+    setDetailFor(p)
+  }
+
+  async function doStock(qty: number, note: string) {
     if (!stockFor) return
     setBusy(true)
     setFormErr('')
     try {
-      if (stockMode === 'in') await partsApi.stockIn(stockFor.id, qty)
-      else await partsApi.adjustStock(stockFor.id, qty)
+      if (stockMode === 'in') {
+        const res = await partsApi.stockIn(stockFor.id, qty, note)
+        setStockNotice(`已入库 ${qty} ${stockFor.unit}，批次号 ${res.batch_no}`)
+      } else {
+        await partsApi.adjustStock(stockFor.id, qty)
+      }
       setStockFor(null)
       await reload()
     } catch (e) {
@@ -303,6 +318,7 @@ export function PartsScreen() {
   async function doBatchStockIn(ids: number[], qty: number) {
     setBusy(true)
     setFormErr('')
+    setStockNotice('')
     try {
       for (const id of ids) {
         await partsApi.stockIn(id, qty)
@@ -428,6 +444,23 @@ export function PartsScreen() {
           <span>{deleteErr}</span>
           <button type="button" className="ml-auto underline" onClick={() => setDeleteErr('')}>
             知道了
+          </button>
+        </div>
+      ) : null}
+
+      {stockNotice ? (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-[6px] border border-[var(--color-ok)]/30 bg-[var(--color-ok-bg)] px-2.5 py-1.5 text-[12px] text-[var(--color-ok)]"
+        >
+          <span>{stockNotice}</span>
+          <button
+            type="button"
+            aria-label="关闭提示"
+            className="ml-auto underline"
+            onClick={() => setStockNotice('')}
+          >
+            ✕
           </button>
         </div>
       ) : null}
@@ -598,7 +631,18 @@ export function PartsScreen() {
                         aria-label={`选择 ${p.code}`}
                       />
                     </td>
-                    <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.code}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="text-[var(--color-primary)]"
+                        style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}
+                        title="查看入库批次"
+                        aria-label={`查看 ${p.code} 详情`}
+                        onClick={() => openDetail(p)}
+                      >
+                        {p.code}
+                      </button>
+                    </td>
                     <td>{p.name}</td>
                     <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{p.spec ?? '—'}</td>
                     <td>{p.part_type || '—'}</td>
@@ -712,6 +756,10 @@ export function PartsScreen() {
           onSubmit={doStock}
           onClose={() => setStockFor(null)}
         />
+      ) : null}
+
+      {detailFor ? (
+        <PartDetailModal key={detailFor.id} part={detailFor} onClose={() => setDetailFor(null)} />
       ) : null}
 
       {batchInOpen ? (

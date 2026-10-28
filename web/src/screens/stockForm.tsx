@@ -5,6 +5,7 @@ import {
   FormRow,
   Modal,
   NumberInput,
+  TextInput,
 } from '../components/form'
 import { Btn } from '../components/ui'
 import { parts as partsApi, type Part } from '../lib/catalog'
@@ -19,7 +20,10 @@ import { parseQuantity } from '../lib/num'
  *
  * 两种动作的语义差别很大，界面上也说清：
  *   - 入库：在现有数量上**加**。填 0 等于什么都没做。
+ *     每笔入库自动生成批次号（RK-日期-序号）并记入 part_inbounds，
+ *     零件详情页可查；备注选填、随批次记档。
  *   - 盘点：直接设为**绝对值**。填 0 是合法的（盘亏到零），但负数不行。
+ *     盘点调整不产生入库批次。
  *
  * 前置校验与 Fyne 逐字对齐：
  *   - 入库数量必须 > 0        （part.go:462）
@@ -68,12 +72,13 @@ export function StockModal({
   mode: StockMode
   busy: boolean
   err: string
-  onSubmit: (qty: number) => void
+  onSubmit: (qty: number, note: string) => void
   onClose: () => void
 }) {
   // 盘点预填当前库存：多数盘点是「没有变化」，让用户直接确认；
   // 入库则留空，因为无从猜测要进多少。
   const [qty, setQty] = useState(mode === 'adjust' ? fmt2(part.stock_qty) : '')
+  const [note, setNote] = useState('')
   const [localErr, setLocalErr] = useState('')
 
   const submit = () => {
@@ -83,7 +88,7 @@ export function StockModal({
       return
     }
     setLocalErr('')
-    onSubmit(v.qty)
+    onSubmit(v.qty, note.trim())
   }
 
   const preview =
@@ -125,6 +130,17 @@ export function StockModal({
       >
         <NumberInput value={qty} onChange={setQty} autoFocus />
       </FormRow>
+
+      {mode === 'in' && (
+        <FormRow label="备注（选填）" hint="系统自动生成入库批次号，可在零件详情中查看">
+          <TextInput
+            value={note}
+            onChange={setNote}
+            placeholder="如：供应商补货"
+            maxLength={200}
+          />
+        </FormRow>
+      )}
 
       <div className="mb-1 text-right text-[11px] text-[var(--color-fg-muted)]">
         调整后：

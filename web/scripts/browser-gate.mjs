@@ -395,12 +395,106 @@ async function verifyPersisted() {
 
 /** 建零件。必须检查返回：静默失败会让后面的断言看起来像产品 bug。 */
 async function seedPart(auth, code, name, type, extra = {}) {
+  // 2026-10 起新零件不能带库存创建（服务端会拒）：create 固定 0，
+  // 库存改走「入库」——顺带落一笔入库批次，与新模型一致。
+  const { stock_qty, warn_qty, ...rest } = extra
+  const wantStock = stock_qty ?? 100
   const r = await api('/api/parts', {
     method: 'POST',
     headers: auth,
-    body: JSON.stringify({ code, name, spec: '10x10', part_type: type, unit: '个', stock_qty: 100, warn_qty: 10, ...extra }),
+    body: JSON.stringify({ code, name, spec: '10x10', part_type: type, unit: '个', stock_qty: 0, warn_qty: warn_qty ?? 10, ...rest }),
   })
   if (r.code !== 200) throw new Error(`预置零件 ${code} 失败 ${r.code} ${r.text.slice(0, 120)}`)
+  if (wantStock > 0) {
+    const rows = await api('/api/parts', { headers: auth })
+    const list = Array.isArray(rows.body) ? rows.body : rows.body?.items
+    const p = Array.isArray(list) ? list.find((x) => x.code === code) : undefined
+    if (!p) throw new Error(`预置零件 ${code} 后没有回读成功`)
+    const si = await api('/api/parts/stock-in', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ part_id: p.id, qty: wantStock }),
+    })
+    if (si.code !== 200) throw new Error(`预置零件 ${code} 入库失败 ${si.code} ${si.text.slice(0, 120)}`)
+  }
+}
+
+
+/**
+ * 零件入库批次：新增零件不再填库存、编码可点开详情、入库自动批次号。
+ *
+ * 新模型（2026-10）：数量只能经「入库 / 盘点」变动，每笔入库自动生成
+ * RK-日期-序号 的批次号并记入台账，零件详情页按倒序展示。
+ * 只碰浏览器，不发 API 请求（与其它 gate 一致，避免作废浏览器会话）。
+ */
+async function inboundDetailGate(page) {
+  await page.click('text=零件管理')
+  await sleep(900)
+
+  // 1) 新增零件：库存只读 0，不能再手填。
+  await page.click('text=+ 新增零件')
+  await sleep(500)
+  const form = page.locator('div[role="dialog"][aria-label="新增零件"]')
+  const stockInput = form.locator('label', { hasText: '库存' }).first().locator('input')
+  check('新增表单有库存展示框', (await stockInput.count()) > 0, '找不到库存行')
+  const stockVal = (await stockInput.count()) > 0 ? await stockInput.inputValue() : ''
+  check('新增库存固定 0 且只读', stockVal === '0' && (await stockInput.isDisabled()),
+    `value=${JSON.stringify(stockVal)} disabled=${await stockInput.isDisabled().catch(() => '?')}`)
+  check('表单说明从 0 起步', await form.getByText('新零件从 0 起步，创建后通过「入库」添加').count() > 0,
+    '没有找到起始库存说明')
+  await form.getByRole('button', { name: '取消' }).click()
+  await sleep(300)
+
+  // 2) 点编码开详情：种子零件的库存来自一笔入库批次（RK-…，100 个）。
+  const codeBtn = page.getByLabel('查看 P-8001 详情')
+  check('编码可点开详情', (await codeBtn.count()) > 0, 'P-8001 编码不是按钮')
+  await codeBtn.click()
+  await sleep(500)
+  const detail = page.locator('div[role="dialog"][aria-label*="零件详情"]')
+  check('详情弹窗打开', (await detail.count()) > 0, '没有出现零件详情弹窗')
+  const detailText = (await detail.count()) > 0 ? await detail.innerText() : ''
+  check('详情展示入库批次号', /RK-\d{8}-\d{4,}/.test(detailText), detailText.slice(0, 200))
+  check('详情展示批次数量 100', detailText.includes('100 个'), detailText.slice(0, 200))
+  check('详情有摘要三段', detailText.includes('现有') && detailText.includes('累计入库'), detailText.slice(0, 160))
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'part-detail.png')
+    await page.screenshot({ path: shot })
+    ok(`零件详情截图 ${shot}`)
+  }
+  await detail.locator('button', { hasText: '关闭' }).click()
+  await sleep(300)
+
+  // 3) 入库 25（带备注）：成功通知回显自动批次号，列表库存 100→125。
+  const row = page.locator('tr', { hasText: '五金验证件' })
+  await row.first().getByRole('button', { name: '入库', exact: true }).click()
+  await sleep(400)
+  const inModal = page.locator('div[role="dialog"][aria-label="入库"]')
+  await inModal.getByRole('textbox', { name: /入库数量/ }).fill('25')
+  await inModal.getByPlaceholder('如：供应商补货').fill('五金补货')
+  await inModal.getByRole('button', { name: '确定' }).click()
+  await sleep(700)
+  const notice = page.locator('[role="status"]')
+  check('入库成功通知出现', (await notice.count()) > 0 && /已入库 25 个，批次号 RK-/.test(await notice.first().innerText()),
+    (await notice.count()) > 0 ? await notice.first().innerText() : '没有通知条')
+  const rowAfter = page.locator('tr', { hasText: '五金验证件' })
+  const rowText = (await rowAfter.count()) > 0 ? await rowAfter.first().innerText() : ''
+  check('入库后列表库存 125', rowText.includes('125'), rowText.replace(/\s*\n\s*/g, ' | '))
+  await page.getByLabel('关闭提示').click()
+  await sleep(200)
+  check('通知可关闭', (await page.locator('[role="status"]').count()) === 0, '通知条还在')
+
+  // 4) 再开详情：两笔批次、新的在前，备注随批次记档。
+  await page.getByLabel('查看 P-8001 详情').click()
+  await sleep(500)
+  const detail2 = page.locator('div[role="dialog"][aria-label*="零件详情"]')
+  const text2 = (await detail2.count()) > 0 ? await detail2.innerText() : ''
+  const pos25 = text2.indexOf('25 个')
+  const pos100 = text2.indexOf('100 个')
+  check('详情列出两笔批次', /RK-\d{8}-\d{4,}/.test(text2) && pos25 >= 0 && pos100 >= 0, text2.slice(0, 220))
+  check('新批次排在前面', pos25 >= 0 && pos100 >= 0 && pos25 < pos100, `pos25=${pos25} pos100=${pos100}`)
+  check('备注随批次展示', text2.includes('五金补货'), text2.slice(0, 220))
+  await detail2.locator('button', { hasText: '关闭' }).click()
+  await sleep(200)
 }
 
 /**
@@ -1586,6 +1680,9 @@ try {
 
   // 列表屏：分类/供应商列、筛选、计数文案（纯浏览器，不发 API）
   await typeColumnGate(page)
+
+  // 零件入库批次：新增去库存、详情台账、自动批次号（紧跟列表屏，同屏上下文）
+  await inboundDetailGate(page)
 
   // 操作记录屏：六列结构 + 点行详情
   await auditGate(page)

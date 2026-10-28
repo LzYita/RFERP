@@ -18,17 +18,17 @@ import { parseQuantity, hasTooManyDecimals } from '../lib/num'
  *
  * 与 Fyne 版（internal/ui/part.go:293-421）的两处**刻意不同**：
  *
- * 1. **库存不能在这里改** —— 与 Fyne 一致。库存只走「入库」和「盘点调整」
- *    两个独立动作，因为每一次库存变动都该留下原因与操作人；一个可以随手把
- *    500 改成 0 的文本框会把这个约束废掉。编辑时库存只读展示。
+ * 1. **库存不能在这里改，也不能在这里填**（2026-10 起）。库存只走「入库」
+ *    和「盘点调整」两个独立动作，因为每一次库存变动都该留下原因与操作人；
+ *    一个可以随手把 500 改成 0 的文本框会把这个约束废掉。编辑时库存只读展示，
+ *    新增则从 0 起步——入库时会自动生成批次号，在零件详情里可查。
  *
  * 2. **停用状态不再被悄悄改回启用**。Fyne 的编辑框里那个「启用」复选框被
  *    创建之后直接丢掉了（product.go:196-198，part.go 同理），于是编辑一个
  *    已停用的零件会把它重新启用。这里把状态做成一个显式选择器。
  *
  * 数量校验与 Fyne 逐字对齐（part.go:324-334 / 393-397）：
- *   - 解析失败 → 「库存和预警库存必须是有效数值」
- *   - 为负     → 「库存和预警库存不能为负」
+ *   - 预警库存解析失败 / 为负 → 对应提示
  * 另加两条前端校验（后端也有，重复拦一次只为不必往返）：
  *   - 后端只支持两位小数（service.go:95），超过就直接报错，不如当场说清
  *   - 编码/名称为空没有后端校验会拦（CreatePart 只验数量），但空编码会
@@ -40,7 +40,6 @@ export interface PartDraft {
   name: string
   spec: string
   partType: string
-  stock: string
   warn: string
   supplier: string
   unit: string
@@ -57,7 +56,6 @@ export function emptyPartDraft(): PartDraft {
     // 分类，但候选列表补齐为「与默认值一致」——否则用户选「电子」时发现下拉
     // 里根本没有这一项，还得手动敲。
     partType: '电子',
-    stock: '0',
     warn: '0',
     supplier: '',
     unit: '个',
@@ -71,7 +69,6 @@ export function partToDraft(p: Part): PartDraft {
     name: p.name,
     spec: p.spec ?? '',
     partType: p.part_type ?? '',
-    stock: String(p.stock_qty),
     // 两位小数，与 Fyne 的 fmt.Sprintf("%.2f") 一致；整数不必显示成 3.00
     warn: Number.isInteger(p.warn_qty) ? String(p.warn_qty) : p.warn_qty.toFixed(2),
     supplier: p.supplier ?? '',
@@ -85,10 +82,7 @@ export function tooManyDecimals(t: string): boolean {
   return hasTooManyDecimals(t)
 }
 
-export function validatePartDraft(
-  d: PartDraft,
-  editing: boolean,
-): { ok: true } | { ok: false; msg: string } {
+export function validatePartDraft(d: PartDraft): { ok: true } | { ok: false; msg: string } {
   if (!d.code.trim()) return { ok: false, msg: '请填写零件编码' }
   if (!d.name.trim()) return { ok: false, msg: '请填写零件名称' }
 
@@ -102,24 +96,15 @@ export function validatePartDraft(
   }
   if (warn.value < 0) return { ok: false, msg: '预警库存必须是非负有效数值' }
 
-  // 库存只在新增时可填；编辑时库存走「入库 / 盘点」，不在这里
-  if (!editing) {
-    const stock = parseQuantity(d.stock, '库存')
-    if (!stock.ok) {
-      return {
-        ok: false,
-        msg: stock.msg.includes('只能填数字') ? '库存和预警库存必须是有效数值' : stock.msg,
-      }
-    }
-    if (stock.value < 0) return { ok: false, msg: '库存和预警库存不能为负' }
-  }
+  // 库存不在这里校验：新增从 0 起步，编辑只读，数量走「入库 / 盘点」。
   return { ok: true }
 }
 
 export function draftToWrite(d: PartDraft, editing: boolean, orig?: Part): PartWrite {
   const base: PartWrite = {
-    // stock_qty 在编辑分支下面统一补，这里先占位以满足类型
-    stock_qty: editing && orig ? orig.stock_qty : Number(d.stock),
+    // 新增固定 0（后端也拒绝带库存创建）；编辑由服务端以库中现值为准，
+    // 这里的原值只是让"全量更新"语义下不产生无谓的库存字段噪音。
+    stock_qty: editing && orig ? orig.stock_qty : 0,
     code: d.code.trim(),
     name: d.name.trim(),
     spec: opt(d.spec),
@@ -132,8 +117,6 @@ export function draftToWrite(d: PartDraft, editing: boolean, orig?: Part): PartW
   if (editing && orig) {
     base.id = orig.id
     base.version = orig.version
-  } else {
-    base.stock_qty = Number(d.stock)
   }
   return base
 }
@@ -216,29 +199,16 @@ export function PartFormModal({
         </FormRow>
       </FormGrid>
 
-      {editing ? (
-        <FormRow label="库存" hint={w || undefined}>
-          <TextInput
-            value={fmt2(orig?.stock_qty ?? 0)}
-            onChange={() => undefined}
-            disabled
-          />
-        </FormRow>
-      ) : (
-        <FormGrid>
-          <FormRow label="库存">
-            <NumberInput value={draft.stock} onChange={(v) => set({ stock: v })} />
-          </FormRow>
-          <FormRow label="预警库存" hint="0=不预警">
-            <NumberInput value={draft.warn} onChange={(v) => set({ warn: v })} />
-          </FormRow>
-        </FormGrid>
-      )}
-      {editing ? (
-        <FormRow label="预警库存" hint="0=不预警">
-          <NumberInput value={draft.warn} onChange={(v) => set({ warn: v })} />
-        </FormRow>
-      ) : null}
+      <FormRow
+        label="库存"
+        hint={editing ? w || undefined : '新零件从 0 起步，创建后通过「入库」添加'}
+      >
+        {/* 只读展示：入库/盘点才会改库存，每笔都留批次与审计，这里不给直接改。 */}
+        <TextInput value={fmt2(orig?.stock_qty ?? 0)} onChange={() => undefined} disabled />
+      </FormRow>
+      <FormRow label="预警库存" hint="0=不预警">
+        <NumberInput value={draft.warn} onChange={(v) => set({ warn: v })} />
+      </FormRow>
 
       <FormRow label="供应商">
         <TextInput

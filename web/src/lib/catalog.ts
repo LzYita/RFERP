@@ -82,6 +82,16 @@ export interface ProductWrite {
   version?: number
 }
 
+/** PartInbound 是零件的一笔入库：自动批次号、数量与备注（零件详情页展示）。 */
+export interface PartInbound {
+  id: number
+  part_id: number
+  batch_no: string
+  qty: number
+  note?: string
+  created_at: string
+}
+
 export interface PartWrite {
   code: string
   name: string
@@ -111,10 +121,14 @@ export const parts = {
   create: (b: PartWrite) => api.post<Part>('/api/parts', b),
   update: (b: PartWrite & { id: number; version: number }) => api.put<Part>('/api/parts', b),
   remove: (id: number) => api.del(`/api/parts?id=${id}`),
-  stockIn: (part_id: number, qty: number) =>
-    api.post<Part>('/api/parts/stock-in', { part_id, qty }),
+  // note 选填，随入库批次记档；服务端回传自动生成的批次号。
+  stockIn: (part_id: number, qty: number, note?: string) =>
+    api.post<{ status: string; batch_no: string }>('/api/parts/stock-in', { part_id, qty, note }),
   adjustStock: (part_id: number, new_qty: number) =>
-    api.post<Part>('/api/parts/adjust-stock', { part_id, new_qty }),
+    api.post<{ status: string }>('/api/parts/adjust-stock', { part_id, new_qty }),
+  // 入库批次列表（零件详情页）。
+  inbounds: (part_id: number) =>
+    api.get<PartInbound[]>(`/api/parts/inbounds?part_id=${part_id}`),
 }
 
 export const bom = {

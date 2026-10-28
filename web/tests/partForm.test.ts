@@ -26,29 +26,23 @@ describe('零件表单：校验', () => {
   const base = () => ({ ...emptyPartDraft(), code: 'P-1', name: '电阻' })
 
   it('新增与编辑共用必填项', () => {
-    expect(validatePartDraft({ ...base(), code: '' }, false).ok).toBe(false)
-    expect(validatePartDraft({ ...base(), code: '   ' }, true).ok).toBe(false)
-    expect(validatePartDraft({ ...base(), name: '' }, false).ok).toBe(false)
+    expect(validatePartDraft({ ...base(), code: '' }).ok).toBe(false)
+    expect(validatePartDraft({ ...base(), code: '   ' }).ok).toBe(false)
+    expect(validatePartDraft({ ...base(), name: '' }).ok).toBe(false)
   })
 
-  it('新增时库存必须非负有效', () => {
-    expect(validatePartDraft({ ...base(), stock: '-1' }, false)).toEqual({
+  it('库存不在表单里：新增从 0 起步，编辑只读，数量走「入库 / 盘点」', () => {
+    // 2026-10 起 draft 里没有 stock 字段了（编译期就填不进去），
+    // 校验只管预警值——库存变动全部经「入库 / 盘点」留批次与审计。
+    expect('stock' in emptyPartDraft()).toBe(false)
+    expect(validatePartDraft({ ...base(), warn: '-1' })).toEqual({
       ok: false,
-      msg: '库存和预警库存不能为负',
+      msg: '预警库存必须是非负有效数值',
     })
-    expect(validatePartDraft({ ...base(), stock: 'abc' }, false).ok).toBe(false)
-    expect(validatePartDraft({ ...base(), warn: '-1' }, false).ok).toBe(false)
-  })
-
-  it('编辑时不校验库存 —— 库存不在编辑表单里', () => {
-    // 库存只能走入库/盘点。编辑表单里没有这个输入框，
-    // 因此无论原库存多少，编辑都不该因为库存报错。
-    const r = validatePartDraft({ ...base(), stock: '-999', warn: '3' }, true)
-    expect(r.ok).toBe(true)
   })
 
   it('编辑时仍校验预警值', () => {
-    expect(validatePartDraft({ ...base(), warn: '-1' }, true)).toEqual({
+    expect(validatePartDraft({ ...base(), warn: '-1' })).toEqual({
       ok: false,
       msg: '预警库存必须是非负有效数值',
     })
@@ -58,14 +52,14 @@ describe('零件表单：校验', () => {
     // 后端 CreatePart 只验数量（service.go），空编码会直接写进库，
     // 第二个空编码才会撞 parts.code 唯一索引，报「零件编码已存在」——
     // 对第一个空编码的用户来说这句话毫无意义。
-    expect(validatePartDraft({ ...base(), code: '' }, false).ok).toBe(false)
+    expect(validatePartDraft({ ...base(), code: '' }).ok).toBe(false)
   })
 })
 
 describe('零件表单：转成请求体', () => {
-  it('新增：空的可选字段落 undefined 而不是空串', () => {
+  it('新增：空的可选字段落 undefined 而不是空串，库存固定 0', () => {
     // 空串会让库里出现 ''，于是「有规格」和「规格是空的」再也分不开，
-    // 列表里的空值判断也会失效。
+    // 列表里的空值判断也会失效。库存固定 0：后端也拒绝带库存创建。
     const b = draftToWrite({ ...emptyPartDraft(), code: 'P-1', name: '电阻' }, false)
     expect(b.spec).toBeUndefined()
     expect(b.supplier).toBeUndefined()
@@ -91,6 +85,7 @@ describe('零件表单：转成请求体', () => {
       orig,
     )
     // 后端 PUT 是全量更新：漏掉 stock_qty 就会把 1284 清成 0。
+    // 服务端另有冻结（以库中现值为准），这里是同一约定的前端一侧。
     expect(b.stock_qty).toBe(1284)
     expect(b.id).toBe(7)
     // version 必须带，且必须是从 GET 读回来的那个，否则乐观锁直接失败
@@ -115,7 +110,7 @@ describe('零件表单：转成请求体', () => {
 })
 
 describe('零件表单：草稿回填', () => {
-  it('库存与预警值的显示格式：整数不拖 .00', () => {
+  it('库存不进草稿；预警值的显示格式：整数不拖 .00', () => {
     const d = partToDraft({
       id: 1,
       code: 'P-1',
@@ -126,7 +121,7 @@ describe('零件表单：草稿回填', () => {
       status: 1,
       version: 1,
     })
-    expect(d.stock).toBe('1284')
+    expect('stock' in d).toBe(false)
     expect(d.warn).toBe('100')
   })
 

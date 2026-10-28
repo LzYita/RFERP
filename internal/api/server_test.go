@@ -14,12 +14,15 @@ import (
 type fakeApps struct {
 	usecase.Applications // 未实现的用例置 nil，测试只触达下列方法
 
-	loginErr  error
-	loginUser *model.User
-	parts     []model.Part
-	stockIn   usecase.StockInInput
-	stockErr  error
-	userCount int
+	loginErr   error
+	loginUser  *model.User
+	parts      []model.Part
+	stockIn    usecase.StockInInput
+	stockErr   error
+	inbounds   []model.PartInbound
+	inboundID  int64
+	inboundErr error
+	userCount  int
 }
 
 func testWarehouseUser() *model.User {
@@ -44,9 +47,14 @@ func (f *fakeApps) Login(username, password string) (*model.User, error) {
 
 func (f *fakeApps) ListParts() ([]model.Part, error) { return f.parts, nil }
 
-func (f *fakeApps) StockIn(in usecase.StockInInput) error {
+func (f *fakeApps) StockIn(in usecase.StockInInput) (string, error) {
 	f.stockIn = in
-	return f.stockErr
+	return "RK-20260101-0001", f.stockErr
+}
+
+func (f *fakeApps) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
+	f.inboundID = partID
+	return f.inbounds, f.inboundErr
 }
 
 func (f *fakeApps) ListBatches() ([]model.ProductBatch, error) { return nil, nil }
@@ -151,5 +159,50 @@ func TestHealthAndUnauthorized(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d", resp2.StatusCode)
+	}
+}
+
+func TestStockInReturnsBatchNo(t *testing.T) {
+	apps := &fakeApps{loginUser: testWarehouseUser()}
+	s := New(apps)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	if _, err := c.Login("wh", "pw"); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	bn, err := c.StockIn(usecase.StockInInput{PartID: 20, Qty: 2, Note: "补货"})
+	if err != nil || bn != "RK-20260101-0001" {
+		t.Fatalf("stock in: bn=%q err=%v", bn, err)
+	}
+	if apps.stockIn.Note != "补货" {
+		t.Fatalf("note not passed through: %+v", apps.stockIn)
+	}
+}
+
+func TestListPartInboundsValidatesPartID(t *testing.T) {
+	apps := &fakeApps{
+		loginUser: testWarehouseUser(),
+		inbounds:  []model.PartInbound{{ID: 1, PartID: 20, BatchNo: "RK-20260101-0001", Qty: 2}},
+	}
+	s := New(apps)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	if _, err := c.Login("wh", "pw"); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	rows, err := c.ListPartInbounds(20)
+	if err != nil || len(rows) != 1 || rows[0].BatchNo != "RK-20260101-0001" {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	if apps.inboundID != 20 {
+		t.Fatalf("part id = %d", apps.inboundID)
+	}
+	// 缺 part_id 是调用方拼错 URL，必须报错而不是返回空列表。
+	if _, err := c.ListPartInbounds(0); err == nil {
+		t.Fatal("missing part_id must fail")
 	}
 }

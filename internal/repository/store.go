@@ -35,6 +35,10 @@ type TxOps interface {
 	DeletePart(id int64) error
 	GetPartForUpdate(id int64) (*model.Part, error)
 	UpdatePartStock(partID int64, newQty float64) error
+	// AddPartInbound 记一笔入库并生成批次号（先插行后按 id 回填，同事务内完成）。
+	AddPartInbound(partID int64, qty float64, note *string) (string, error)
+	// ListPartInbounds 按时间倒序列出零件的入库批次（详情页用）。
+	ListPartInbounds(partID int64) ([]model.PartInbound, error)
 
 	GetBOMByProduct(productID int64) ([]model.BOMItem, error)
 	CreateBOMItem(b *model.BOMItem) (int64, error)
@@ -83,6 +87,8 @@ type Store interface {
 	BOMProductsForPart(partID int64) ([]model.ProductRef, error)
 	// TracesForPart 按批次汇总该零件的生产投料记录（读侧；删除守卫在 TxOps 上走同一个查询）。
 	TracesForPart(partID int64) ([]model.PartTraceRef, error)
+	// ListPartInbounds 零件的入库批次列表（读侧；写入只发生在 StockIn 事务里）。
+	ListPartInbounds(partID int64) ([]model.PartInbound, error)
 
 	ListBatches() ([]model.ProductBatch, error)
 	GetSkippedParts(batchID int64) ([]int64, error)

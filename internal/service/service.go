@@ -311,6 +311,12 @@ func (s *Service) DeleteProduct(id int64, operator string) error {
 // ---- 零件 ----
 
 func (s *Service) CreatePart(p *model.Part) (*model.Part, error) {
+	// 新零件一律从 0 库存起步（2026-10 起）：数量只能经「入库 / 盘点」变动，
+	// 每笔都有批次号与审计。前端已去掉输入框；这里再拦一层，防止 API 直连
+	// 带着库存建零件、让入库台账从第一笔起就对不上。
+	if p.StockQty != 0 {
+		return nil, fmt.Errorf("新零件不能带库存创建，请创建后通过「入库」添加")
+	}
 	if err := validatePartQuantities(p); err != nil {
 		return nil, err
 	}
@@ -348,6 +354,10 @@ func (s *Service) UpdatePart(p *model.Part) (*model.Part, error) {
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
+		// 库存在编辑里被冻结：请求里带的 stock_qty 一律以库中现值为准。
+		// PUT 是全量更新，前端会把原值原样带回；并发期间有人入库/盘点过的话，
+		// 以库里的新值为准，绝不能让主数据编辑把库存改回旧数。
+		p.StockQty = old.StockQty
 		affected, err := tx.UpdatePart(p)
 		if err != nil {
 			return fmt.Errorf("update part: %w", err)
@@ -439,11 +449,22 @@ func (s *Service) DeletePart(id int64, operator string) error {
 	})
 }
 
-func (s *Service) StockIn(in usecase.StockInInput) error {
+func (s *Service) StockIn(in usecase.StockInInput) (string, error) {
 	if err := validatePositiveQuantity("入库数量", in.Qty); err != nil {
-		return err
+		return "", err
 	}
-	return s.repo.WithTx(func(tx repository.TxOps) error {
+	// 备注跟批次走：Trim 后为空就记 NULL，别让一串空格占着备注列。
+	note := strings.TrimSpace(in.Note)
+	if len([]rune(note)) > 200 {
+		return "", fmt.Errorf("备注不能超过200字")
+	}
+	var notePtr *string
+	if note != "" {
+		notePtr = &note
+	}
+	inQty := quantizeQuantity(in.Qty)
+	var batchNo string
+	err := s.repo.WithTx(func(tx repository.TxOps) error {
 		old, err := tx.GetPartForUpdate(in.PartID)
 		if err != nil {
 			return fmt.Errorf("get part: %w", err)
@@ -451,16 +472,31 @@ func (s *Service) StockIn(in usecase.StockInInput) error {
 		if old == nil {
 			return fmt.Errorf("part not found")
 		}
-		newStock := quantizeQuantity(old.StockQty + in.Qty)
+		newStock := quantizeQuantity(old.StockQty + inQty)
 		if err := tx.UpdatePartStock(in.PartID, newStock); err != nil {
 			return fmt.Errorf("update stock: %w", err)
 		}
+		bn, err := tx.AddPartInbound(in.PartID, inQty, notePtr)
+		if err != nil {
+			return fmt.Errorf("record inbound batch: %w", err)
+		}
+		batchNo = bn
 		return s.writeAuditTx(tx, auditEntry{"parts", in.PartID, "STOCK_IN", old, map[string]any{
 			"old_stock": quantizeQuantity(old.StockQty),
-			"in_qty":    quantizeQuantity(in.Qty),
+			"in_qty":    inQty,
 			"new_stock": newStock,
+			"batch_no":  bn,
 		}, in.Operator})
 	})
+	if err != nil {
+		return "", err
+	}
+	return batchNo, nil
+}
+
+// ListPartInbounds 零件的入库批次列表（零件详情页）。
+func (s *Service) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
+	return s.repo.ListPartInbounds(partID)
 }
 
 func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {

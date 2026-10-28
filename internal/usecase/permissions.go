@@ -37,6 +37,8 @@ var permissions = []UseCasePermission{
 	// Inventory
 	{Name: "Inventory.StockIn", Module: auth.ModuleParts, Access: auth.AccessWrite},
 	{Name: "Inventory.AdjustStock", Module: auth.ModuleParts, Access: auth.AccessWrite},
+	// 入库批次列表：能看零件列表的角色就能看它的入库台账（详情页）。
+	{Name: "Inventory.PartInbounds", Module: auth.ModuleParts, Access: auth.AccessRead},
 
 	// Production
 	{Name: "Production.ListBatches", Module: auth.ModuleBatch, Access: auth.AccessRead},

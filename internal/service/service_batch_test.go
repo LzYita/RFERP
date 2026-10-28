@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -458,19 +459,27 @@ func TestStockInUsesLockedTransactionalReadModifyWrite(t *testing.T) {
 	svc, mock := newMockService(t)
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	oldPart := &model.Part{ID: 20, Code: "P-20", Name: "Part 20", Unit: "个", StockQty: 3, WarnQty: 0, Status: 1, Version: 1, CreatedAt: now, UpdatedAt: now, Operator: stringPtr("old")}
+	// 批次号带当天日期，与服务同进程生成，用同一时钟算期望值。
+	wantBatchNo := fmt.Sprintf("RK-%s-0077", time.Now().Format("20060102"))
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 3))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(5), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+	// 入库批次：先插行（batch_no 置 NULL）再按 id 回填，随后审计里带上批次号。
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO part_inbounds (part_id, qty, note) VALUES (?, ?, ?)")).
+		WithArgs(int64(20), float64(2), nil).WillReturnResult(sqlmock.NewResult(77, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE part_inbounds SET batch_no = ? WHERE id = ?")).
+		WithArgs(wantBatchNo, int64(77)).WillReturnResult(sqlmock.NewResult(1, 1))
 	expectPartAudit(t, mock, oldPart, "STOCK_IN", map[string]any{
 		"old_stock": float64(3),
 		"in_qty":    float64(2),
 		"new_stock": float64(5),
+		"batch_no":  wantBatchNo,
 	}, "operator")
 	mock.ExpectCommit()
 
-	if err := svc.StockIn(usecase.StockInInput{PartID: 20, Qty: 2, Operator: "operator"}); err != nil {
+	if _, err := svc.StockIn(usecase.StockInInput{PartID: 20, Qty: 2, Operator: "operator"}); err != nil {
 		t.Fatalf("stock in: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

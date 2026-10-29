@@ -497,7 +497,6 @@ type TraceLine = {
 
 /** 一个零件在弹窗里的编辑状态。 */
 type LineState = {
-  supplier: string
   locked: boolean
   /** 该零件全部可分配的入库批次（打开时定死，避免编辑途中数量跳变） */
   all: AllocCandidate[]
@@ -552,7 +551,7 @@ export function RecordTraceModal({
     rows: {
       partId: number
       usedQty: number
-      supplier: string
+      /** 批次分配；供应商由服务端按零件台账补齐，界面不再传。 */
       allocations: { inbound_id: number; qty: number }[]
     }[],
   ) => void
@@ -582,7 +581,6 @@ export function RecordTraceModal({
       const saved = savedTrace?.allocations ?? null
       const all = candidatesFor(inbounds.get(line.partId) ?? [], saved ?? undefined)
       return {
-        supplier: savedTrace?.supplier ?? '',
         locked: line.tag === 'skipped',
         all,
         alloc: initialAllocations(line.usedQty, all, saved ?? undefined),
@@ -604,17 +602,19 @@ export function RecordTraceModal({
     patch(i, (s) => ({ ...s, alloc: moveRow(s.alloc, from, to) }))
   }
 
-  /** 恢复"按顺序消耗"：清掉手改，按入库时间由远到近重摊。 */
+  /**
+   * 恢复"按顺序消耗"：清掉手改的数量，按**当前排列顺序**从上往下摊满。
+   * 用户拖过顺序后点它，期望的是"就按现在这个顺序重新分"，而不是退回入库时间序。
+   */
   function resetInOrder(i: number) {
     const line = lines[i]
-    patch(i, (s) => ({ ...s, alloc: fillAllocations(line.usedQty, s.all) }))
+    patch(i, (s) => ({ ...s, alloc: fillAllocations(line.usedQty, s.alloc) }))
   }
 
   function submit() {
     const out: {
       partId: number
       usedQty: number
-      supplier: string
       allocations: { inbound_id: number; qty: number }[]
     }[] = []
     for (let i = 0; i < lines.length; i++) {
@@ -623,14 +623,13 @@ export function RecordTraceModal({
       if (s.locked) continue // 已跳过的零件不能记投料（完成时也不扣它）
       if (line.usedQty <= 0) continue // 本批不用这个零件，不产生记录
       const chk = checkPart(line.usedQty, s.alloc)
-      if (chk.level === 'mismatch') {
+      if (chk.level !== 'ok') {
         setLocalErr(`${line.code}：${chk.msg}`)
         return
       }
       out.push({
         partId: line.partId,
         usedQty: line.usedQty,
-        supplier: s.supplier,
         allocations: s.alloc
           .filter((r) => r.qty > 0)
           .map((r) => ({ inbound_id: r.inboundId, qty: r.qty })),
@@ -658,7 +657,8 @@ export function RecordTraceModal({
       <div className="mb-2 text-[11px] text-[var(--color-fg-muted)]">
         用量由 BOM 或临时零件数量决定，这里只记录「从哪几个入库批次出料」。
         批次默认按入库时间由远到近排，可拖动换序、直接改每行数量；合计须等于用量，
-        库存不够分时余量在完成生产时按先进先出扣。保存会覆盖本批该零件的上一条记录。
+        库存不够时不允许保存（先入库再投料）。供应商取自零件台账，无需手填。
+        保存会覆盖本批该零件的上一条记录。
       </div>
       <div className="flex max-h-[420px] flex-col gap-2 overflow-auto pr-0.5">
         {lines.map((line, i) => {
@@ -689,14 +689,6 @@ export function RecordTraceModal({
                 </div>
                 <div className="shrink-0 whitespace-nowrap text-[12px]">
                   用量 <b className="tabular-nums">{usageDigits(usage)}</b>
-                </div>
-                <div className="w-[110px] shrink-0">
-                  <TextInput
-                    value={s.supplier}
-                    placeholder="供应商"
-                    disabled={s.locked}
-                    onChange={(v) => patch(i, (x) => ({ ...x, supplier: v }))}
-                  />
                 </div>
                 <button
                   type="button"

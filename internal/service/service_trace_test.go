@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 
@@ -16,26 +17,31 @@ func TestRecordTracesReplacesPerPartAndRollsBack(t *testing.T) {
 	svc, mock := newMockService(t)
 	operator := "operator"
 	batchNo := "PB-1"
-	supplier := "Supplier"
 	traces := []*model.BatchTrace{
-		{BatchID: 1, PartID: 20, PartBatchNo: &batchNo, UsedQty: 1, Supplier: &supplier, Operator: &operator},
-		{BatchID: 1, PartID: 21, PartBatchNo: &batchNo, UsedQty: 2, Supplier: &supplier, Operator: &operator},
+		{BatchID: 1, PartID: 20, PartBatchNo: &batchNo, UsedQty: 1, Operator: &operator},
+		{BatchID: 1, PartID: 21, PartBatchNo: &batchNo, UsedQty: 2, Operator: &operator},
 	}
 	allocClear := regexp.QuoteMeta("DELETE FROM batch_trace_allocs WHERE batch_id = ? AND part_id = ?")
 	traceClear := regexp.QuoteMeta("DELETE FROM batch_trace WHERE batch_id = ? AND part_id = ?")
 	traceInsert := regexp.QuoteMeta("INSERT INTO batch_trace (batch_id,part_id,part_batch_no,used_qty,supplier,operator) VALUES (?,?,?,?,?,?)")
+	// supplier 落库值由零件台账决定（partRows 里为 NULL），不是请求里的那一个。
+
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
+	// 供应商改为从零件台账取：每条记录先读零件。
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0))
 	mock.ExpectExec(allocClear).WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(traceClear).WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(traceInsert).
-		WithArgs(int64(1), int64(20), &batchNo, float64(1), &supplier, &operator).
+		WithArgs(int64(1), int64(20), &batchNo, float64(1), nil, &operator).
 		WillReturnResult(sqlmock.NewResult(7, 1))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(21)).WillReturnRows(partRows(now, 0))
 	mock.ExpectExec(allocClear).WithArgs(int64(1), int64(21)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(traceClear).WithArgs(int64(1), int64(21)).WillReturnResult(sqlmock.NewResult(0, 1))
 	insertErr := errors.New("second trace failed")
 	mock.ExpectExec(traceInsert).
-		WithArgs(int64(1), int64(21), &batchNo, float64(2), &supplier, &operator).
+		WithArgs(int64(1), int64(21), &batchNo, float64(2), nil, &operator).
 		WillReturnError(insertErr)
 	mock.ExpectRollback()
 

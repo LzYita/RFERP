@@ -93,22 +93,24 @@ export function setRowQty(rows: AllocRow[], index: number, text: string): AllocR
 /**
  * 一行零件的分配结论：
  *  - ok：合计 == 用量；
- *  - short：库存不够分（合计 == 全部可用 < 用量），完成时余量走先进先出；
- *  - mismatch：既不等于用量、也没把可用量分完 —— 必须改到一致才能保存。
+ *  - short：可用量不够（Σ可用 < 用量）——库存不够就不许投料，先补库存；
+ *  - mismatch：合计与用量对不上，必须改到一致才能保存。
+ *
+ * 三种都必须合计等于用量才能保存；short 只是把原因说清楚。
  */
 export function checkPart(usage: number, rows: AllocRow[]): PartCheck {
   const use = round2(Math.max(0, usage))
   const sum = allocatedTotal(rows)
   const avail = availableTotal(rows)
-  if (Math.abs(sum - use) < 0.005) {
-    return { level: 'ok', sum, msg: `合计 ${fmt(sum)} / 用量 ${fmt(use)}` }
-  }
-  if (use > avail + 0.005 && Math.abs(sum - avail) < 0.005) {
+  if (avail + 0.005 < use) {
     return {
       level: 'short',
       sum,
-      msg: `合计 ${fmt(sum)} / 用量 ${fmt(use)}：库存不够分，余下 ${fmt(round2(use - sum))} 完成时按先进先出扣`,
+      msg: `合计 ${fmt(sum)} / 用量 ${fmt(use)}：可用只有 ${fmt(avail)}，库存不足，请先入库`,
     }
+  }
+  if (Math.abs(sum - use) < 0.005) {
+    return { level: 'ok', sum, msg: `合计 ${fmt(sum)} / 用量 ${fmt(use)}` }
   }
   const diff = round2(use - sum)
   return {

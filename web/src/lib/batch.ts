@@ -313,7 +313,7 @@ export const traces = {
     part_id: number
     used_qty: number
     part_batch_no?: string
-    supplier?: string
+    /** 供应商不在这里传：服务端按零件台账的 supplier 写入。 */
     allocations?: { inbound_id: number; qty: number }[]
   }[]) => api.post<{ status: string }>('/api/traces/batch', rows),
 }

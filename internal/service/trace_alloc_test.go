@@ -12,6 +12,8 @@ import (
 
 // 投料的批次分配（v18）：一个零件一条投料记录，挂若干条「先扣哪批」，
 // 完成生产按这个顺序扣，撤销按原批次还回。用真实 SQLite 钉住整条链路。
+var sampleSupplier = "样本供应商"
+
 type traceAllocFixture struct {
 	svc     *Service
 	store   repository.Store
@@ -45,7 +47,7 @@ func newTraceAllocFixtureWithStock(t *testing.T, firstQty, secondQty float64) *t
 		if err != nil {
 			return err
 		}
-		partID, err := tx.CreatePart(&model.Part{Code: "M-ALC", Name: "分配验证零件", Unit: "个", Status: 1})
+		partID, err := tx.CreatePart(&model.Part{Code: "M-ALC", Name: "分配验证零件", Unit: "个", Status: 1, Supplier: &sampleSupplier})
 		if err != nil {
 			return err
 		}
@@ -116,6 +118,10 @@ func TestRecordTracesReplacesPerPart(t *testing.T) {
 	}
 	if rows[0].Allocations[0].InboundID != second.ID || rows[0].Allocations[1].InboundID != first.ID {
 		t.Fatalf("分配顺序没有保留：%+v", rows[0].Allocations)
+	}
+	// 供应商不由投料界面填写：落库值必须来自零件台账。
+	if rows[0].Supplier == nil || *rows[0].Supplier != sampleSupplier {
+		t.Fatalf("供应商没有取零件台账的值：%+v", rows[0].Supplier)
 	}
 
 	// 改用量再记录：仍然只有一条，分配按新的覆盖。

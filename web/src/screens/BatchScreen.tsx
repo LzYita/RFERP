@@ -272,7 +272,6 @@ export function BatchScreen() {
     rows: {
       partId: number
       usedQty: number
-      supplier: string
       allocations: { inbound_id: number; qty: number }[]
     }[],
   ) {
@@ -292,7 +291,6 @@ export function BatchScreen() {
           batch_id: selected.id,
           part_id: r.partId,
           used_qty: r.usedQty,
-          supplier: r.supplier || undefined,
           allocations: r.allocations,
         })),
       )

@@ -1415,17 +1415,19 @@ async function stockProjectionGate(page, product, batchNos) {
   const traceText = await traceModal.innerText()
   check('记录投料出现临时零件行', traceText.includes('P-TEMP-G') && traceText.includes('临时'),
     `弹窗内容：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 300)}`)
+  check('记录投料的卡片不再有供应商输入',
+    (await traceModal.locator('input[placeholder="供应商"]').count()) === 0,
+    '供应商输入框仍然存在')
   const tempCard = traceModal.locator('[data-part-code="P-TEMP-G"]')
   const tempCardText = (await tempCard.count()) > 0 ? await tempCard.innerText() : ''
   check('记录投料的临时零件用量只读为 10', tempCardText.includes('用量 10'),
     `零件卡片：${tempCardText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
-  check('记录投料的零件卡片只含供应商与批次数量输入（总量只读）',
-    (await tempCard.locator('input[placeholder="供应商"]').count()) === 1 &&
+  check('记录投料的零件卡片只含批次数量输入（总量只读）',
+    (await tempCard.locator('input[placeholder="供应商"]').count()) === 0 &&
       (await tempCard.locator('input[aria-label*="本次消耗"]').count()) === 1 &&
-      (await tempCard.locator('input').count()) === 2,
+      (await tempCard.locator('input').count()) === 1,
     `输入框数：${await tempCard.locator('input').count()}`)
 
-  // 批次子行：临时零件 30 个（一笔入库），默认按顺序分 10 → 本次 10、剩余 20。
   const allocRow = tempCard.locator('[draggable="true"]').first()
   const allocText = (await allocRow.count()) > 0 ? (await allocRow.innerText()).replace(/\s*\n\s*/g, ' ') : ''
   check('记录投料列出入库批次号', /RK-\d{8}-\d{4,}/.test(allocText), `分配行：${allocText || '(无)'}`)
@@ -1449,9 +1451,6 @@ async function stockProjectionGate(page, product, batchNos) {
   await sleep(250)
   check('「按顺序消耗」恢复默认摊分', (await qtyInput.inputValue()) === '10',
     `数量输入值：${await qtyInput.inputValue().catch(() => '?')}`)
-  check('输入框在合计补齐后不再报错',
-    (await tempCard.innerText()).includes('合计 10 / 用量 10'),
-    `零件卡片：${(await tempCard.innerText()).replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
   if (process.env.GATE_SHOTS) {
     const shot = path.join(process.env.GATE_SHOTS, 'trace-modal.png')
     await page.screenshot({ path: shot })
@@ -1693,6 +1692,138 @@ async function stockProjectionGate(page, product, batchNos) {
   }
 }
 
+/**
+ * 投料批次分配：B-LOT 用量 10，P-LOT-1 有三笔入库（10/20/70）。
+ *
+ * 校验四件事：默认按入库先后摊、拖序后「按顺序消耗」按**当前顺序**重算、
+ * 合计不等于用量时保存被拦、保存后按零件一行且供应商来自零件台账，
+ * 再次保存是覆盖而不是追加。
+ */
+async function lotTraceGate(page) {
+  await page.click('text=批次追溯')
+  await sleep(1000)
+  await page.locator('input[aria-label="选择 B-LOT"]').click()
+  await sleep(300)
+  const headerBar = page.locator('.ml-auto.flex').filter({ hasText: '新建批次' }).first()
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const modal = page.locator('div[class*="fixed"]').last()
+  const card = modal.locator('[data-part-code="P-LOT-1"]')
+  const cardText = (await card.count()) > 0 ? await card.innerText() : ''
+  check('投料卡片显示只读用量 10', cardText.includes('用量 10'),
+    `零件卡片：${cardText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
+
+  const labelsOf = async (scope) =>
+    scope
+      .locator('input[aria-label$="本次消耗"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
+  const qtyOf = async (scope, label) =>
+    scope.locator(`input[aria-label="${label}"]`).inputValue()
+
+  const labels = await labelsOf(card)
+  check('投料卡片按三笔入库各占一行', labels.length === 3, `批次行：${labels.join('、')}`)
+  const first = await qtyOf(card, labels[0])
+  const second = await qtyOf(card, labels[1])
+  const third = await qtyOf(card, labels[2])
+  check('默认按入库先后摊满第一批', first === '10' && second === '0' && third === '0',
+    `数量：${first}/${second}/${third}`)
+
+  // 用 ↓ 把第一批移到第二位：数量不动，顺序变化。
+  await card.locator('button[aria-label^="下移批次"]').first().click()
+  await sleep(250)
+  const labels2 = await labelsOf(card)
+  check('批次顺序可调整', labels2[0] === labels[1] && labels2[1] === labels[0],
+    `顺序：${labels2.join('、')}`)
+  check('换序本身不改动数量',
+    (await qtyOf(card, labels2[0])) === '0' && (await qtyOf(card, labels2[1])) === '10',
+    `数量：${await qtyOf(card, labels2[0])}/${await qtyOf(card, labels2[1])}`)
+
+  // 按当前顺序重算：新的第一行应吃掉全部 10。
+  await card.locator('button', { hasText: '按顺序消耗' }).click()
+  await sleep(250)
+  check('「按顺序消耗」按当前顺序重算',
+    (await qtyOf(card, labels2[0])) === '10' && (await qtyOf(card, labels2[1])) === '0',
+    `数量：${await qtyOf(card, labels2[0])}/${await qtyOf(card, labels2[1])}`)
+
+  // 手改：第一行 4、第二行 5 → 合计 9，与用量 10 不符 → 拦住保存。
+  await card.locator(`input[aria-label="${labels2[0]}"]`).fill('4')
+  await card.locator(`input[aria-label="${labels2[1]}"]`).fill('5')
+  await sleep(250)
+  await modal.locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const mismatch = await page.locator('[role="alert"]').first().innerText().catch(() => '')
+  check('合计不等于用量时拦住保存', mismatch.includes('还差 1'), `提示：${mismatch || '(无)'}`)
+
+  // 补到 4 + 6 = 10 → 可以保存。
+  await card.locator(`input[aria-label="${labels2[1]}"]`).fill('6')
+  await sleep(250)
+  check('补齐后卡片显示合计等于用量',
+    (await card.innerText()).includes('合计 10 / 用量 10'),
+    `零件卡片：${(await card.innerText()).replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  await modal.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+
+  const section = page.locator('section', { hasText: '投料追溯记录' }).first()
+  const traceText = (await section.count()) > 0 ? await section.innerText() : ''
+  check('投料保存后按零件一行', /共 1 条/.test(traceText),
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表带出零件台账上的供应商', traceText.includes('样本供应商'),
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表列出两笔批次分配', (traceText.match(/RK-/g) ?? []).length >= 2,
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+
+  // 再打开：回显保存的顺序与数量；再保存仍是 1 条（覆盖）。
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const modal2 = page.locator('div[class*="fixed"]').last()
+  const card2 = modal2.locator('[data-part-code="P-LOT-1"]')
+  const labels3 = await labelsOf(card2)
+  const a = await qtyOf(card2, labels3[0])
+  const b = await qtyOf(card2, labels3[1])
+  check('再次打开回显保存的顺序与数量', a === '4' && b === '6', `数量：${a}/${b}`)
+  await modal2.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const again = (await section.count()) > 0 ? await section.innerText() : ''
+  check('重复保存仍是覆盖（条数不变）', /共 1 条/.test(again),
+    `追溯区：${again.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  // 库存不够就不许投料：B-LOT 已排定 10，剩 90；再建一个用量 95 的批次，
+  // 卡片应标出库存不足，保存被整体拦下（不再有"余量按先进先出扣"的口子）。
+  await page.locator('button', { hasText: '新建批次' }).click()
+  await sleep(700)
+  const create = page.locator('div[class*="fixed"]').last()
+  await create.locator('label:has-text("产品名称") select').first().selectOption('投料批次验证产品')
+  await sleep(250)
+  await create.locator('label:has-text("产品编码") select').first().selectOption('P-LOT-P')
+  await sleep(250)
+  const specSel = create.locator('label:has-text("规格型号") select').first()
+  if ((await specSel.count()) > 0) await specSel.selectOption('L')
+  await create.locator('label:has-text("批次号") input').first().fill('B-LOT-2')
+  await create.getByLabel('计划数量').fill('95')
+  await sleep(400)
+  await create.getByRole('button', { name: '确定' }).click()
+  await sleep(1500)
+
+  await page.locator('input[aria-label="选择 B-LOT-2"]').click()
+  await sleep(300)
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const shortModal = page.locator('div[class*="fixed"]').last()
+  const shortCard = shortModal.locator('[data-part-code="P-LOT-1"]')
+  const shortText = (await shortCard.count()) > 0 ? await shortCard.innerText() : ''
+  check('可用不足的零件在投料卡片里标出库存不足',
+    shortText.includes('库存不足') && shortText.includes('用量 95'),
+    `零件卡片：${shortText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  await shortModal.locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const shortAlert = await page.locator('[role="alert"]').first().innerText().catch(() => '')
+  check('库存不足时不允许保存投料',
+    shortAlert.includes('P-LOT-1') && shortAlert.includes('库存不足'),
+    `提示：${shortAlert || '(无)'}`)
+  await shortModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
+}
+
 let browser
 try {
   sweepStaleRuns()
@@ -1788,6 +1919,43 @@ try {
   }
   ok('装配三个共用零件的待生产批次（B-STK-1/2/3）')
 
+  // 投料批次分配场景：一个零件三笔入库（10/20/70），本批用量 10。
+  // 供应商写在零件台账上——界面不再手填，记录投料时由服务端带出。
+  await seedPart(auth, 'P-LOT-1', '投料批次零件', '五金', { stock_qty: 0, warn_qty: 0, supplier: '样本供应商' })
+  {
+    const rows = await api('/api/parts', { headers: auth })
+    const list = Array.isArray(rows.body) ? rows.body : rows.body?.items
+    const p = Array.isArray(list) ? list.find((x) => x.code === 'P-LOT-1') : undefined
+    if (!p) throw new Error('预置 P-LOT-1 后没有回读成功')
+    for (const qty of [10, 20, 70]) {
+      const r = await api('/api/parts/stock-in', {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ part_id: p.id, qty }),
+      })
+      if (r.code !== 200) throw new Error(`预置 P-LOT-1 入库失败 ${r.code} ${r.text.slice(0, 120)}`)
+    }
+    const prod = await api('/api/products', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ code: 'P-LOT-P', name: '投料批次验证产品', spec: 'L', unit: '台' }),
+    })
+    if (prod.code !== 200) throw new Error(`预置投料产品失败 ${prod.code} ${prod.text.slice(0, 120)}`)
+    const bom = await api('/api/bom', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ product_id: prod.body.id, part_id: p.id, quantity: 1, loss_rate: 0, replaceable: 0, use_mode: 0 }),
+    })
+    if (bom.code !== 200) throw new Error(`预置投料 BOM 失败 ${bom.code} ${bom.text.slice(0, 120)}`)
+    const bat = await api('/api/batches', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ batch_no: 'B-LOT', product_id: prod.body.id, plan_qty: 10 }),
+    })
+    if (bat.code !== 200) throw new Error(`预置投料批次失败 ${bat.code} ${bat.text.slice(0, 120)}`)
+  }
+  ok('装配投料批次场景（P-LOT-1 三笔入库 + B-LOT）')
+
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
 
@@ -1849,6 +2017,9 @@ try {
 
     // 库存投影：三批共用零件的场景（必须在 BOM 验证之后跑：它会完成/拒绝批次）
     await stockProjectionGate(page, BOM_PRODUCT, STOCK_BATCHES)
+
+    // 投料批次分配：够了库存的独立批次，验证改序/改量/覆盖/供应商
+    await lotTraceGate(page)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

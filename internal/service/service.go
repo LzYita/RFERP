@@ -1604,6 +1604,16 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 	}
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		for i, trace := range traces {
+			// 供应商不由投料界面填写，直接取零件台账上的供应商：
+			// 同一种料在不同批次里手填出两个供应商，追溯就没法当成同一件事看。
+			part, err := tx.GetPartForUpdate(trace.PartID)
+			if err != nil {
+				return fmt.Errorf("第%d条投料记录读取零件失败: %w", i+1, err)
+			}
+			if part == nil {
+				return fmt.Errorf("第%d条投料记录的零件不存在", i+1)
+			}
+			trace.Supplier = part.Supplier
 			for _, a := range trace.Allocations {
 				in, err := tx.GetInbound(a.InboundID)
 				if err != nil {

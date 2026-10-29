@@ -10,7 +10,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { PartsManagerModal, RecordTraceModal } from '../src/screens/batchForms'
 import { BatchScreen } from '../src/screens/BatchScreen'
-import type { BOMItem, Part } from '../src/lib/catalog'
+import type { BOMItem, Part, PartInbound } from '../src/lib/catalog'
 import type { TempPart } from '../src/lib/batch'
 import type { PartProjection } from '../src/lib/projection'
 
@@ -50,6 +50,17 @@ const part = (over: Partial<Part> = {}): Part =>
     version: 1,
     ...over,
   }) as Part
+
+const inbound = (over: Partial<PartInbound> = {}): PartInbound => ({
+  id: 1,
+  part_id: 1,
+  batch_no: 'RK-20261001-0001',
+  qty: 100,
+  remaining: 100,
+  created_at: '2026-10-01T08:00:00Z',
+  occupied: 0,
+  ...over,
+})
 
 const tempPart = (over: Partial<TempPart> = {}): TempPart => ({
   batch_id: 1,
@@ -246,7 +257,10 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
       items={[bomItem(), bomItem({ id: 2, part_id: 3, part_code: 'M-003', part_name: '彩盒', quantity: 1 })]}
       skipped={new Set([1])}
       temps={[tempPart()]}
-      inbounds={new Map()}
+      inbounds={new Map([
+        [3, [inbound({ id: 31, part_id: 3, remaining: 100, batch_no: 'RK-彩盒' })]],
+        [2, [inbound({ id: 21, part_id: 2, remaining: 50, batch_no: 'RK-螺丝' })]],
+      ])}
       existing={new Map()}
       busy={false}
       err=""
@@ -261,9 +275,7 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
   const skipped = card('M-001')!
   expect(within(skipped).getByText('已跳过')).toBeTruthy()
   expect(skipped.textContent).toContain('用量 20') // 10 台 × 2 个
-  const skippedInputs = [...skipped.querySelectorAll('input')]
-  expect(skippedInputs.length).toBe(1) // 只剩供应商一个输入框，用量是只读文本
-  expect(skippedInputs[0].placeholder).toBe('供应商')
+  expect(skipped.querySelectorAll('input').length).toBe(0) // 用量只读、无供应商输入
   const temp = card('M-002')!
   expect(within(temp).getByText('临时')).toBeTruthy()
   expect(temp.textContent).toContain('用量 5')
@@ -272,8 +284,8 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
   await userEvent.click(within(dialog).getByRole('button', { name: '确定' }))
   await waitFor(() =>
     expect(onSubmit).toHaveBeenCalledWith([
-      { partId: 3, usedQty: 10, supplier: '', allocations: [] },
-      { partId: 2, usedQty: 5, supplier: '', allocations: [] },
+      { partId: 3, usedQty: 10, allocations: [{ inbound_id: 31, qty: 10 }] },
+      { partId: 2, usedQty: 5, allocations: [{ inbound_id: 21, qty: 5 }] },
     ]),
   )
 })

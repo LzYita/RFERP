@@ -68,11 +68,11 @@ describe('checkPart', () => {
     expect(res.msg).toContain('还差')
   })
 
-  it('用量超过全部可用量且已分完 → short（允许保存，先说明兜底）', () => {
+  it('用量超过全部可用量 → short（库存不足，拦住保存）', () => {
     const short = fillAllocations(20, [cand(1, 'RK-A', 6), cand(2, 'RK-B', 3)])
     const res = checkPart(20, short)
     expect(res.level).toBe('short')
-    expect(res.msg).toContain('先进先出')
+    expect(res.msg).toContain('库存不足')
   })
 
   it('未改动的完整分配不会误报', () => {

@@ -11,6 +11,7 @@ import {
   batches,
   canChangeStatus,
   canManageParts,
+  canRecordTrace,
   findShortages,
   statusKind,
   statusText,
@@ -399,16 +400,28 @@ export function BatchScreen() {
   // 弹窗要按真实批次号排顺序，也要回显上一次保存的内容（改而不是重填）。
   const [traceInbounds, setTraceInbounds] = useState<Map<number, PartInbound[]>>(new Map())
   const [traceSaved, setTraceSaved] = useState<Map<number, BatchTrace>>(new Map())
+  // 入库批次或历史记录取不到时，可用量无法确认：弹窗要明说并禁止保存，
+  // 不能假装"没有批次"然后报"库存不足"。
+  const [traceLoadError, setTraceLoadError] = useState('')
 
   async function openTrace() {
     if (!selected) return
+    const guard = canRecordTrace(selected)
+    if (!guard.ok) {
+      setNotice(guard.msg)
+      return
+    }
     setBusy(true)
     try {
+      let loadFailed = false
       const [bom, skipped, temps, saved] = await Promise.all([
         bomApi.list(selected.product_id),
         batches.skipped(selected.id),
         batches.tempParts(selected.id),
-        traces.byBatch(selected.id),
+        traces.byBatch(selected.id).catch(() => {
+          loadFailed = true
+          return [] as BatchTrace[]
+        }),
       ])
       const ids = new Set<number>()
       for (const b of bom) ids.add(b.part_id)
@@ -421,10 +434,12 @@ export function BatchScreen() {
           try {
             return [id, await partsApi.inbounds(id)] as const
           } catch {
+            loadFailed = true
             return [id, [] as PartInbound[]] as const
           }
         }),
       )
+      setTraceLoadError(loadFailed ? '投料数据加载失败（入库批次或历史记录取不到）' : '')
       setTraceBom(bom)
       setTraceSkipped(new Set(skipped))
       setTraceTemps(temps)
@@ -683,6 +698,7 @@ export function BatchScreen() {
           temps={traceTemps}
           inbounds={traceInbounds}
           existing={traceSaved}
+          loadError={traceLoadError}
           busy={busy}
           err={err}
           onSubmit={recordTraces}

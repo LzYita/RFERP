@@ -529,6 +529,7 @@ export function RecordTraceModal({
   temps,
   inbounds,
   existing,
+  loadError,
   busy,
   err,
   onSubmit,
@@ -545,6 +546,8 @@ export function RecordTraceModal({
   inbounds: ReadonlyMap<number, PartInbound[]>
   /** 本批已有的投料记录（按零件），用于回显。 */
   existing: ReadonlyMap<number, BatchTrace>
+  /** 入库批次或已有记录加载失败：可用量无法确认，不能提交。 */
+  loadError?: string
   busy: boolean
   err: string
   onSubmit: (
@@ -557,23 +560,48 @@ export function RecordTraceModal({
   ) => void
   onClose: () => void
 }) {
-  // 行清单在打开时定死：BOM 行在前（被跳过的行禁用），临时零件行跟在后面。
-  const lines: TraceLine[] = [
-    ...items.map((b) => ({
-      partId: b.part_id,
-      code: b.part_code ?? '—',
-      name: b.part_name ?? '—',
-      tag: (skipped.has(b.part_id) ? 'skipped' : 'bom') as TraceLine['tag'],
-      usedQty: Math.round(bomConsume(planQty, b)),
-    })),
-    ...temps.map((tp) => ({
-      partId: tp.part_id,
-      code: tp.code,
-      name: tp.name,
-      tag: 'temp' as const,
-      usedQty: tp.qty,
-    })),
-  ]
+  // 行清单：一零件一行，用量 = BOM 需求（未跳过）+ 临时零件数量，与完成生产
+  // 的扣减口径一致（同一零件多来源会合并成一次扣减）。用的是两位小数，
+  // 不能取整——BOM 里允许 1.5 个/台这种用量。
+  const lines: TraceLine[] = (() => {
+    const q2 = (n: number) => Math.round(n * 100) / 100
+    const byPart = new Map<number, TraceLine>()
+    for (const b of items) {
+      const partID = b.part_id
+      const isSkipped = skipped.has(partID)
+      const need = isSkipped ? 0 : q2(bomConsume(planQty, b))
+      const cur = byPart.get(partID)
+      if (cur) {
+        cur.usedQty = q2(cur.usedQty + need)
+        continue
+      }
+      byPart.set(partID, {
+        partId: partID,
+        code: b.part_code ?? '—',
+        name: b.part_name ?? '—',
+        tag: isSkipped ? 'skipped' : 'bom',
+        usedQty: need,
+      })
+    }
+    for (const tp of temps) {
+      const q = q2(tp.qty)
+      const cur = byPart.get(tp.part_id)
+      if (cur) {
+        // 历史数据里可能存在"既是 BOM 又加临时"的同件，两边合成一条记录。
+        cur.usedQty = q2(cur.usedQty + q)
+        cur.tag = 'temp'
+        continue
+      }
+      byPart.set(tp.part_id, {
+        partId: tp.part_id,
+        code: tp.code,
+        name: tp.name,
+        tag: 'temp',
+        usedQty: q,
+      })
+    }
+    return [...byPart.values()]
+  })()
 
   const [state, setState] = useState<LineState[]>(() =>
     lines.map((line) => {
@@ -612,6 +640,10 @@ export function RecordTraceModal({
   }
 
   function submit() {
+    if (loadError) {
+      setLocalErr(`${loadError}：可用量无法确认，请关闭后重试`)
+      return
+    }
     const out: {
       partId: number
       usedQty: number
@@ -653,7 +685,7 @@ export function RecordTraceModal({
         </>
       }
     >
-      <FormError text={localErr || err} />
+      <FormError text={localErr || err || loadError || ''} />
       <div className="mb-2 text-[11px] text-[var(--color-fg-muted)]">
         用量由 BOM 或临时零件数量决定，这里只记录「从哪几个入库批次出料」。
         批次默认按入库时间由远到近排，可拖动换序、直接改每行数量；合计须等于用量，
@@ -883,6 +915,9 @@ export function PartsManagerModal({
   const partOptions = useMemo(
     () =>
       parts
+        // 临时零件只接受 BOM 表以外的零件：BOM 内的用量归 BOM 管，
+        // 两边都能改会让"这批到底用多少"说不清。
+        .filter((p) => !items.some((b) => b.part_id === p.id))
         .filter(
           (p) =>
             q === '' ||
@@ -891,7 +926,7 @@ export function PartsManagerModal({
             (p.spec ?? '').toLowerCase().includes(q),
         )
         .map(partLabel),
-    [parts, q, partLabel],
+    [parts, items, q, partLabel],
   )
 
   /** 把公式项换算成本批总量；数量还没填好时返回空串（添加时会被拦）。 */

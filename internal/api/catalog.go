@@ -298,7 +298,8 @@ func (s *Server) handleAddSkip(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if err := s.apps.AddSkipPart(body.BatchID, body.PartID); err != nil {
+	u, _ := s.userFromRequest(r)
+	if err := s.apps.AddSkipPart(body.BatchID, body.PartID, operatorName(u)); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -336,6 +337,7 @@ func (s *Server) handleAddTempPart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
+	u, _ := s.userFromRequest(r)
 	if err := s.apps.AddTempPart(usecase.AddTempPartInput{
 		BatchID:  body.BatchID,
 		PartID:   body.PartID,
@@ -343,6 +345,7 @@ func (s *Server) handleAddTempPart(w http.ResponseWriter, r *http.Request) {
 		UseMode:  body.UseMode,
 		Quantity: body.Quantity,
 		LossRate: body.LossRate,
+		Operator: operatorName(u),
 	}); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -357,7 +360,8 @@ func (s *Server) handleRemoveTempPart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid batch_id/part_id")
 		return
 	}
-	if err := s.apps.RemoveTempPart(bid, pid); err != nil {
+	u, _ := s.userFromRequest(r)
+	if err := s.apps.RemoveTempPart(bid, pid, operatorName(u)); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -371,7 +375,8 @@ func (s *Server) handleRemoveSkip(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid batch_id/part_id")
 		return
 	}
-	if err := s.apps.RemoveSkipPart(bid, pid); err != nil {
+	u, _ := s.userFromRequest(r)
+	if err := s.apps.RemoveSkipPart(bid, pid, operatorName(u)); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"app/internal/model"
@@ -201,4 +203,98 @@ func (t *Tx) DeletePartTrace(batchID, partID int64) (int64, error) {
 // DeletePartTrace 见 deletePartTraces。
 func (t *SQLiteTx) DeletePartTrace(batchID, partID int64) (int64, error) {
 	return deletePartTraces(t.q, batchID, partID)
+}
+
+// ---- 服务端校验与占用统计用的读侧 ----
+
+// InboundAllocRow 是一条分配明细的原始行（批次 + 入库批次 + 数量）。
+type InboundAllocRow struct {
+	BatchID   int64   `db:"batch_id"`
+	InboundID int64   `db:"inbound_id"`
+	Qty       float64 `db:"qty"`
+}
+
+// inboundAllocsOfPart 读某零件的全部分配明细，由服务层按"批次当前是否仍会
+// 消耗该零件"过滤后再算占用（BOM/临时零件变更只影响在产批次）。
+func inboundAllocsOfPart(q queryer, partID int64) ([]InboundAllocRow, error) {
+	rows := make([]InboundAllocRow, 0)
+	err := q.Select(&rows, `
+		SELECT batch_id, inbound_id, qty FROM batch_trace_allocs WHERE part_id = ?`, partID)
+	return rows, err
+}
+
+// inboundAllocQty 返回同一入库批次上「本批次已分配」与「其它在产批次已分配」的量，
+// 用于保存投料时校验"分配数量不超过该批可用"。
+func inboundAllocQty(q queryer, batchID, inboundID int64) (own, others float64, err error) {
+	if err := q.Get(&own, `
+		SELECT COALESCE(SUM(qty), 0) FROM batch_trace_allocs
+		WHERE batch_id = ? AND inbound_id = ?`, batchID, inboundID); err != nil {
+		return 0, 0, err
+	}
+	if err := q.Get(&others, `
+		SELECT COALESCE(SUM(a.qty), 0)
+		FROM batch_trace_allocs a
+		JOIN product_batches b ON b.id = a.batch_id
+		WHERE a.inbound_id = ? AND a.batch_id <> ? AND b.status IN (0,1,3)`,
+		inboundID, batchID); err != nil {
+		return 0, 0, err
+	}
+	return round2(own), round2(others), nil
+}
+
+// batchTraceParts 返回该批次已经有投料记录的零件 id。
+func batchTraceParts(q queryer, batchID int64) ([]int64, error) {
+	ids := make([]int64, 0)
+	err := q.Select(&ids, `SELECT DISTINCT part_id FROM batch_trace WHERE batch_id = ?`, batchID)
+	return ids, err
+}
+
+// GetInboundForUpdate 读一笔入库并加行锁（MySQL），保存投料时防止并发超分。
+func (t *Tx) GetInboundForUpdate(inboundID int64) (*model.PartInbound, error) {
+	var in model.PartInbound
+	err := t.tx.Get(&in, `
+		SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at
+		FROM part_inbounds WHERE id = ? FOR UPDATE`, inboundID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &in, nil
+}
+
+// GetInboundForUpdate 见 (*Tx).GetInboundForUpdate（SQLite 由写事务串行化）。
+func (t *SQLiteTx) GetInboundForUpdate(inboundID int64) (*model.PartInbound, error) {
+	return getInbound(t.q, inboundID)
+}
+
+// InboundAllocQty 见 inboundAllocQty。
+func (t *Tx) InboundAllocQty(batchID, inboundID int64) (float64, float64, error) {
+	return inboundAllocQty(t.tx, batchID, inboundID)
+}
+
+// InboundAllocQty 见 inboundAllocQty。
+func (t *SQLiteTx) InboundAllocQty(batchID, inboundID int64) (float64, float64, error) {
+	return inboundAllocQty(t.q, batchID, inboundID)
+}
+
+// BatchTraceParts 见 batchTraceParts。
+func (t *Tx) BatchTraceParts(batchID int64) ([]int64, error) {
+	return batchTraceParts(t.tx, batchID)
+}
+
+// BatchTraceParts 见 batchTraceParts。
+func (t *SQLiteTx) BatchTraceParts(batchID int64) ([]int64, error) {
+	return batchTraceParts(t.q, batchID)
+}
+
+// InboundAllocsOfPart 见 inboundAllocsOfPart。
+func (r *Repository) InboundAllocsOfPart(partID int64) ([]InboundAllocRow, error) {
+	return inboundAllocsOfPart(r.db, partID)
+}
+
+// InboundAllocsOfPart 见 inboundAllocsOfPart。
+func (s *SQLiteStore) InboundAllocsOfPart(partID int64) ([]InboundAllocRow, error) {
+	return inboundAllocsOfPart(s.db, partID)
 }

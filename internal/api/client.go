@@ -400,11 +400,11 @@ func (c *Client) RevokeBatch(in usecase.RevokeBatchInput) error {
 	return c.do(http.MethodPost, "/api/batches/revoke", map[string]any{"id": in.ID}, nil)
 }
 
-func (c *Client) AddSkipPart(batchID, partID int64) error {
+func (c *Client) AddSkipPart(batchID, partID int64, operator string) error {
 	return c.do(http.MethodPost, "/api/batches/skip", map[string]any{"batch_id": batchID, "part_id": partID}, nil)
 }
 
-func (c *Client) RemoveSkipPart(batchID, partID int64) error {
+func (c *Client) RemoveSkipPart(batchID, partID int64, operator string) error {
 	path := "/api/batches/skip?batch_id=" + strconv.FormatInt(batchID, 10) + "&part_id=" + strconv.FormatInt(partID, 10)
 	return c.do(http.MethodDelete, path, nil, nil)
 }
@@ -431,7 +431,7 @@ func (c *Client) AddTempPart(in usecase.AddTempPartInput) error {
 	return c.do(http.MethodPost, "/api/batches/temp-parts", body, nil)
 }
 
-func (c *Client) RemoveTempPart(batchID, partID int64) error {
+func (c *Client) RemoveTempPart(batchID, partID int64, operator string) error {
 	path := "/api/batches/temp-parts?batch_id=" + strconv.FormatInt(batchID, 10) + "&part_id=" + strconv.FormatInt(partID, 10)
 	return c.do(http.MethodDelete, path, nil, nil)
 }

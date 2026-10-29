@@ -1357,11 +1357,11 @@ async function stockProjectionGate(page, product, batchNos) {
   // 两个数都要给，且"可用"必须扣掉在产占用，不能拿现有冒充。
   await combo.fill('P-0001')
   await sleep(300)
+  // 临时零件只接受 BOM 表以外的零件：BOM 内的 P-0001 不该出现在候选里。
   const bomPartOpt = mgr.locator('[role="option"]', { hasText: '测试零件' })
-  const bomOptText = (await bomPartOpt.count()) > 0 ? await bomPartOpt.first().innerText() : ''
-  check('BOM 零件同时显示现有与可用（可用扣掉在产占用）',
-    bomOptText.includes('现有 100') && bomOptText.includes('可用 -80'),
-    `候选：${bomOptText || '(无)'}`)
+  check('临时零件候选不包含 BOM 内的零件',
+    (await bomPartOpt.count()) === 0 && (await mgr.innerText()).includes('没有匹配的零件'),
+    `候选数：${await bomPartOpt.count()}`)
 
   await combo.fill('P-TEMP-G')
   await sleep(300)
@@ -1597,6 +1597,17 @@ async function stockProjectionGate(page, product, batchNos) {
   check('关闭后批次警告提示消失',
     (await page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' }).count()) === 0)
 
+  // 3.6) 已完成批次不能记录投料（按钮点下去出守卫提示，不打开弹窗）。
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(500)
+  const traceGuard = page.locator('[role="status"]').filter({ hasText: '已完成的批次不能记录投料' })
+  check('已完成批次不能记录投料', (await traceGuard.count()) === 1,
+    `提示数量：${await traceGuard.count()}`)
+  if ((await traceGuard.count()) > 0) {
+    await traceGuard.getByRole('button', { name: '关闭提示' }).click()
+    await sleep(200)
+  }
+
   // 4) 完成第二批：库存只剩 40，被拒；文案要点名仍在产的 B-STK-3
   await page.locator('input[aria-label="选择 B-STK-2"]').click()
   await page.locator('button', { hasText: '完成生产' }).click()
@@ -1734,6 +1745,19 @@ async function lotTraceGate(page) {
   await page.locator('input[aria-label="选择 B-LOT"]').click()
   await sleep(300)
   const headerBar = page.locator('.ml-auto.flex').filter({ hasText: '新建批次' }).first()
+
+  // 还没记录投料时不允许完成生产。
+  await headerBar.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  const needTraceModal = page.locator('div[class*="fixed"]').last()
+  await needTraceModal.locator('button', { hasText: '确定' }).click()
+  await sleep(800)
+  const needTraceMsg = await page.locator('[role="alert"]').last().innerText().catch(() => '')
+  check('未记录投料时完成生产被拒', needTraceMsg.includes('必须记录投料'),
+    `提示：${needTraceMsg.slice(0, 200)}`)
+  await needTraceModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
+
   await headerBar.locator('button', { hasText: '记录投料' }).click()
   await sleep(900)
   const modal = page.locator('div[class*="fixed"]').last()

@@ -2,7 +2,7 @@
 // 默认按入库时间由远到近；「按顺序消耗」恢复默认摊法。
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RecordTraceModal } from '../src/screens/batchForms'
 import type { BOMItem, PartInbound } from '../src/lib/catalog'
@@ -159,6 +159,36 @@ it('手改数量后合计仍等于用量，提交带上有序分配', async () =
       ],
     },
   ])
+})
+
+it('小数用量保留两位，不被取整', async () => {
+  const onSubmit = vi.fn()
+  render(
+    <RecordTraceModal
+      batchNo="B-1"
+      planQty={3}
+      items={[bomItem({ quantity: 1.5 })]} // 3 台 × 1.5 = 4.5
+      skipped={new Set()}
+      temps={[]}
+      inbounds={new Map([[1, [inbound({ id: 1, batch_no: 'RK-ONE', remaining: 10 })]]])}
+      existing={new Map()}
+      busy={false}
+      err=""
+      onSubmit={onSubmit}
+      onClose={vi.fn()}
+    />,
+  )
+  const dialog = screen.getByRole('dialog')
+  const body = card(dialog)
+  expect(body.textContent).toContain('用量 4.5')
+  expect((within(body).getByLabelText('RK-ONE 本次消耗') as HTMLInputElement).value).toBe('4.5')
+  expect(body.textContent).toContain('合计 4.5 / 用量 4.5')
+  userEvent.click(within(dialog).getByRole('button', { name: '确定' }))
+  return waitFor(() =>
+    expect(onSubmit).toHaveBeenCalledWith([
+      { partId: 1, usedQty: 4.5, allocations: [{ inbound_id: 1, qty: 4.5 }] },
+    ]),
+  )
 })
 
 it('单批零件输入超过可用量会被封顶，不会出现负数或超量', async () => {

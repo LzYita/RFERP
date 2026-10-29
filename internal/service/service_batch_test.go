@@ -55,6 +55,19 @@ func expectDrawFIFO(t *testing.T, mock sqlmock.Sqlmock, now time.Time, inboundID
 		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
+// expectTraceParts 登记"完成前校验该扣的零件都记录过投料"的查询。
+// 必须排在 UPDATE parts 之前：校验在扣减循环之前执行。
+func expectTraceParts(t *testing.T, mock sqlmock.Sqlmock, partIDs ...int64) {
+	t.Helper()
+	rows := sqlmock.NewRows([]string{"part_id"})
+	for _, id := range partIDs {
+		rows.AddRow(id)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT part_id FROM batch_trace WHERE batch_id = ?")).
+		WithArgs(int64(1)).
+		WillReturnRows(rows)
+}
+
 // expectRestoreDraws 登记"撤销生产批次时按原批次还回"的三条 SQL。
 func expectRestoreDraws(t *testing.T, mock sqlmock.Sqlmock, inboundID int64, qty float64) {
 	t.Helper()
@@ -209,6 +222,7 @@ func TestCompleteBatchRecordsActualConsumptionAndCommits(t *testing.T) {
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 20))
 	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
+	expectTraceParts(t, mock, 20)
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(12), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	// 批次剩余同步扣：入库 20，扣 8，剩余 12。
@@ -301,6 +315,7 @@ func TestCompleteBatchQuantizesComputedConsumptionBeforePersistence(t *testing.T
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 1))
 	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
+	expectTraceParts(t, mock, 20)
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(0.98), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectDrawFIFO(t, mock, now, 5, 1, 1, 0.02)
@@ -355,6 +370,7 @@ func TestCompleteBatchRollsBackStockAndConsumptionWhenAuditFails(t *testing.T) {
 	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 100))
 	mock.ExpectQuery(`(?s)FROM batch_temp_parts.*WHERE t\.batch_id=\?`).
 		WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "code", "name", "unit"}))
+	expectTraceParts(t, mock, 20)
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE parts SET stock_qty=?, version=version+1, updated_at=NOW() WHERE id=?")).
 		WithArgs(float64(92), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	expectDrawFIFO(t, mock, now, 5, 100, 100, 8)
@@ -600,8 +616,8 @@ func TestSkipPartChangesLockBatchAndRejectAfterCompletionStarts(t *testing.T) {
 		name string
 		call func(*Service) error
 	}{
-		{name: "add", call: func(s *Service) error { return s.AddSkipPart(1, 20) }},
-		{name: "remove", call: func(s *Service) error { return s.RemoveSkipPart(1, 20) }},
+		{name: "add", call: func(s *Service) error { return s.AddSkipPart(1, 20, "tester") }},
+		{name: "remove", call: func(s *Service) error { return s.RemoveSkipPart(1, 20, "tester") }},
 	}
 
 	for _, tt := range tests {
@@ -630,8 +646,12 @@ func TestAddSkipPartCommitsAfterLockingMutableBatch(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO batch_skip_parts (batch_id,part_id) VALUES (?,?)")).
 		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(auditInsert).
+		WithArgs("batch_skip_parts", int64(20), "INSERT", sqlmock.AnyArg(), sqlmock.AnyArg(), "tester").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	// 标记跳过后清掉该零件在这批的投料记录与分配（先记投料后跳过的情况）。
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM batch_trace_allocs WHERE batch_id = ? AND part_id = ?")).
 		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -639,7 +659,7 @@ func TestAddSkipPartCommitsAfterLockingMutableBatch(t *testing.T) {
 		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
-	if err := svc.AddSkipPart(1, 20); err != nil {
+	if err := svc.AddSkipPart(1, 20, "tester"); err != nil {
 		t.Fatalf("add skip part: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -653,11 +673,15 @@ func TestRemoveSkipPartCommitsAfterLockingMutableBatch(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0))
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM batch_skip_parts WHERE batch_id=? AND part_id=?")).
 		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditInsert).
+		WithArgs("batch_skip_parts", int64(20), "DELETE", sqlmock.AnyArg(), sqlmock.AnyArg(), "tester").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	if err := svc.RemoveSkipPart(1, 20); err != nil {
+	if err := svc.RemoveSkipPart(1, 20, "tester"); err != nil {
 		t.Fatalf("remove skip part: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

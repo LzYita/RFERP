@@ -26,7 +26,7 @@ func (a *tempPartApps) AddTempPart(in usecase.AddTempPartInput) error {
 	return a.addErr
 }
 
-func (a *tempPartApps) RemoveTempPart(batchID, partID int64) error { return nil }
+func (a *tempPartApps) RemoveTempPart(batchID, partID int64, operator string) error { return nil }
 
 // 端到端只验证路由/解码/权限接线；库存检测与扣减语义在 service 层已用真实
 // SQLite 钉住（temppart_test.go），这里不打桩复述。

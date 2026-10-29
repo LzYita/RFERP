@@ -29,11 +29,15 @@ func TestRecordTracesReplacesPerPartAndRollsBack(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
-	// 供应商改为从零件台账取：每条记录先读零件，再查一次跳过清单（每批一次）。
-	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0))
+	// 每批先读一次：批次状态（必须未完成/未撤销）、跳过集合、临时零件集合。
+	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT part_id FROM batch_skip_parts WHERE batch_id=?")).
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"part_id"}))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM batch_temp_parts t JOIN parts p ON p.id = t.part_id")).
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"batch_id", "part_id", "qty", "created_at", "use_mode", "quantity", "loss_rate", "code", "name", "unit"}))
+	mock.ExpectQuery(partSelectForUpdate).WithArgs(int64(20)).WillReturnRows(partRows(now, 0))
 	mock.ExpectExec(allocClear).WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(traceClear).WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(traceInsert).

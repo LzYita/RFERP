@@ -274,7 +274,7 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
   // 跳过行有标记；用量由 BOM/临时零件决定，只读展示，不再有输入框
   const skipped = card('M-001')!
   expect(within(skipped).getByText('已跳过')).toBeTruthy()
-  expect(skipped.textContent).toContain('用量 20') // 10 台 × 2 个
+  expect(skipped.textContent).toContain('用量 0') // 跳过意味着本批不用它，不计 BOM 需求
   expect(skipped.querySelectorAll('input').length).toBe(0) // 用量只读、无供应商输入
   const temp = card('M-002')!
   expect(within(temp).getByText('临时')).toBeTruthy()
@@ -320,6 +320,20 @@ it('shows existing and available stock together when picking a temp part', async
   expect(
     within(dialog).getByRole('option', { name: /M-002 备用螺丝（现有 8，可用 5 个）/ }),
   ).toBeTruthy()
+})
+
+it('does not offer BOM parts as temp parts', async () => {
+  const u = userEvent.setup()
+  renderManager()
+  const dialog = screen.getByRole('dialog')
+  await u.click(within(dialog).getByRole('tab', { name: /临时零件/ }))
+  const input = within(dialog).getByRole('combobox', { name: '临时零件' })
+  await u.click(input)
+  await u.type(input, 'M-001')
+
+  // M-001 在 BOM 里：临时零件只接受 BOM 表以外的零件。
+  expect(within(dialog).queryByRole('option', { name: /M-001/ })).toBeNull()
+  expect(within(dialog).getByText('没有匹配的零件')).toBeTruthy()
 })
 
 it('marks available stock unknown instead of showing existing stock when projection fails', async () => {

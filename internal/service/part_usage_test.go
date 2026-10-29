@@ -75,8 +75,17 @@ func TestDeletePartRefusesBatchReferences(t *testing.T) {
 	stockPart(t, svc, skipPart, 100)
 	stockPart(t, svc, consumedPart, 100)
 
+	recordBatchTracesForTest(t, svc, consumedBatch)
 	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: consumedBatch, Status: 2, Operator: "测试"}); err != nil {
 		t.Fatalf("complete consumed batch: %v", err)
+	}
+	// 完成生产要求先记录投料；这里删掉记录，模拟历史数据，让删除守卫走到
+	// "冻结消耗记录"这一档（新数据里两者总是一起存在）。
+	if err := store.WithTx(func(tx repository.TxOps) error {
+		_, err := tx.DeletePartTrace(consumedBatch, consumedPart)
+		return err
+	}); err != nil {
+		t.Fatalf("clear trace: %v", err)
 	}
 	if err := svc.RemoveBOMItem(bomID, "测试"); err != nil {
 		t.Fatalf("remove bom: %v", err)

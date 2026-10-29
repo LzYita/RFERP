@@ -141,6 +141,17 @@ export function canChangeStatus(b: Batch, to: number): { ok: true } | { ok: fals
   return { ok: true }
 }
 
+/** 完成/撤销后不能记录投料：投料只服务于未完成批次，改历史要撤销重开。 */
+export function canRecordTrace(b: Batch): { ok: true } | { ok: false; msg: string } {
+  if (b.status === BATCH_STATUS.done) {
+    return { ok: false, msg: '已完成的批次不能记录投料；如需修改请撤销后重新建批' }
+  }
+  if (b.status === BATCH_STATUS.revoked) {
+    return { ok: false, msg: '已撤销的批次不能记录投料' }
+  }
+  return { ok: true }
+}
+
 export function canManageParts(b: Batch): { ok: true } | { ok: false; msg: string } {
   if (b.status === BATCH_STATUS.done) {
     return { ok: false, msg: '已完成的批次不能再修改零件' }

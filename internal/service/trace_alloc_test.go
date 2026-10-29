@@ -246,7 +246,7 @@ func TestSkipPartClearsRecordedTrace(t *testing.T) {
 		t.Fatalf("记录后 rows=%d err=%v", len(rows), err)
 	}
 
-	if err := f.svc.AddSkipPart(f.batchID, f.partID); err != nil {
+	if err := f.svc.AddSkipPart(f.batchID, f.partID, "tester"); err != nil {
 		t.Fatalf("add skip part: %v", err)
 	}
 	rows, err = f.svc.GetTraceByBatch(f.batchID)
@@ -268,7 +268,7 @@ func TestSkipPartClearsRecordedTrace(t *testing.T) {
 // 已跳过的零件不允许留下投料记录（接口层兜底，界面已经不给入口）。
 func TestRecordTracesRejectsSkippedPart(t *testing.T) {
 	f := newTraceAllocFixture(t)
-	if err := f.svc.AddSkipPart(f.batchID, f.partID); err != nil {
+	if err := f.svc.AddSkipPart(f.batchID, f.partID, "tester"); err != nil {
 		t.Fatalf("add skip part: %v", err)
 	}
 	err := f.svc.RecordTraces([]*model.BatchTrace{{

@@ -595,6 +595,8 @@ export function RecordTraceModal({
   const [drag, setDrag] = useState<{ line: number; from: number } | null>(null)
 
   function patch(i: number, fn: (s: LineState) => LineState) {
+    // 动过任何一处就把上一次的保存错误收掉：红条留着会让人以为现在仍然不对。
+    if (localErr) setLocalErr('')
     setState((prev) => prev.map((s, j) => (j === i ? fn(s) : s)))
   }
 

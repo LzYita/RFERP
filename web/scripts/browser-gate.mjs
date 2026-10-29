@@ -1452,6 +1452,11 @@ async function stockProjectionGate(page, product, batchNos) {
   check('输入框在合计补齐后不再报错',
     (await tempCard.innerText()).includes('合计 10 / 用量 10'),
     `零件卡片：${(await tempCard.innerText()).replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'trace-modal.png')
+    await page.screenshot({ path: shot })
+    ok(`记录投料截图 ${shot}`)
+  }
 
   // 保存 → 追溯表按零件一行；再打开是回显，再保存仍是一样多条（覆盖不追加）。
   await traceModal.locator('button', { hasText: '确定' }).click()

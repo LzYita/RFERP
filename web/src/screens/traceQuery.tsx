@@ -27,6 +27,43 @@ const MODES: { value: Mode; label: string; input: string; placeholder: string }[
   { value: 'partLot', label: '零件批次号', input: '零件批次号', placeholder: '入库批次号，如 RK-20261029-0001' },
 ]
 
+/** 高亮匹配片段：查询值在结果里出现的位置标黄，命中原因一目了然。
+ *  拆分大小写不敏感；查询值为空或文本不含它时原样返回。 */
+function Highlight({ text, query }: { text: string; query: string }) {
+  const q = query.trim()
+  if (!q) return <>{text}</>
+  const lower = text.toLowerCase()
+  const ql = q.toLowerCase()
+  const parts: { text: string; hit: boolean }[] = []
+  let i = 0
+  while (i < text.length) {
+    const at = lower.indexOf(ql, i)
+    if (at < 0) {
+      parts.push({ text: text.slice(i), hit: false })
+      break
+    }
+    if (at > i) parts.push({ text: text.slice(i, at), hit: false })
+    parts.push({ text: text.slice(at, at + q.length), hit: true })
+    i = at + q.length
+  }
+  return (
+    <>
+      {parts.map((p, idx) =>
+        p.hit ? (
+          <mark
+            key={idx}
+            style={{ background: 'var(--color-warn-bg)', color: 'inherit', borderRadius: 2, padding: '0 1px' }}
+          >
+            {p.text}
+          </mark>
+        ) : (
+          <span key={idx}>{p.text}</span>
+        ),
+      )}
+    </>
+  )
+}
+
 /** 按生产批次分组的结果：组头是批次信息，行是投料记录。 */
 interface Group {
   batch?: Batch
@@ -60,6 +97,9 @@ export function TraceQuery({
   const [mode, setMode] = useState<Mode>('product')
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<BatchTrace[] | null>(null)
+  /** 查询命中的"对象"数：批次（按产品查）或零件（按零件查）。
+      与记录条数分开：命中了对象但对象还没有投料记录，是另一种空态。 */
+  const [hits, setHits] = useState(0)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -88,23 +128,29 @@ export function TraceQuery({
     setError('')
     try {
       let found: BatchTrace[]
+      let hitObjects = 0
       if (mode === 'product') {
         found = await traces.byProduct(value)
+        // 精确批次号：命中与否以"批次列表里存在这个批次号"为准。
+        hitObjects = batches.some((b) => b.batch_no === value) ? 1 : 0
       } else if (mode === 'productFuzzy') {
         // 产品名称/编码在前端匹配批次列表，再按命中的批次逐个取投料。
         const q = value.toLowerCase()
-        const hits = batches.filter(
+        const matched = batches.filter(
           (b) =>
             (b.product_name ?? '').toLowerCase().includes(q) ||
             (b.product_code ?? '').toLowerCase().includes(q),
         )
-        const lists = await Promise.all(hits.map((b) => traces.byBatch(b.id)))
+        hitObjects = matched.length
+        const lists = await Promise.all(matched.map((b) => traces.byBatch(b.id)))
         found = lists.flat()
       } else if (mode === 'partLot') {
         found = await traces.byPartLot(value)
+        hitObjects = found.length > 0 ? 1 : 0
       } else {
         // 零件：编码精确走服务端；名称匹配的零件补一轮 by-batch 过滤。
         const ids = partIDsMatching(value)
+        hitObjects = ids.size
         const named = [...ids].filter((id) => partById.get(id)?.code !== value)
         const byCode = await traces.byPart(value)
         const seen = new Set(byCode.map((r) => r.id))
@@ -120,6 +166,7 @@ export function TraceQuery({
         }
         found = [...byCode, ...extra]
       }
+      setHits(hitObjects)
       setRows(found)
     } catch (e) {
       setError(e instanceof Error ? e.message : '查询失败')
@@ -151,6 +198,7 @@ export function TraceQuery({
           onChange={(v) => {
             setMode(v as Mode)
             setRows(null)
+            setHits(0)
             setError('')
           }}
           options={MODES.map((m) => ({ value: m.value, label: m.label }))}
@@ -168,17 +216,32 @@ export function TraceQuery({
         />
       </FormRow>
       <FormError text={error} />
-      {rows?.length === 0 ? <p role="status">未找到追溯记录</p> : null}
+      {rows?.length === 0 ? (
+        <p role="status">
+          {hits > 0
+            ? // 命中了批次/零件，但它们还没有投料记录——这是数据状态，不是查不到。
+              '命中的批次还没有投料记录（在「记录投料」保存后即可查到）'
+            : '未找到追溯记录：请核对查询值与查询方式是否匹配'}
+        </p>
+      ) : null}
       {groups.length > 0 ? (
         <div className="max-h-[420px] overflow-auto rounded-[6px] border border-[var(--color-border)]">
           {groups.map((g) => (
             <div key={g.batch?.id ?? g.rows[0].batch_id} className="border-b border-[var(--color-border-subtle)] last:border-b-0">
               <div className="flex items-center gap-2 bg-[var(--color-canvas)] px-3 py-1.5 text-[11.5px]">
                 <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                  {g.batch?.batch_no ?? `批次 #${g.rows[0].batch_id}`}
+                  {g.batch ? <Highlight text={g.batch.batch_no} query={query} /> : `批次 #${g.rows[0].batch_id}`}
                 </span>
                 <span className="text-[var(--color-fg-muted)]">
-                  {g.batch ? `${g.batch.product_name ?? ''} [${g.batch.product_code ?? ''}] · ${statusText(g.batch.status)}` : ''}
+                  {g.batch ? (
+                    <>
+                      <Highlight text={g.batch.product_name ?? ''} query={query} />
+                      {' ['}
+                      <Highlight text={g.batch.product_code ?? ''} query={query} />
+                      {'] · '}
+                      {statusText(g.batch.status)}
+                    </>
+                  ) : ''}
                 </span>
                 <span className="ml-auto text-[var(--color-fg-subtle)]">{g.rows.length} 条</span>
               </div>
@@ -204,9 +267,11 @@ export function TraceQuery({
                       <tr key={r.id}>
                         <td>
                           <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                            {part?.code ?? `#${r.part_id}`}
+                            {part ? <Highlight text={part.code} query={query} /> : `#${r.part_id}`}
                           </span>
-                          <span className="ml-1 text-[11px] text-[var(--color-fg-muted)]">{part?.name ?? ''}</span>
+                          <span className="ml-1 text-[11px] text-[var(--color-fg-muted)]">
+                            {part ? <Highlight text={part.name ?? ''} query={query} /> : ''}
+                          </span>
                         </td>
                         <td className="num">{fmtQty(r.used_qty)}</td>
                         <td>
@@ -214,12 +279,14 @@ export function TraceQuery({
                             <div className="flex flex-col">
                               {r.allocations.map((a) => (
                                 <span key={a.inbound_id} style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                                  {a.batch_no} × {fmtQty(a.qty)}
+                                  <Highlight text={a.batch_no} query={query} /> × {fmtQty(a.qty)}
                                 </span>
                               ))}
                             </div>
                           ) : (
-                            <span style={{ color: 'var(--color-fg-muted)' }}>{r.part_batch_no || '—'}</span>
+                            <span style={{ color: 'var(--color-fg-muted)' }}>
+                              {r.part_batch_no ? <Highlight text={r.part_batch_no} query={query} /> : '—'}
+                            </span>
                           )}
                         </td>
                         <td>{r.supplier ?? '—'}</td>

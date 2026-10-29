@@ -85,7 +85,8 @@ it('零件名称：名称匹配走批次轮询，编码精确走 by-part', async
   await u.type(screen.getByPlaceholderText(/编码精确匹配/), '温控')
   await u.click(screen.getByRole('button', { name: '查询' }))
 
-  expect(await screen.findByText('温控器')).toBeTruthy()
+  const cell = await screen.findByText((_, el) => el?.textContent === '零件B温控器')
+  expect(cell).toBeTruthy()
   // 按编码的查询发起过一次（未命中），再由名称匹配补齐。
   expect(fetch).toHaveBeenCalledWith('/api/traces/by-part?part_code=%E6%B8%A9%E6%8E%A7', expect.anything())
 })
@@ -108,9 +109,37 @@ it('零件批次号：按入库批次反查，结果列出批次分配', async (
   await u.click(screen.getByRole('button', { name: '查询' }))
 
   expect(await screen.findByText('成品批次')).toBeTruthy()
-  expect(screen.getByText('RK-20260630-0064 × 4')).toBeTruthy()
-  expect(screen.getByText('RK-20260829-0065 × 8')).toBeTruthy()
+  const alloc = await screen.findByText((_, el) => el?.textContent === 'RK-20260630-0064 × 4')
+  expect(alloc).toBeTruthy()
+  expect(screen.getByText((_, el) => el?.textContent === 'RK-20260829-0065 × 8')).toBeTruthy()
   expect(fetch).toHaveBeenCalledWith('/api/traces/by-part-lot?batch_no=RK-20260630-0064', expect.anything())
+})
+
+it('命中批次但没有投料记录时，提示去记录投料而不是"未找到"', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')))
+  render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
+  const u = await pickMode('产品名称/编码')
+  await u.type(screen.getByPlaceholderText(/支持部分匹配/), '水壶') // 命中 2 个批次
+  await u.click(screen.getByRole('button', { name: '查询' }))
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent',
+    '命中的批次还没有投料记录（在「记录投料」保存后即可查到）',
+  )
+})
+
+it('查询值在结果里高亮（批次号、产品名、零件编码与名称）', async () => {
+  // Response 的 body 只能读一次，两个批次并发查询必须各自拿到新的 Response。
+  const fetch = vi.fn(async () => jsonRows([row({})]))
+  vi.stubGlobal('fetch', fetch)
+  render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
+  const u = await pickMode('产品名称/编码')
+  await u.type(screen.getByPlaceholderText(/支持部分匹配/), '水壶')
+  await u.click(screen.getByRole('button', { name: '查询' }))
+
+  // 组头的产品名「电水壶」里的"水壶"应该被 <mark> 包住。
+  await waitFor(() => expect(document.querySelector('mark')).toBeTruthy())
+  const texts = [...document.querySelectorAll('mark')].map((m) => m.textContent)
+  expect(texts).toContain('水壶')
 })
 
 it('空输入与查询失败不复用旧结果', async () => {

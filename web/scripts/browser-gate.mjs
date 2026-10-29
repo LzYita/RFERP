@@ -1874,6 +1874,10 @@ async function lotTraceGate(page, lotBatchNo) {
   qText = await qm.innerText()
   check('按产品名称查到批次与投料', qText.includes('B-LOT') && qText.includes('P-LOT-1'),
     `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  // 查询值「投料批次」在组头的产品名里出现，应被 <mark> 高亮。
+  const marks = await qm.locator('mark').allInnerTexts()
+  check('查询值在结果里高亮', marks.includes('投料批次'),
+    `mark 内容：${marks.join('、') || '(无)'}`)
 
   // 3) 零件编码/名称：按编码精确查。
   await qm.locator('select').first().selectOption({ label: '零件编码/名称' })
@@ -1961,6 +1965,23 @@ async function lotTraceGate(page, lotBatchNo) {
     `零件卡片：${skipText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}（输入框 ${await skipCard.locator('input').count()} 个）`)
   await skipModal.locator('button', { hasText: '取消' }).click()
   await sleep(300)
+
+  // 5) 命中批次但该批没有投料记录（B-LOT-2 保存被拦、无记录）：引导去记录投料。
+  await page.locator('button', { hasText: '双向查询' }).first().click()
+  await sleep(700)
+  const qm2 = page.getByRole('dialog', { name: /双向追溯查询/ })
+  await qm2.locator('select').first().selectOption({ label: '产品批次号' })
+  await sleep(200)
+  await qm2.locator('input').first().fill('B-LOT-2')
+  await sleep(200)
+  await qm2.locator('button', { hasText: '查询' }).click()
+  await sleep(900)
+  qText = await qm2.innerText()
+  check('命中但无投料记录时引导去记录投料',
+    qText.includes('命中的批次还没有投料记录'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  await qm.locator('button', { hasText: '关闭' }).click()
 }
 
 let browser

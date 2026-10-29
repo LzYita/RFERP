@@ -1468,6 +1468,35 @@ async function stockProjectionGate(page, product, batchNos) {
   check('追溯表展示批次分配', traceAfterSave.includes('批次分配') && /RK-\d{8}/.test(traceAfterSave),
     traceAfterSave.slice(0, 260))
 
+  // 列宽合理：表格不横向溢出，批次分配列宽到能放下 "RK-日期-序号 × 数量"，
+  // 供应商列不被挤到贴着滚动条。
+  const traceGeom = await traceSection.evaluate((el) => {
+    const table = el.querySelector('table.data-table')
+    if (!table) return null
+    const ths = [...table.querySelectorAll('thead th')]
+    const widthOf = (label) => {
+      const hit = ths.find((th) => th.textContent?.includes(label))
+      return hit ? Math.round(hit.getBoundingClientRect().width) : 0
+    }
+    return {
+      scroll: table.scrollWidth,
+      client: table.clientWidth,
+      alloc: widthOf('批次分配'),
+      supplier: widthOf('供应商'),
+    }
+  })
+  check('追溯表不横向溢出', traceGeom !== null && traceGeom.scroll <= traceGeom.client + 1,
+    `表格 ${traceGeom?.scroll} / 容器 ${traceGeom?.client}`)
+  check('追溯表批次分配列足够宽', traceGeom !== null && traceGeom.alloc >= 260,
+    `批次分配列宽：${traceGeom?.alloc}`)
+  check('追溯表供应商列不被压扁', traceGeom !== null && traceGeom.supplier >= 150,
+    `供应商列宽：${traceGeom?.supplier}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'trace-table.png')
+    await page.screenshot({ path: shot })
+    ok(`投料追溯表截图 ${shot}`)
+  }
+
   await headerBar.locator('button', { hasText: '记录投料' }).click()
   await sleep(900)
   const traceModal2 = page.locator('div[class*="fixed"]').last()

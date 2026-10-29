@@ -597,12 +597,14 @@ export function BatchScreen() {
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="data-table is-compact">
             <colgroup>
-              <col style={{ width: 70 }} />
-              <col style={{ width: 130 }} />
-              <col />
-              <col className="num" style={{ width: 90 }} />
-              <col style={{ width: 150 }} />
-              <col style={{ width: 120 }} />
+              {/* 比例按内容定：编码/ID 定宽，名称给中等宽度，批次分配最长
+                  （RK-日期-序号 × 数量），供应商留得下常见厂名。 */}
+              <col style={{ width: 60 }} />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 220 }} />
+              <col className="num" style={{ width: 84 }} />
+              <col style={{ width: 300 }} />
+              <col style={{ width: 180 }} />
             </colgroup>
             <thead>
               <tr>
@@ -621,7 +623,9 @@ export function BatchScreen() {
                     {t.part_id}
                   </td>
                   <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{partById(t.part_id)?.code ?? '—'}</td>
-                  <td>{partById(t.part_id)?.name ?? '—'}</td>
+                  <td className="tree-inline" title={partById(t.part_id)?.name ?? ''}>
+                    {partById(t.part_id)?.name ?? '—'}
+                  </td>
                   {/* Fyne 用 %.2f 固定两位 */}
                   <td className="num">{t.used_qty.toFixed(2)}</td>
                   <td>
@@ -638,7 +642,9 @@ export function BatchScreen() {
                       (t.part_batch_no ?? '')
                     )}
                   </td>
-                  <td>{t.supplier ?? ''}</td>
+                  <td className="tree-inline" title={t.supplier ?? ''}>
+                    {t.supplier ?? ''}
+                  </td>
                 </tr>
               ))}
               {sel !== null && (trace ?? []).length === 0 && traceBatch === sel && (

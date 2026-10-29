@@ -208,6 +208,7 @@ func TestProjectionShortageMatchesCompletionRejectionForOneBatch(t *testing.T) {
 			proj := f.projection(t, usecase.StockProjectionInput{})
 			wantShort := proj.After < 0
 
+			recordBatchTracesForTest(t, f.svc, f.batchIDs["B-ONLY"])
 			err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{
 				ID: f.batchIDs["B-ONLY"], Status: 2, Operator: "测试",
 			})
@@ -227,12 +228,14 @@ func TestProjectionShortageMatchesCompletionRejectionForOneBatch(t *testing.T) {
 func TestCompletionShortageNamesOtherBatches(t *testing.T) {
 	f := seedProjectionFixture(t, 100, 0, 60, "B-1", "B-2", "B-3")
 	// 先完成 B-1：60 ≤ 100，成功，剩 40。
+	recordBatchTracesForTest(t, f.svc, f.batchIDs["B-1"])
 	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{
 		ID: f.batchIDs["B-1"], Status: 2, Operator: "测试",
 	}); err != nil {
 		t.Fatalf("B-1 应当完成成功：%v", err)
 	}
 	// 再完成 B-2：需要 60、剩 40，被拒；此时 B-3 仍在产并占用 60。
+	recordBatchTracesForTest(t, f.svc, f.batchIDs["B-2"])
 	err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{
 		ID: f.batchIDs["B-2"], Status: 2, Operator: "测试",
 	})
@@ -292,7 +295,7 @@ func TestStockProjectionHonoursUseMode(t *testing.T) {
 // 跳过零件既不进投影，也不在完成时扣：两边必须同时排除，否则投影会虚报缺料。
 func TestStockProjectionExcludesSkippedParts(t *testing.T) {
 	f := seedProjectionFixture(t, 100, 0, 60, "B-SKIP")
-	if err := f.svc.AddSkipPart(f.batchIDs["B-SKIP"], f.partID); err != nil {
+	if err := f.svc.AddSkipPart(f.batchIDs["B-SKIP"], f.partID, "tester"); err != nil {
 		t.Fatalf("AddSkipPart: %v", err)
 	}
 

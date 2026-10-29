@@ -80,12 +80,12 @@ type Production interface {
 	ListBatches() ([]model.ProductBatch, error)
 	UpdateBatchStatus(in UpdateBatchStatusInput) error
 	RevokeBatch(in RevokeBatchInput) error
-	AddSkipPart(batchID, partID int64) error
-	RemoveSkipPart(batchID, partID int64) error
+	AddSkipPart(batchID, partID int64, operator string) error
+	RemoveSkipPart(batchID, partID int64, operator string) error
 	GetSkippedParts(batchID int64) ([]int64, error)
 	ListTempParts(batchID int64) ([]model.BatchTempPart, error)
 	AddTempPart(in AddTempPartInput) error
-	RemoveTempPart(batchID, partID int64) error
+	RemoveTempPart(batchID, partID int64, operator string) error
 }
 
 // AddTempPartInput 添加（或改）批次临时零件。推导三件套必须同时给出或
@@ -98,6 +98,8 @@ type AddTempPartInput struct {
 	UseMode  *int
 	Quantity *float64
 	LossRate *float64
+	// Operator 由 API 层从会话填入，用于审计。
+	Operator string
 }
 
 // Trace 批次正/反向追溯。

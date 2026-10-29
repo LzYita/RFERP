@@ -456,7 +456,12 @@ async function inboundDetailGate(page) {
   const detailText = (await detail.count()) > 0 ? await detail.innerText() : ''
   check('详情展示入库批次号', /RK-\d{8}-\d{4,}/.test(detailText), detailText.slice(0, 200))
   check('详情展示批次数量 100', detailText.includes('100 个'), detailText.slice(0, 200))
-  check('详情摘要含现有与剩余合计', detailText.includes('现有') && detailText.includes('剩余合计'), detailText.slice(0, 160))
+  check('详情摘要把现有与剩余合计合并（不再重复）',
+    detailText.includes('现有') && !detailText.includes('剩余合计'),
+    detailText.slice(0, 160))
+  check('详情摘要有在产占用与可用', detailText.includes('在产占用') && detailText.includes('可用'),
+    detailText.slice(0, 200))
+  check('详情批次表有「已排定」列', detailText.includes('已排定'), detailText.slice(0, 200))
   check('一级只列仍有剩余的批次', detailText.includes('仍有剩余的批次（1）'), detailText.slice(0, 160))
   if (process.env.GATE_SHOTS) {
     const shot = path.join(process.env.GATE_SHOTS, 'part-detail.png')
@@ -494,6 +499,14 @@ async function inboundDetailGate(page) {
     text2.slice(0, 220))
   check('备注随批次展示', text2.includes('五金补货'), text2.slice(0, 220))
   check('二级入口常驻（此时为 0 个）', text2.includes('查看已用完批次（0）'), text2.slice(0, 220))
+  // 列宽：表格不能横向溢出，否则备注会被挤到入库时间上（截图里出现过）。
+  const detailGeom = await detail2.evaluate((el) => {
+    const table = el.querySelector('table.data-table')
+    if (!table) return null
+    return { scroll: table.scrollWidth, client: table.clientWidth, box: el.clientWidth }
+  })
+  check('详情批次表不横向溢出', detailGeom !== null && detailGeom.scroll <= detailGeom.client + 1,
+    `表格 ${detailGeom?.scroll} / 容器 ${detailGeom?.box}`)
   check('详情页不放盘点入口', (await detail2.getByRole('button', { name: '盘点', exact: true }).count()) === 0,
     '详情弹窗里出现了盘点按钮')
   await detail2.locator('button', { hasText: '关闭' }).click()
@@ -1344,11 +1357,11 @@ async function stockProjectionGate(page, product, batchNos) {
   // 两个数都要给，且"可用"必须扣掉在产占用，不能拿现有冒充。
   await combo.fill('P-0001')
   await sleep(300)
+  // 临时零件只接受 BOM 表以外的零件：BOM 内的 P-0001 不该出现在候选里。
   const bomPartOpt = mgr.locator('[role="option"]', { hasText: '测试零件' })
-  const bomOptText = (await bomPartOpt.count()) > 0 ? await bomPartOpt.first().innerText() : ''
-  check('BOM 零件同时显示现有与可用（可用扣掉在产占用）',
-    bomOptText.includes('现有 100') && bomOptText.includes('可用 -80'),
-    `候选：${bomOptText || '(无)'}`)
+  check('临时零件候选不包含 BOM 内的零件',
+    (await bomPartOpt.count()) === 0 && (await mgr.innerText()).includes('没有匹配的零件'),
+    `候选数：${await bomPartOpt.count()}`)
 
   await combo.fill('P-TEMP-G')
   await sleep(300)
@@ -1395,18 +1408,110 @@ async function stockProjectionGate(page, product, batchNos) {
   await mgr.locator('button', { hasText: '关闭' }).click()
   await sleep(400)
 
-  // 记录投料：临时零件作为新增的元组行出现（带「临时」标记与预填数量）
+  // 记录投料：每个零件一张卡片（data-part-code），卡片下挂该零件的入库批次。
   await headerBar.locator('button', { hasText: '记录投料' }).click()
   await sleep(800)
   const traceModal = page.locator('div[class*="fixed"]').last()
   const traceText = await traceModal.innerText()
   check('记录投料出现临时零件行', traceText.includes('P-TEMP-G') && traceText.includes('临时'),
     `弹窗内容：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 300)}`)
-  const tempQty = await traceModal.locator('tr', { hasText: 'P-TEMP-G' }).locator('input').first().inputValue()
-  check('记录投料的临时行预填了本批需要量 10', tempQty === '10',
-    `临时行数量输入值：${tempQty}`)
-  await traceModal.locator('button', { hasText: '取消' }).click()
-  await sleep(400)
+  check('记录投料的卡片不再有供应商输入',
+    (await traceModal.locator('input[placeholder="供应商"]').count()) === 0,
+    '供应商输入框仍然存在')
+  const tempCard = traceModal.locator('[data-part-code="P-TEMP-G"]')
+  const tempCardText = (await tempCard.count()) > 0 ? await tempCard.innerText() : ''
+  check('记录投料的临时零件用量只读为 10', tempCardText.includes('用量 10'),
+    `零件卡片：${tempCardText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  check('记录投料的零件卡片只含批次数量输入（总量只读）',
+    (await tempCard.locator('input[placeholder="供应商"]').count()) === 0 &&
+      (await tempCard.locator('input[aria-label*="本次消耗"]').count()) === 1 &&
+      (await tempCard.locator('input').count()) === 1,
+    `输入框数：${await tempCard.locator('input').count()}`)
+
+  const allocRow = tempCard.locator('[draggable="true"]').first()
+  const allocText = (await allocRow.count()) > 0 ? (await allocRow.innerText()).replace(/\s*\n\s*/g, ' ') : ''
+  check('记录投料列出入库批次号', /RK-\d{8}-\d{4,}/.test(allocText), `分配行：${allocText || '(无)'}`)
+  check('记录投料显示可用/本次/剩余', allocText.includes('可用 30') && allocText.includes('剩余 20'),
+    `分配行：${allocText || '(无)'}`)
+  const qtyInput = tempCard.locator('input[aria-label*="本次消耗"]').first()
+  check('记录投料的批次数量可手改（当前 10）', (await qtyInput.inputValue()) === '10',
+    `数量输入值：${await qtyInput.inputValue().catch(() => '?')}`)
+  check('记录投料给出合计与用量的结论', tempCardText.includes('合计 10 / 用量 10'),
+    `零件卡片：${tempCardText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 手改成 5 → 合计对不上，保存被拦；点「按顺序消耗」恢复 10。
+  await qtyInput.fill('5')
+  await sleep(250)
+  await traceModal.locator('button', { hasText: '确定' }).click()
+  await sleep(600)
+  const mismatch = await page.locator('[role="alert"]').first().innerText().catch(() => '')
+  check('投料合计与用量不一致时拦住保存', mismatch.includes('P-TEMP-G') && mismatch.includes('还差 5'),
+    `提示：${mismatch || '(无)'}`)
+  await tempCard.locator('button', { hasText: '按顺序消耗' }).click()
+  await sleep(250)
+  check('「按顺序消耗」恢复默认摊分', (await qtyInput.inputValue()) === '10',
+    `数量输入值：${await qtyInput.inputValue().catch(() => '?')}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'trace-modal.png')
+    await page.screenshot({ path: shot })
+    ok(`记录投料截图 ${shot}`)
+  }
+
+  // 保存 → 追溯表按零件一行；再打开是回显，再保存仍是一样多条（覆盖不追加）。
+  await traceModal.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const traceSection = page.locator('section', { hasText: '投料追溯记录' }).first()
+  const traceAfterSave = (await traceSection.count()) > 0 ? await traceSection.innerText() : ''
+  const firstCount = /共 (\d+) 条/.exec(traceAfterSave)
+  check('保存后追溯表按零件一行', firstCount !== null && Number(firstCount[1]) >= 3,
+    `追溯区：${traceAfterSave.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表展示批次分配', traceAfterSave.includes('批次分配') && /RK-\d{8}/.test(traceAfterSave),
+    traceAfterSave.slice(0, 260))
+
+  // 列宽合理：表格不横向溢出，批次分配列宽到能放下 "RK-日期-序号 × 数量"，
+  // 供应商列不被挤到贴着滚动条。
+  const traceGeom = await traceSection.evaluate((el) => {
+    const table = el.querySelector('table.data-table')
+    if (!table) return null
+    const ths = [...table.querySelectorAll('thead th')]
+    const widthOf = (label) => {
+      const hit = ths.find((th) => th.textContent?.includes(label))
+      return hit ? Math.round(hit.getBoundingClientRect().width) : 0
+    }
+    return {
+      scroll: table.scrollWidth,
+      client: table.clientWidth,
+      alloc: widthOf('批次分配'),
+      supplier: widthOf('供应商'),
+    }
+  })
+  check('追溯表不横向溢出', traceGeom !== null && traceGeom.scroll <= traceGeom.client + 1,
+    `表格 ${traceGeom?.scroll} / 容器 ${traceGeom?.client}`)
+  check('追溯表批次分配列足够宽', traceGeom !== null && traceGeom.alloc >= 260,
+    `批次分配列宽：${traceGeom?.alloc}`)
+  check('追溯表供应商列不被压扁', traceGeom !== null && traceGeom.supplier >= 150,
+    `供应商列宽：${traceGeom?.supplier}`)
+  if (process.env.GATE_SHOTS) {
+    const shot = path.join(process.env.GATE_SHOTS, 'trace-table.png')
+    await page.screenshot({ path: shot })
+    ok(`投料追溯表截图 ${shot}`)
+  }
+
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const traceModal2 = page.locator('div[class*="fixed"]').last()
+  const tempQty2 = await traceModal2
+    .locator('[data-part-code="P-TEMP-G"] input[aria-label*="本次消耗"]')
+    .first()
+    .inputValue()
+  check('再次打开记录投料回显已保存的分配数量', tempQty2 === '10', `数量输入值：${tempQty2}`)
+  await traceModal2.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const traceAgain = (await traceSection.count()) > 0 ? await traceSection.innerText() : ''
+  const secondCount = /共 (\d+) 条/.exec(traceAgain)
+  check('重复记录投料是覆盖而不是追加',
+    firstCount !== null && secondCount !== null && firstCount[1] === secondCount[1],
+    `第一次 ${firstCount?.[1]} 条，第二次 ${secondCount?.[1]} 条`)
   // 恢复原状：后续既有关卡假设"还没选批次"。选择不撤销，第 3 步再点一次
   // 复选框会把它取消掉，完成生产就点不动了。
   await page.locator('input[aria-label="选择 B-STK-1"]').click()
@@ -1491,6 +1596,17 @@ async function stockProjectionGate(page, product, batchNos) {
   await sleep(300)
   check('关闭后批次警告提示消失',
     (await page.locator('[role="status"]').filter({ hasText: '已完成的批次不能更改状态' }).count()) === 0)
+
+  // 3.6) 已完成批次不能记录投料（按钮点下去出守卫提示，不打开弹窗）。
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(500)
+  const traceGuard = page.locator('[role="status"]').filter({ hasText: '已完成的批次不能记录投料' })
+  check('已完成批次不能记录投料', (await traceGuard.count()) === 1,
+    `提示数量：${await traceGuard.count()}`)
+  if ((await traceGuard.count()) > 0) {
+    await traceGuard.getByRole('button', { name: '关闭提示' }).click()
+    await sleep(200)
+  }
 
   // 4) 完成第二批：库存只剩 40，被拒；文案要点名仍在产的 B-STK-3
   await page.locator('input[aria-label="选择 B-STK-2"]').click()
@@ -1616,6 +1732,177 @@ async function stockProjectionGate(page, product, batchNos) {
   }
 }
 
+/**
+ * 投料批次分配：B-LOT 用量 10，P-LOT-1 有三笔入库（10/20/70）。
+ *
+ * 校验四件事：默认按入库先后摊、拖序后「按顺序消耗」按**当前顺序**重算、
+ * 合计不等于用量时保存被拦、保存后按零件一行且供应商来自零件台账，
+ * 再次保存是覆盖而不是追加。
+ */
+async function lotTraceGate(page) {
+  await page.click('text=批次追溯')
+  await sleep(1000)
+  await page.locator('input[aria-label="选择 B-LOT"]').click()
+  await sleep(300)
+  const headerBar = page.locator('.ml-auto.flex').filter({ hasText: '新建批次' }).first()
+
+  // 还没记录投料时不允许完成生产。
+  await headerBar.locator('button', { hasText: '完成生产' }).click()
+  await sleep(400)
+  const needTraceModal = page.locator('div[class*="fixed"]').last()
+  await needTraceModal.locator('button', { hasText: '确定' }).click()
+  await sleep(800)
+  const needTraceMsg = await page.locator('[role="alert"]').last().innerText().catch(() => '')
+  check('未记录投料时完成生产被拒', needTraceMsg.includes('必须记录投料'),
+    `提示：${needTraceMsg.slice(0, 200)}`)
+  await needTraceModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
+
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const modal = page.locator('div[class*="fixed"]').last()
+  const card = modal.locator('[data-part-code="P-LOT-1"]')
+  const cardText = (await card.count()) > 0 ? await card.innerText() : ''
+  check('投料卡片显示只读用量 10', cardText.includes('用量 10'),
+    `零件卡片：${cardText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
+
+  const labelsOf = async (scope) =>
+    scope
+      .locator('input[aria-label$="本次消耗"]')
+      .evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
+  const qtyOf = async (scope, label) =>
+    scope.locator(`input[aria-label="${label}"]`).inputValue()
+
+  const labels = await labelsOf(card)
+  check('投料卡片按三笔入库各占一行', labels.length === 3, `批次行：${labels.join('、')}`)
+  const first = await qtyOf(card, labels[0])
+  const second = await qtyOf(card, labels[1])
+  const third = await qtyOf(card, labels[2])
+  check('默认按入库先后摊满第一批', first === '10' && second === '0' && third === '0',
+    `数量：${first}/${second}/${third}`)
+
+  // 用 ↓ 把第一批移到第二位：数量不动，顺序变化。
+  await card.locator('button[aria-label^="下移批次"]').first().click()
+  await sleep(250)
+  const labels2 = await labelsOf(card)
+  check('批次顺序可调整', labels2[0] === labels[1] && labels2[1] === labels[0],
+    `顺序：${labels2.join('、')}`)
+  check('换序本身不改动数量',
+    (await qtyOf(card, labels2[0])) === '0' && (await qtyOf(card, labels2[1])) === '10',
+    `数量：${await qtyOf(card, labels2[0])}/${await qtyOf(card, labels2[1])}`)
+
+  // 按当前顺序重算：新的第一行应吃掉全部 10。
+  await card.locator('button', { hasText: '按顺序消耗' }).click()
+  await sleep(250)
+  check('「按顺序消耗」按当前顺序重算',
+    (await qtyOf(card, labels2[0])) === '10' && (await qtyOf(card, labels2[1])) === '0',
+    `数量：${await qtyOf(card, labels2[0])}/${await qtyOf(card, labels2[1])}`)
+
+  // 手改：第一行 4、第二行 5 → 合计 9，与用量 10 不符 → 拦住保存。
+  await card.locator(`input[aria-label="${labels2[0]}"]`).fill('4')
+  await card.locator(`input[aria-label="${labels2[1]}"]`).fill('5')
+  await sleep(250)
+  await modal.locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const mismatch = await page.locator('[role="alert"]').first().innerText().catch(() => '')
+  check('合计不等于用量时拦住保存', mismatch.includes('还差 1'), `提示：${mismatch || '(无)'}`)
+
+  // 补到 4 + 6 = 10 → 可以保存。
+  await card.locator(`input[aria-label="${labels2[1]}"]`).fill('6')
+  await sleep(250)
+  check('补齐后卡片显示合计等于用量',
+    (await card.innerText()).includes('合计 10 / 用量 10'),
+    `零件卡片：${(await card.innerText()).replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  await modal.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+
+  const section = page.locator('section', { hasText: '投料追溯记录' }).first()
+  const traceText = (await section.count()) > 0 ? await section.innerText() : ''
+  check('投料保存后按零件一行', /共 1 条/.test(traceText),
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表带出零件台账上的供应商', traceText.includes('样本供应商'),
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+  check('追溯表列出两笔批次分配', (traceText.match(/RK-/g) ?? []).length >= 2,
+    `追溯区：${traceText.replace(/\s*\n\s*/g, ' | ').slice(0, 260)}`)
+
+  // 再打开：回显保存的顺序与数量；再保存仍是 1 条（覆盖）。
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const modal2 = page.locator('div[class*="fixed"]').last()
+  const card2 = modal2.locator('[data-part-code="P-LOT-1"]')
+  const labels3 = await labelsOf(card2)
+  const a = await qtyOf(card2, labels3[0])
+  const b = await qtyOf(card2, labels3[1])
+  check('再次打开回显保存的顺序与数量', a === '4' && b === '6', `数量：${a}/${b}`)
+  await modal2.locator('button', { hasText: '确定' }).click()
+  await sleep(1200)
+  const again = (await section.count()) > 0 ? await section.innerText() : ''
+  check('重复保存仍是覆盖（条数不变）', /共 1 条/.test(again),
+    `追溯区：${again.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  // 库存不够就不许投料：B-LOT 已排定 10，剩 90；再建一个用量 95 的批次，
+  // 卡片应标出库存不足，保存被整体拦下（不再有"余量按先进先出扣"的口子）。
+  await page.locator('button', { hasText: '新建批次' }).click()
+  await sleep(700)
+  const create = page.locator('div[class*="fixed"]').last()
+  await create.locator('label:has-text("产品名称") select').first().selectOption('投料批次验证产品')
+  await sleep(250)
+  await create.locator('label:has-text("产品编码") select').first().selectOption('P-LOT-P')
+  await sleep(250)
+  const specSel = create.locator('label:has-text("规格型号") select').first()
+  if ((await specSel.count()) > 0) await specSel.selectOption('L')
+  await create.locator('label:has-text("批次号") input').first().fill('B-LOT-2')
+  await create.getByLabel('计划数量').fill('95')
+  await sleep(400)
+  await create.getByRole('button', { name: '确定' }).click()
+  await sleep(1500)
+
+  await page.locator('input[aria-label="选择 B-LOT-2"]').click()
+  await sleep(300)
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const shortModal = page.locator('div[class*="fixed"]').last()
+  const shortCard = shortModal.locator('[data-part-code="P-LOT-1"]')
+  const shortText = (await shortCard.count()) > 0 ? await shortCard.innerText() : ''
+  check('可用不足的零件在投料卡片里标出库存不足',
+    shortText.includes('库存不足') && shortText.includes('用量 95'),
+    `零件卡片：${shortText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+  await shortModal.locator('button', { hasText: '确定' }).click()
+  await sleep(500)
+  const shortAlert = await page.locator('[role="alert"]').first().innerText().catch(() => '')
+  check('库存不足时不允许保存投料',
+    shortAlert.includes('P-LOT-1') && shortAlert.includes('库存不足'),
+    `提示：${shortAlert || '(无)'}`)
+  await shortModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
+
+  // 先记录投料、再标记跳过：该批次该零件的投料记录应自动清掉，
+  // 卡片也不再有数量输入（跳过 = 这批不用它）。
+  await page.locator('input[aria-label="选择 B-LOT"]').click()
+  await sleep(300)
+  await headerBar.locator('button', { hasText: '零件管理' }).click()
+  await sleep(700)
+  const skipMgr = page.locator('div[class*="fixed"]').last()
+  await skipMgr.locator('label', { hasText: 'P-LOT-1' }).click()
+  await sleep(200)
+  await skipMgr.locator('button', { hasText: '保存' }).click()
+  await sleep(1000)
+  const afterSkip = (await section.count()) > 0 ? await section.innerText() : ''
+  check('标记跳过后该零件的投料记录被自动清掉', /共 0 条/.test(afterSkip),
+    `追溯区：${afterSkip.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const skipModal = page.locator('div[class*="fixed"]').last()
+  const skipCard = skipModal.locator('[data-part-code="P-LOT-1"]')
+  const skipText = (await skipCard.count()) > 0 ? await skipCard.innerText() : ''
+  check('已跳过的零件在投料弹窗里没有填写入口',
+    skipText.includes('已跳过') && (await skipCard.locator('input').count()) === 0,
+    `零件卡片：${skipText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}（输入框 ${await skipCard.locator('input').count()} 个）`)
+  await skipModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
+}
+
 let browser
 try {
   sweepStaleRuns()
@@ -1711,6 +1998,44 @@ try {
   }
   ok('装配三个共用零件的待生产批次（B-STK-1/2/3）')
 
+  // 投料批次分配场景：一个零件三笔入库（10/20/70），本批用量 10。
+  // 供应商写在零件台账上——界面不再手填，记录投料时由服务端带出。
+  await seedPart(auth, 'P-LOT-1', '投料批次零件', '五金', { stock_qty: 0, warn_qty: 0, supplier: '样本供应商' })
+  {
+    const rows = await api('/api/parts', { headers: auth })
+    const list = Array.isArray(rows.body) ? rows.body : rows.body?.items
+    const p = Array.isArray(list) ? list.find((x) => x.code === 'P-LOT-1') : undefined
+    if (!p) throw new Error('预置 P-LOT-1 后没有回读成功')
+    for (const qty of [10, 20, 70]) {
+      const r = await api('/api/parts/stock-in', {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ part_id: p.id, qty }),
+      })
+      if (r.code !== 200) throw new Error(`预置 P-LOT-1 入库失败 ${r.code} ${r.text.slice(0, 120)}`)
+    }
+    const prod = await api('/api/products', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ code: 'P-LOT-P', name: '投料批次验证产品', spec: 'L', unit: '台' }),
+    })
+    if (prod.code !== 200) throw new Error(`预置投料产品失败 ${prod.code} ${prod.text.slice(0, 120)}`)
+    const bom = await api('/api/bom', {
+      method: 'POST',
+      headers: auth,
+      // 可替换=1：让它出现在「零件管理 → 跳过」列表里，覆盖"先记投料后跳过"。
+      body: JSON.stringify({ product_id: prod.body.id, part_id: p.id, quantity: 1, loss_rate: 0, replaceable: 1, use_mode: 0 }),
+    })
+    if (bom.code !== 200) throw new Error(`预置投料 BOM 失败 ${bom.code} ${bom.text.slice(0, 120)}`)
+    const bat = await api('/api/batches', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ batch_no: 'B-LOT', product_id: prod.body.id, plan_qty: 10 }),
+    })
+    if (bat.code !== 200) throw new Error(`预置投料批次失败 ${bat.code} ${bat.text.slice(0, 120)}`)
+  }
+  ok('装配投料批次场景（P-LOT-1 三笔入库 + B-LOT）')
+
   const pageUrl = await startFrontend(desktopStyle)
   ok(desktopStyle ? '页面来自产物内嵌资源' : 'vite 就绪（/api 已反代）')
 
@@ -1772,6 +2097,9 @@ try {
 
     // 库存投影：三批共用零件的场景（必须在 BOM 验证之后跑：它会完成/拒绝批次）
     await stockProjectionGate(page, BOM_PRODUCT, STOCK_BATCHES)
+
+    // 投料批次分配：够了库存的独立批次，验证改序/改量/覆盖/供应商
+    await lotTraceGate(page)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

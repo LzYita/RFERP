@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { FormError, Modal } from '../components/form'
 import { Btn } from '../components/ui'
 import { parts as partsApi, type Part, type PartInbound } from '../lib/catalog'
+import { projection as projectionApi } from '../lib/projection'
 import { fmtQty } from '../lib/num'
 
 /**
@@ -33,9 +34,10 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
     <table className="data-table is-narrow is-compact">
       <colgroup>
         <col style={{ width: 150 }} />
-        <col className="num" style={{ width: 84 }} />
-        <col className="num" style={{ width: 84 }} />
-        <col style={{ width: 112 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col style={{ width: 126 }} />
         <col />
       </colgroup>
       <thead>
@@ -43,24 +45,49 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
           <th>批次号</th>
           <th className="num">入库数量</th>
           <th className="num">剩余</th>
+          <th className="num">已排定</th>
           <th>入库时间</th>
           <th>备注</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => (
-          <tr key={r.id}>
-            <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{r.batch_no}</td>
-            <td className="num">
-              {fmtQty(r.qty)} {unit}
-            </td>
-            <td className="num" style={{ fontWeight: 600 }}>
-              {fmtQty(r.remaining)} {unit}
-            </td>
-            <td style={{ color: 'var(--color-fg-muted)' }}>{fmtInboundTime(r.created_at)}</td>
-            <td style={{ color: 'var(--color-fg-muted)' }}>{r.note || '—'}</td>
-          </tr>
-        ))}
+        {rows.map((r) => {
+          const holders = r.occupied_by ?? []
+          const title =
+            holders.length > 0
+              ? `被未完成批次预定：${holders.map((h) => `${h.batch_no} ${fmtQty(h.qty)}`).join('、')}`
+              : '没有未完成批次预定这批料'
+          return (
+            <tr key={r.id}>
+              <td
+                className="tree-inline"
+                title={r.batch_no}
+                style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}
+              >
+                {r.batch_no}
+              </td>
+              <td className="num">
+                {fmtQty(r.qty)} {unit}
+              </td>
+              <td className="num" style={{ fontWeight: 600 }}>
+                {fmtQty(r.remaining)} {unit}
+              </td>
+              <td className="num" title={title} style={{ color: r.occupied > 0 ? 'var(--color-warn)' : undefined }}>
+                {r.occupied > 0 ? `${fmtQty(r.occupied)} ${unit}` : '—'}
+              </td>
+              <td className="tabular-nums" style={{ color: 'var(--color-fg-muted)' }}>
+                {fmtInboundTime(r.created_at)}
+              </td>
+              <td
+                className="tree-inline"
+                title={r.note || ''}
+                style={{ color: 'var(--color-fg-muted)' }}
+              >
+                {r.note || '—'}
+              </td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )
@@ -76,6 +103,9 @@ export function PartDetailModal({
   const [rows, setRows] = useState<PartInbound[] | null>(null)
   const [err, setErr] = useState('')
   const [exhaustedOpen, setExhaustedOpen] = useState(false)
+  // 投影里的在产占用（全部未完成批次对这个零件的需求合计）。
+  // null = 取不到（投影失败），此时退回"已排定"的数量并在标题里说明。
+  const [committed, setCommitted] = useState<number | null>(null)
 
   // part.id 变化由父级用 key 重挂整个弹窗（见 PartsScreen），
   // 这里只负责挂载时拉一次数据，不做同步重置。
@@ -89,6 +119,16 @@ export function PartDetailModal({
       .catch((e) => {
         if (alive) setErr(e instanceof Error ? e.message : '入库记录加载失败')
       })
+    projectionApi
+      .get()
+      .then((res) => {
+        if (!alive) return
+        const hit = res.parts.find((p) => p.part_id === part.id)
+        setCommitted(hit ? hit.committed : 0)
+      })
+      .catch(() => {
+        if (alive) setCommitted(null)
+      })
     return () => {
       alive = false
     }
@@ -98,13 +138,19 @@ export function PartDetailModal({
   const active = list.filter((r) => r.remaining > 0)
   const exhausted = list.filter((r) => r.remaining <= 0)
   const remainingTotal = list.reduce((acc, r) => acc + r.remaining, 0)
+  // 在产占用：全部未完成批次对这个零件的需求合计（投影口径，和零件页一致）。
+  // 「已排定」只统计投料计划里指名从某一批扣的部分；没排定的完成时按先进先出，
+  // 分不到具体批次上，所以批次列的占用可能小于占用总量——标题里写清楚。
+  const allottedTotal = list.reduce((acc, r) => acc + (r.occupied ?? 0), 0)
+  const occupiedTotal = committed ?? allottedTotal
+  const available = Math.round((remainingTotal - occupiedTotal) * 100) / 100
 
   return (
     <>
       <Modal
         title={`零件详情 · ${part.code}`}
         onClose={onClose}
-        width={620}
+        width={720}
         zIndex={50}
         topMost={!exhaustedOpen}
         footer={<Btn onClick={onClose}>关闭</Btn>}
@@ -116,9 +162,17 @@ export function PartDetailModal({
             {part.name}
             {part.spec ? <span className="ml-1 text-[var(--color-fg-muted)]">{part.spec}</span> : null}
           </span>
-          <span className="tabular-nums">
-            现有 <b>{fmtQty(part.stock_qty)}</b> · 预警线 {fmtQty(part.warn_qty)} · 剩余合计{' '}
-            <b>{fmtQty(remainingTotal)}</b> {part.unit}
+          <span
+            className="tabular-nums"
+            data-testid="part-detail-summary"
+            title={
+              committed === null
+                ? '投影取不到，只显示投料计划里已排定的数量'
+                : '现有库存恒等于各批次剩余之和；在产占用 = 全部未完成批次的需求合计；可用 = 现有 − 在产占用'
+            }
+          >
+            现有 <b>{fmtQty(part.stock_qty)}</b> · 在产占用 <b>{fmtQty(occupiedTotal)}</b> ·
+            可用 <b>{fmtQty(available)}</b> {part.unit}
           </span>
         </div>
 
@@ -132,7 +186,7 @@ export function PartDetailModal({
                   完全看不到这个界面，会以为功能没做。空态由二级弹窗说明。 */}
               <button
                 type="button"
-                className="text-[var(--color-primary)] underline"
+                className="whitespace-nowrap px-1 text-[var(--color-primary)] leading-5 underline decoration-1 underline-offset-4"
                 onClick={() => setExhaustedOpen(true)}
               >
                 查看已用完批次（{exhausted.length}）
@@ -143,7 +197,9 @@ export function PartDetailModal({
         )}
 
         <p className="mt-2.5 text-[11px] text-[var(--color-fg-muted)]">
-          生产扣料按先进先出扣批次；现有库存恒等于各批次剩余之和。盘点请回零件列表点「盘点」。
+          现有库存恒等于各批次剩余之和。「已排定」是投料计划里指名从这批扣的数量；
+          没排定的占用在完成时按先进先出分派，所以各批已排定之和可能小于在产占用。
+          盘点请回零件列表点「盘点」。
         </p>
       </Modal>
 
@@ -152,7 +208,7 @@ export function PartDetailModal({
         <Modal
           title={`已用完批次 · ${part.code}（${exhausted.length}）`}
           onClose={() => setExhaustedOpen(false)}
-          width={600}
+          width={720}
           zIndex={60}
           footer={<Btn onClick={() => setExhaustedOpen(false)}>返回</Btn>}
         >

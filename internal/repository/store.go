@@ -75,6 +75,19 @@ type TxOps interface {
 	CreateAuditLog(log *model.AuditLog) error
 	CreateBatchConsumption(c *model.BatchConsumption) error
 	CreateTrace(trace *model.BatchTrace) (int64, error)
+	// ReplacePartTrace 整体替换 (batch, part) 的投料记录与批次分配（记录投料是覆盖）。
+	ReplacePartTrace(trace *model.BatchTrace) (int64, error)
+	// DrawPartInboundForBatch 按该批次投料分配的顺序扣入库批次，余量走先进先出。
+	DrawPartInboundForBatch(partID, batchID int64, qty float64) error
+	// DeletePartTrace 删掉 (batch, part) 的投料记录与分配，返回删掉的记录条数
+	// （标记跳过/移除临时零件时自动清理）。
+	DeletePartTrace(batchID, partID int64) (int64, error)
+	// GetInboundForUpdate 读一笔入库并加行锁（保存投料前校验可用量）。
+	GetInboundForUpdate(inboundID int64) (*model.PartInbound, error)
+	// InboundAllocQty 同一入库批次上「本批次已分配」与「其它在产批次已分配」的量。
+	InboundAllocQty(batchID, inboundID int64) (own, others float64, err error)
+	// BatchTraceParts 该批次已有投料记录的零件 id。
+	BatchTraceParts(batchID int64) ([]int64, error)
 	ListBatchConsumptions(batchID int64) ([]model.BatchConsumption, error)
 	GetSkippedParts(batchID int64) ([]int64, error)
 	AddSkipPart(batchID, partID int64) error
@@ -101,6 +114,11 @@ type Store interface {
 	TracesForPart(partID int64) ([]model.PartTraceRef, error)
 	// ListPartInbounds 零件的入库批次列表（读侧；写入只发生在 StockIn 事务里）。
 	ListPartInbounds(partID int64) ([]model.PartInbound, error)
+	// ListBatchTraceAllocs 某生产批次按零件分组的投料批次分配（读侧）。
+	ListBatchTraceAllocs(batchID int64) (map[int64][]model.BatchTraceAlloc, error)
+	// InboundAllocsOfPart 某零件的全部分配明细；占用由服务层按
+	// "该批次当前是否仍会消耗这个零件"过滤后统计。
+	InboundAllocsOfPart(partID int64) ([]InboundAllocRow, error)
 
 	ListBatches() ([]model.ProductBatch, error)
 	GetSkippedParts(batchID int64) ([]int64, error)

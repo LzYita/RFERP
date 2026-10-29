@@ -88,6 +88,12 @@ export interface ProductWrite {
  * remaining 是给逐批次盘点用的：总量恒等于该零件全部批次 remaining 之和。
  * remaining 为 0 的批次叫"已用完"，详情一级界面不列，收进二级弹窗。
  */
+/** 某未完成批次从这批入库里预定了多少（零件详情展开用）。 */
+export interface PartInboundAlloc {
+  batch_no: string
+  qty: number
+}
+
 export interface PartInbound {
   id: number
   part_id: number
@@ -96,6 +102,9 @@ export interface PartInbound {
   remaining: number
   note?: string
   created_at: string
+  /** 在产批次的投料计划已经预定掉的量（不含已完成批次，它们已体现在 remaining 里）。 */
+  occupied: number
+  occupied_by?: PartInboundAlloc[]
 }
 
 /** 逐批次盘点提交的一行：把这批的剩余改成实盘数量。 */

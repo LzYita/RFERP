@@ -61,14 +61,26 @@ type PartBatchUse struct {
 // 库存总量仍是 parts.stock_qty，恒等于该零件全部批次 Remaining 之和：
 // 生产扣料按先进先出扣批次，逐批次盘点直接改 Remaining。Remaining 为 0
 // 的批次称为"已用完"，零件详情的一级界面只列还有剩余的批次。
+//
+// Occupied / OccupiedBy 只在零件详情查询里填充：未完成批次通过投料计划
+// 已经「预定」了多少。它不代表库存已经减少（那是完成生产时才发生的），
+// 用来回答"这批剩余里有多少是别人等着用的"。
 type PartInbound struct {
-	ID        int64     `db:"id" json:"id"`
-	PartID    int64     `db:"part_id" json:"part_id"`
-	BatchNo   string    `db:"batch_no" json:"batch_no"`
-	Qty       float64   `db:"qty" json:"qty"`
-	Remaining float64   `db:"remaining" json:"remaining"`
-	Note      *string   `db:"note" json:"note,omitempty"`
-	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	ID         int64              `db:"id" json:"id"`
+	PartID     int64              `db:"part_id" json:"part_id"`
+	BatchNo    string             `db:"batch_no" json:"batch_no"`
+	Qty        float64            `db:"qty" json:"qty"`
+	Remaining  float64            `db:"remaining" json:"remaining"`
+	Note       *string            `db:"note" json:"note,omitempty"`
+	CreatedAt  time.Time          `db:"created_at" json:"created_at"`
+	Occupied   float64            `db:"-" json:"occupied"`
+	OccupiedBy []PartInboundAlloc `db:"-" json:"occupied_by,omitempty"`
+}
+
+// PartInboundAlloc 是一笔"未完成批次预定了这个入库批次多少"，供零件详情展开。
+type PartInboundAlloc struct {
+	BatchNo string  `db:"batch_no" json:"batch_no"`
+	Qty     float64 `db:"qty" json:"qty"`
 }
 
 // PartInboundDraw 是一笔"生产批次从某入库批次扣了多少"的明细。
@@ -147,15 +159,31 @@ type BatchTempPart struct {
 	LossRate *float64 `db:"loss_rate" json:"loss_rate,omitempty"`
 }
 
+// BatchTrace 是一个生产批次对一个零件的投料记录。
+//
+// v18 起一条记录代表「本批这个零件一共用了多少」，Allocations 说明这些用量
+// 从哪几个入库批次出、按什么顺序扣（见 BatchTraceAlloc）。同一批次的同一
+// 零件只有一条记录：再次记录投料是覆盖，不是追加。PartBatchNo 是 v18 之前
+// 的自由文本批次号，保留仅供历史记录展示。
 type BatchTrace struct {
-	ID          int64     `db:"id" json:"id"`
-	BatchID     int64     `db:"batch_id" json:"batch_id"`
-	PartID      int64     `db:"part_id" json:"part_id"`
-	PartBatchNo *string   `db:"part_batch_no" json:"part_batch_no,omitempty"`
-	UsedQty     float64   `db:"used_qty" json:"used_qty"`
-	Supplier    *string   `db:"supplier" json:"supplier,omitempty"`
-	CreatedAt   time.Time `db:"created_at" json:"created_at"`
-	Operator    *string   `db:"operator" json:"operator,omitempty"`
+	ID          int64             `db:"id" json:"id"`
+	BatchID     int64             `db:"batch_id" json:"batch_id"`
+	PartID      int64             `db:"part_id" json:"part_id"`
+	PartBatchNo *string           `db:"part_batch_no" json:"part_batch_no,omitempty"`
+	UsedQty     float64           `db:"used_qty" json:"used_qty"`
+	Supplier    *string           `db:"supplier" json:"supplier,omitempty"`
+	CreatedAt   time.Time         `db:"created_at" json:"created_at"`
+	Operator    *string           `db:"operator" json:"operator,omitempty"`
+	Allocations []BatchTraceAlloc `db:"-" json:"allocations,omitempty"`
+}
+
+// BatchTraceAlloc 是一条投料分配：本批从哪一收入库批次扣、扣多少、第几顺位。
+// Position 从 0 起，完成生产时按它从小到大扣批次。
+type BatchTraceAlloc struct {
+	InboundID int64   `db:"inbound_id" json:"inbound_id"`
+	BatchNo   string  `db:"batch_no" json:"batch_no"`
+	Qty       float64 `db:"qty" json:"qty"`
+	Position  int     `db:"position" json:"position"`
 }
 
 type AuditLog struct {

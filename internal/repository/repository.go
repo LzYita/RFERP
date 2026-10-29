@@ -781,7 +781,7 @@ func (r *Repository) CreateTrace(t *model.BatchTrace) (int64, error) {
 
 func (r *Repository) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 	var list []model.BatchTrace
-	err := r.db.Select(&list, `SELECT * FROM batch_trace WHERE batch_id=?`, batchID)
+	err := r.db.Select(&list, `SELECT * FROM batch_trace WHERE batch_id=? ORDER BY part_id`, batchID)
 	return list, err
 }
 

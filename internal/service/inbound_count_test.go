@@ -115,6 +115,7 @@ func TestCompletionDrawsFIFOAndRevokeRestoresOriginalBatches(t *testing.T) {
 	stockPart(t, f.svc, f.partID, 10)
 	f.assertLedger(t, []float64{10, 10})
 
+	recordBatchTracesForTest(t, f.svc, f.batchID)
 	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: f.batchID, Status: 2, Operator: "生产"}); err != nil {
 		t.Fatalf("complete: %v", err)
 	}

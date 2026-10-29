@@ -585,7 +585,7 @@ func (s *SQLiteStore) CreateTrace(tr *model.BatchTrace) (int64, error) {
 
 func (s *SQLiteStore) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 	var list []model.BatchTrace
-	err := s.db.Select(&list, `SELECT * FROM batch_trace WHERE batch_id=?`, batchID)
+	err := s.db.Select(&list, `SELECT * FROM batch_trace WHERE batch_id=? ORDER BY part_id`, batchID)
 	return list, err
 }
 

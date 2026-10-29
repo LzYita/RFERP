@@ -51,12 +51,15 @@ func listPartInbounds(q queryer, partID int64) ([]model.PartInbound, error) {
 		SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at
 		FROM part_inbounds
 		WHERE part_id = ?
-		ORDER BY id DESC`, partID)
+		ORDER BY created_at DESC, id DESC`, partID)
 	return list, err
 }
 
-// partInboundsForUpdate 按先进先出（id 升序）读零件全部批次并加行锁，
-// 供扣料与盘点在同一事务里改写剩余。
+// partInboundsForUpdate 按入库时间由远到近（created_at, id）读零件全部批次
+// 并加行锁，供扣料与盘点在同一事务里改写剩余。
+//
+// 排序按时间而不是 id：批次可以补录（迁移回填、样本数据），后插入的行
+// 可能代表更早的入库；"先进先出"说的是入库先后，不是行号先后。
 func partInboundsForUpdate(q queryer, partID int64, forUpdate bool) ([]model.PartInbound, error) {
 	list := make([]model.PartInbound, 0)
 	suffix := ""
@@ -67,7 +70,7 @@ func partInboundsForUpdate(q queryer, partID int64, forUpdate bool) ([]model.Par
 		SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at
 		FROM part_inbounds
 		WHERE part_id = ?
-		ORDER BY id`+suffix, partID)
+		ORDER BY created_at, id`+suffix, partID)
 	return list, err
 }
 
@@ -90,6 +93,28 @@ func reducePartInboundFIFO(q queryer, partID int64, qty float64, forUpdate bool)
 }
 
 func deductPartInboundFIFO(q queryer, partID int64, qty float64, batchID *int64, forUpdate bool) error {
+	return deductPartInbound(q, partID, qty, batchID, nil, forUpdate)
+}
+
+// drawPartInboundForBatch 按本批次投料计划里的顺序和数量扣入库批次，
+// 计划没覆盖到的余量再按先进先出扣。
+//
+// 完成生产走这条路径：用户在「记录投料」里排的先后与数量，
+// 就是实际从各批次扣多少；纯 FIFO 只在没有计划或计划不够时兜底。
+func drawPartInboundForBatch(q queryer, partID, batchID int64, qty float64, forUpdate bool) error {
+	if qty <= 0 {
+		return nil
+	}
+	plan, err := traceAllocPlan(q, batchID, partID)
+	if err != nil {
+		return fmt.Errorf("load trace allocs: %w", err)
+	}
+	return deductPartInbound(q, partID, qty, &batchID, plan, forUpdate)
+}
+
+// deductPartInbound 扣一个零件的入库批次。plan 非空时先按计划里的顺序
+// 扣、每笔最多扣到计划量，没覆盖到的部分再按 id 升序（先进先出）兜底。
+func deductPartInbound(q queryer, partID int64, qty float64, batchID *int64, plan []traceAllocStep, forUpdate bool) error {
 	if qty <= 0 {
 		return nil
 	}
@@ -97,29 +122,61 @@ func deductPartInboundFIFO(q queryer, partID int64, qty float64, batchID *int64,
 	if err != nil {
 		return fmt.Errorf("load inbounds for draw: %w", err)
 	}
-	left := qty
+	byID := make(map[int64]model.PartInbound, len(list))
 	for _, in := range list {
-		if left <= 0 {
-			break
+		byID[in.ID] = in
+	}
+	left := qty
+	used := make(map[int64]bool, len(list))
+
+	take := func(in model.PartInbound, cap float64) error {
+		if left <= 0 || in.Remaining <= 0 || cap <= 0 {
+			return nil
 		}
-		if in.Remaining <= 0 {
-			continue
+		n := in.Remaining
+		if n > left {
+			n = left
 		}
-		take := in.Remaining
-		if take > left {
-			take = left
+		if n > cap {
+			n = cap
 		}
-		if _, err := q.Exec(`UPDATE part_inbounds SET remaining = ? WHERE id = ?`, round2(in.Remaining-take), in.ID); err != nil {
+		if _, err := q.Exec(`UPDATE part_inbounds SET remaining = ? WHERE id = ?`, round2(in.Remaining-n), in.ID); err != nil {
 			return fmt.Errorf("update inbound remaining: %w", err)
 		}
 		if batchID != nil {
 			if _, err := q.Exec(
 				`INSERT INTO part_inbound_draws (batch_id, inbound_id, qty) VALUES (?, ?, ?)`,
-				*batchID, in.ID, take); err != nil {
+				*batchID, in.ID, n); err != nil {
 				return fmt.Errorf("record inbound draw: %w", err)
 			}
 		}
-		left = round2(left - take)
+		left = round2(left - n)
+		return nil
+	}
+
+	for _, step := range plan {
+		if left <= 0 {
+			break
+		}
+		in, ok := byID[step.InboundID]
+		if !ok || used[step.InboundID] {
+			continue
+		}
+		used[step.InboundID] = true
+		if err := take(in, step.Qty); err != nil {
+			return err
+		}
+	}
+	for _, in := range list {
+		if left <= 0 {
+			break
+		}
+		if used[in.ID] {
+			continue
+		}
+		if err := take(in, in.Remaining); err != nil {
+			return err
+		}
 	}
 	if left > 0 {
 		return fmt.Errorf("批次剩余不足以扣减：还差 %.2f（账本与库存总量不一致，请先盘点）", left)

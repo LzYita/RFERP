@@ -494,9 +494,92 @@ func (s *Service) StockIn(in usecase.StockInInput) (string, error) {
 	return batchNo, nil
 }
 
-// ListPartInbounds 零件的入库批次列表（零件详情页）。
+// ListPartInbounds 零件的入库批次列表（零件详情页），并标出每个批次被
+// 在产批次预定了多少——"这批还剩 40，其中 30 是别的批次等着用的"。
+//
+// 占用只统计「这批现在仍然会消耗这个零件」的批次：BOM 里引用且未跳过，
+// 或者被加成该批的临时零件。BOM 改动/临时零件移除只影响还在生产的批次，
+// 已完成批次的投料记录是历史，不参与占用。
 func (s *Service) ListPartInbounds(partID int64) ([]model.PartInbound, error) {
-	return s.repo.ListPartInbounds(partID)
+	rows, err := s.repo.ListPartInbounds(partID)
+	if err != nil {
+		return nil, err
+	}
+	allocs, err := s.repo.InboundAllocsOfPart(partID)
+	if err != nil {
+		return nil, fmt.Errorf("load inbound allocations: %w", err)
+	}
+	if len(allocs) == 0 {
+		return rows, nil
+	}
+
+	batches, err := s.repo.ListBatches()
+	if err != nil {
+		return nil, fmt.Errorf("list batches: %w", err)
+	}
+	open := make(map[int64]model.ProductBatch, len(batches))
+	for _, b := range batches {
+		if isOpenBatchStatus(b.Status) {
+			open[b.ID] = b
+		}
+	}
+	// 引用该零件的产品（BOM）→ 该产品名下仍在生产的批次会消耗它。
+	products, err := s.repo.BOMProductsForPart(partID)
+	if err != nil {
+		return nil, fmt.Errorf("bom products for part: %w", err)
+	}
+	inBOM := make(map[int64]bool, len(products))
+	for _, p := range products {
+		inBOM[p.ID] = true
+	}
+	skips, err := s.repo.GetAllSkippedParts()
+	if err != nil {
+		return nil, fmt.Errorf("list skipped parts: %w", err)
+	}
+	skipped := make(map[[2]int64]bool, len(skips))
+	for _, r := range skips {
+		skipped[[2]int64{r.BatchID, r.PartID}] = true
+	}
+	temps, err := s.repo.GetAllTempParts()
+	if err != nil {
+		return nil, fmt.Errorf("list temp parts: %w", err)
+	}
+	isTemp := make(map[[2]int64]bool, len(temps))
+	for _, t := range temps {
+		if t.PartID == partID {
+			isTemp[[2]int64{t.BatchID, t.PartID}] = true
+		}
+	}
+
+	byInbound := make(map[int64][]model.PartInboundAlloc)
+	for _, a := range allocs {
+		b, ok := open[a.BatchID]
+		if !ok {
+			continue
+		}
+		key := [2]int64{a.BatchID, partID}
+		if !isTemp[key] && !(inBOM[b.ProductID] && !skipped[key]) {
+			continue // 这批已经不消耗该零件，分配只是历史残影
+		}
+		byInbound[a.InboundID] = append(byInbound[a.InboundID], model.PartInboundAlloc{
+			BatchNo: b.BatchNo,
+			Qty:     quantizeQuantity(a.Qty),
+		})
+	}
+	for i := range rows {
+		holders := byInbound[rows[i].ID]
+		if len(holders) == 0 {
+			continue
+		}
+		sort.SliceStable(holders, func(a, b int) bool { return holders[a].BatchNo < holders[b].BatchNo })
+		total := 0.0
+		for _, h := range holders {
+			total += h.Qty
+		}
+		rows[i].Occupied = quantizeQuantity(total)
+		rows[i].OccupiedBy = holders
+	}
+	return rows, nil
 }
 
 func (s *Service) AdjustStock(in usecase.AdjustStockInput) error {
@@ -936,6 +1019,29 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 					strings.Join(shortages, "\n"))
 			}
 
+			// 完成生产前必须记录投料：每个要扣的零件都要有记录，计划里才知道
+			// 从哪些入库批次出料。缺记录就拒绝，否则完成时按老路扣、追溯表却是空的。
+			recordedParts, err := tx.BatchTraceParts(id)
+			if err != nil {
+				return fmt.Errorf("load recorded trace parts: %w", err)
+			}
+			recorded := make(map[int64]bool, len(recordedParts))
+			for _, pid := range recordedParts {
+				recorded[pid] = true
+			}
+			var missing []string
+			for _, partID := range order {
+				n := needs[partID]
+				if n.qty <= 0 || recorded[partID] {
+					continue
+				}
+				missing = append(missing, fmt.Sprintf("%s [%s]", n.part.Name, n.part.Code))
+			}
+			if len(missing) > 0 {
+				return fmt.Errorf("完成生产前必须记录投料，以下零件还没有投料记录：\n%s\n请先在「记录投料」里保存一次",
+					strings.Join(missing, "\n"))
+			}
+
 			for _, partID := range order {
 				n := needs[partID]
 				if n.qty <= 0 {
@@ -948,10 +1054,10 @@ func (s *Service) UpdateBatchStatus(in usecase.UpdateBatchStatusInput) error {
 				if err := tx.UpdatePartStock(partID, newStock); err != nil {
 					return fmt.Errorf("update stock for part %d: %w", partID, err)
 				}
-				// 总量减了，批次剩余也要跟着减：先进先出，并逐笔记下
-				// "本批从哪笔入库扣了多少"，撤销时按原批次还回去。
-				// 少了这一步，次日的逐批次盘点会看到批次剩余之和仍等于旧总量。
-				if err := tx.DrawPartInboundFIFO(partID, id, n.qty); err != nil {
+				// 总量减了，批次剩余也要跟着减：按本批投料记录里排好的批次
+				// 顺序扣（记录投料时拖出来的先后），没排到的部分走先进先出，
+				// 并逐笔记下"本批从哪笔入库扣了多少"，撤销时按原批次还回去。
+				if err := tx.DrawPartInboundForBatch(partID, id, n.qty); err != nil {
 					return fmt.Errorf("draw inbound batches for part %d: %w", partID, err)
 				}
 				// 一个零件一条消耗记录（BOM+临时已合并），撤销按此回退。
@@ -1186,6 +1292,18 @@ func (s *Service) AddTempPart(in usecase.AddTempPartInput) error {
 			}
 			return fmt.Errorf("%s。请先入库补足或调小数量", msg)
 		}
+		// 临时零件只接受 BOM 表以外的零件：BOM 内零件的用量归 BOM 管，
+		// 两边都能改会让"这批到底用多少"说不清，也会让投料弹窗里同一零件
+		// 出现两行（BOM 行 + 临时行）。
+		bom, err := tx.GetBOMByProduct(batch.ProductID)
+		if err != nil {
+			return fmt.Errorf("get bom: %w", err)
+		}
+		for _, item := range bom {
+			if item.PartID == partID {
+				return fmt.Errorf("零件 %s 已在产品 BOM 中，不能作为临时零件（如需调整用量请改 BOM 或标记跳过）", part.Code)
+			}
+		}
 		tp := &model.BatchTempPart{BatchID: batchID, PartID: partID, Qty: need}
 		if derivation {
 			tp.UseMode, tp.Quantity, tp.LossRate = in.UseMode, in.Quantity, in.LossRate
@@ -1193,11 +1311,18 @@ func (s *Service) AddTempPart(in usecase.AddTempPartInput) error {
 		if err := tx.AddTempPart(tp); err != nil {
 			return fmt.Errorf("add temp part: %w", err)
 		}
-		return nil
+		return s.writeAuditTx(tx, auditEntry{
+			TableName: "batch_temp_parts", RecordID: partID, Action: "INSERT",
+			NewData: map[string]any{
+				"batch_no": batch.BatchNo, "part_code": part.Code, "qty": need,
+				"previous_qty": oldQty,
+			},
+			Operator: in.Operator,
+		})
 	})
 }
 
-func (s *Service) RemoveTempPart(batchID, partID int64) error {
+func (s *Service) RemoveTempPart(batchID, partID int64, operator string) error {
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
@@ -1209,8 +1334,40 @@ func (s *Service) RemoveTempPart(batchID, partID int64) error {
 		if batch.Status == 2 || batch.Status == 4 {
 			return fmt.Errorf("已完成或已撤销的批次不能修改临时零件")
 		}
+		part, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
 		if err := tx.RemoveTempPart(batchID, partID); err != nil {
 			return fmt.Errorf("remove temp part: %w", err)
+		}
+		if err := s.writeAuditTx(tx, auditEntry{
+			TableName: "batch_temp_parts", RecordID: partID, Action: "DELETE",
+			OldData:  map[string]any{"batch_no": batch.BatchNo, "part_code": part.Code},
+			Operator: operator,
+		}); err != nil {
+			return err
+		}
+		// 这个零件不再是本批的消耗项，残留的投料记录会让追溯表继续显示它，
+		// 还会把它的批次分配算成占用（压住别的批次的可用量）。
+		removed, err := tx.DeletePartTrace(batchID, partID)
+		if err != nil {
+			return fmt.Errorf("clear trace for removed temp part: %w", err)
+		}
+		if removed > 0 {
+			if err := s.writeAuditTx(tx, auditEntry{
+				TableName: "batch_trace", RecordID: partID, Action: "DELETE",
+				OldData: map[string]any{
+					"batch_no": batch.BatchNo, "part_code": part.Code,
+					"removed": removed, "reason": "移除临时零件",
+				},
+				Operator: operator,
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -1478,7 +1635,7 @@ func numVal(v any) float64 {
 	}
 }
 
-func (s *Service) AddSkipPart(batchID, partID int64) error {
+func (s *Service) AddSkipPart(batchID, partID int64, operator string) error {
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
@@ -1490,14 +1647,46 @@ func (s *Service) AddSkipPart(batchID, partID int64) error {
 		if batch.Status == 2 || batch.Status == 4 {
 			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
 		}
+		part, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
 		if err := tx.AddSkipPart(batchID, partID); err != nil {
 			return fmt.Errorf("add skipped part: %w", err)
+		}
+		if err := s.writeAuditTx(tx, auditEntry{
+			TableName: "batch_skip_parts", RecordID: partID, Action: "INSERT",
+			NewData:  map[string]any{"batch_no": batch.BatchNo, "part_code": part.Code},
+			Operator: operator,
+		}); err != nil {
+			return err
+		}
+		// 先记录投料、后标记跳过：这批已经声明不用该零件，残留的投料记录
+		// 会让追溯表显示"用过"、完成生产却不扣，两边对不上，这里一并清掉。
+		removed, err := tx.DeletePartTrace(batchID, partID)
+		if err != nil {
+			return fmt.Errorf("clear trace for skipped part: %w", err)
+		}
+		if removed > 0 {
+			if err := s.writeAuditTx(tx, auditEntry{
+				TableName: "batch_trace", RecordID: partID, Action: "DELETE",
+				OldData: map[string]any{
+					"batch_no": batch.BatchNo, "part_code": part.Code,
+					"removed": removed, "reason": "零件标记为跳过",
+				},
+				Operator: operator,
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 }
 
-func (s *Service) RemoveSkipPart(batchID, partID int64) error {
+func (s *Service) RemoveSkipPart(batchID, partID int64, operator string) error {
 	return s.repo.WithTx(func(tx repository.TxOps) error {
 		batch, err := tx.GetBatchForUpdate(batchID)
 		if err != nil {
@@ -1509,10 +1698,21 @@ func (s *Service) RemoveSkipPart(batchID, partID int64) error {
 		if batch.Status == 2 || batch.Status == 4 {
 			return fmt.Errorf("已完成或已撤销的批次不能修改跳过零件")
 		}
+		part, err := tx.GetPartForUpdate(partID)
+		if err != nil {
+			return fmt.Errorf("get part: %w", err)
+		}
+		if part == nil {
+			return fmt.Errorf("part not found")
+		}
 		if err := tx.RemoveSkipPart(batchID, partID); err != nil {
 			return fmt.Errorf("remove skipped part: %w", err)
 		}
-		return nil
+		return s.writeAuditTx(tx, auditEntry{
+			TableName: "batch_skip_parts", RecordID: partID, Action: "DELETE",
+			OldData:  map[string]any{"batch_no": batch.BatchNo, "part_code": part.Code},
+			Operator: operator,
+		})
 	})
 }
 
@@ -1522,34 +1722,150 @@ func (s *Service) RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error) {
 	if t == nil {
 		return nil, fmt.Errorf("投料记录不能为空")
 	}
-	if err := validatePositiveQuantity("投料数量", t.UsedQty); err != nil {
+	// 与批量接口同一条路径：覆盖语义、跳过/状态校验、供应商取零件台账，
+	// 都靠 RecordTraces 实现，避免两个入口给出两套规则。
+	if err := s.RecordTraces([]*model.BatchTrace{t}); err != nil {
 		return nil, err
 	}
-	id, err := s.repo.CreateTrace(t)
-	if err != nil {
-		return nil, fmt.Errorf("create trace: %w", err)
-	}
-	t.ID = id
 	return t, nil
 }
 
+// RecordTraces 保存一批投料记录。
+//
+// v18 起语义是**按零件覆盖**：同一 (batch, part) 只会有一条记录，
+// 再记录一次就是改，不是追加——否则追溯表里同一个零件会出现好几行
+// 各说各的，用户分不清哪条是当前状态。批次分配随记录整体替换。
 func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 	if len(traces) == 0 {
 		return nil
 	}
+	type key struct{ batchID, partID int64 }
+	seen := make(map[key]bool, len(traces))
 	for i, trace := range traces {
 		if trace == nil {
 			return fmt.Errorf("第%d条投料记录不能为空", i+1)
 		}
+		if trace.BatchID <= 0 || trace.PartID <= 0 {
+			return fmt.Errorf("第%d条投料记录缺少批次或零件", i+1)
+		}
 		if err := validatePositiveQuantity("投料数量", trace.UsedQty); err != nil {
 			return fmt.Errorf("第%d条投料记录无效: %w", i+1, err)
 		}
+		k := key{trace.BatchID, trace.PartID}
+		if seen[k] {
+			return fmt.Errorf("第%d条投料记录重复：同一批次同一零件只能有一条记录，多个批次请在同一行内调整顺序", i+1)
+		}
+		seen[k] = true
+
+		var allocTotal float64
+		allocSeen := make(map[int64]bool, len(trace.Allocations))
+		for j, a := range trace.Allocations {
+			if a.InboundID <= 0 {
+				return fmt.Errorf("第%d条投料记录的第%d个批次分配缺少批次号", i+1, j+1)
+			}
+			if err := validatePositiveQuantity("批次分配数量", a.Qty); err != nil {
+				return fmt.Errorf("第%d条投料记录的第%d个批次分配无效: %w", i+1, j+1, err)
+			}
+			if allocSeen[a.InboundID] {
+				return fmt.Errorf("第%d条投料记录里同一个入库批次出现了两次", i+1)
+			}
+			allocSeen[a.InboundID] = true
+			allocTotal += a.Qty
+		}
+		// 允许少量浮点误差；分配不足用量是合法的（余量完成时按先进先出兜底），
+		// 超过用量一定是表单算错了。
+		if allocTotal > trace.UsedQty+0.005 {
+			return fmt.Errorf("第%d条投料记录的批次分配合计 %.2f 超过了用量 %.2f", i+1, allocTotal, trace.UsedQty)
+		}
 	}
 	return s.repo.WithTx(func(tx repository.TxOps) error {
-		for i, trace := range traces {
-			id, err := tx.CreateTrace(trace)
+		// 每批只读一次：状态、跳过集合、临时零件集合。
+		type batchState struct {
+			skipped map[int64]bool
+			temps   map[int64]bool
+		}
+		states := make(map[int64]*batchState)
+		stateOf := func(batchID int64) (*batchState, string, error) {
+			if st, ok := states[batchID]; ok {
+				return st, "", nil
+			}
+			batch, err := tx.GetBatchForUpdate(batchID)
 			if err != nil {
-				return fmt.Errorf("create trace %d: %w", i+1, err)
+				return nil, "", err
+			}
+			if batch == nil {
+				return nil, "", fmt.Errorf("批次不存在")
+			}
+			if batch.Status == 2 || batch.Status == 4 {
+				return nil, batch.BatchNo, fmt.Errorf("批次已完成或已撤销，不能记录投料（如需修改请撤销后重新建批）")
+			}
+			ids, err := tx.GetSkippedParts(batchID)
+			if err != nil {
+				return nil, batch.BatchNo, err
+			}
+			skipped := make(map[int64]bool, len(ids))
+			for _, id := range ids {
+				skipped[id] = true
+			}
+			temps, err := tx.GetTempParts(batchID)
+			if err != nil {
+				return nil, batch.BatchNo, err
+			}
+			isTemp := make(map[int64]bool, len(temps))
+			for _, t := range temps {
+				isTemp[t.PartID] = true
+			}
+			st := &batchState{skipped: skipped, temps: isTemp}
+			states[batchID] = st
+			return st, batch.BatchNo, nil
+		}
+
+		for i, trace := range traces {
+			st, _, err := stateOf(trace.BatchID)
+			if err != nil {
+				return fmt.Errorf("第%d条投料记录: %w", i+1, err)
+			}
+			// 供应商不由投料界面填写，直接取零件台账上的供应商：
+			// 同一种料在不同批次里手填出两个供应商，追溯就没法当成同一件事看。
+			part, err := tx.GetPartForUpdate(trace.PartID)
+			if err != nil {
+				return fmt.Errorf("第%d条投料记录读取零件失败: %w", i+1, err)
+			}
+			if part == nil {
+				return fmt.Errorf("第%d条投料记录的零件不存在", i+1)
+			}
+			trace.Supplier = part.Supplier
+			// 跳过的零件不会被完成生产扣减，留着投料记录只会误导追溯；
+			// 例外是它同时被加成临时零件（历史数据里存在），那确实要消耗。
+			if st.skipped[trace.PartID] && !st.temps[trace.PartID] {
+				return fmt.Errorf("零件 %s 已在本批标记为跳过，不能记录投料（如需使用请先取消跳过）", part.Code)
+			}
+			for _, a := range trace.Allocations {
+				in, err := tx.GetInboundForUpdate(a.InboundID)
+				if err != nil {
+					return fmt.Errorf("第%d条投料记录读取入库批次失败: %w", i+1, err)
+				}
+				if in == nil {
+					return fmt.Errorf("第%d条投料记录的入库批次 #%d 不存在", i+1, a.InboundID)
+				}
+				if in.PartID != trace.PartID {
+					return fmt.Errorf("第%d条投料记录的批次 %s 不属于该零件（请重新选择）", i+1, in.BatchNo)
+				}
+				// 服务端兜底：分配不能超过该批可用（剩余 + 本批已分配 − 其它在产批次已分配）。
+				// 界面已经按同一口径限制过，这里防的是直调接口与并发记录。
+				own, others, err := tx.InboundAllocQty(trace.BatchID, a.InboundID)
+				if err != nil {
+					return fmt.Errorf("第%d条投料记录读取批次占用失败: %w", i+1, err)
+				}
+				avail := quantizeQuantity(in.Remaining + own - others)
+				if a.Qty > avail+0.005 {
+					return fmt.Errorf("入库批次 %s 的可用量只有 %.2f，不能分配 %.2f（其它在产批次已排定 %.2f）",
+						in.BatchNo, avail, a.Qty, others)
+				}
+			}
+			id, err := tx.ReplacePartTrace(trace)
+			if err != nil {
+				return fmt.Errorf("save trace %d: %w", i+1, err)
 			}
 			trace.ID = id
 		}
@@ -1557,8 +1873,21 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 	})
 }
 
+// GetTraceByBatch 返回某批次的投料记录，并挂上每条记录的批次分配。
+// 分配与记录分表读、在这里合：记录只有一条，分配可能有多条。
 func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
-	return s.repo.GetTraceByBatch(batchID)
+	rows, err := s.repo.GetTraceByBatch(batchID)
+	if err != nil {
+		return nil, err
+	}
+	allocs, err := s.repo.ListBatchTraceAllocs(batchID)
+	if err != nil {
+		return nil, fmt.Errorf("load trace allocations: %w", err)
+	}
+	for i := range rows {
+		rows[i].Allocations = allocs[rows[i].PartID]
+	}
+	return rows, nil
 }
 
 func (s *Service) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {

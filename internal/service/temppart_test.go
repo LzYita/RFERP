@@ -189,6 +189,7 @@ func TestTempPartCompletionDeductsAndRevokeRestores(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	recordBatchTracesForTest(t, f.svc, f.batchID)
 	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{
 		ID: f.batchID, Status: 2, Operator: "测试",
 	}); err != nil {
@@ -260,7 +261,7 @@ func TestTempPartGuards(t *testing.T) {
 	if err := f.svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: f.batchID, Status: 2, Operator: "测试"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.RemoveTempPart(f.batchID, f.partID); err == nil {
+	if err := f.svc.RemoveTempPart(f.batchID, f.partID, "tester"); err == nil {
 		t.Fatal("已完成批次不能删临时零件")
 	}
 	if err := f.svc.AddTempPart(usecase.AddTempPartInput{BatchID: f.batchID, PartID: f.otherID, Qty: 1}); err == nil {
@@ -349,9 +350,12 @@ func TestTempPartSamePartAsBOMDeductsOnce(t *testing.T) {
 	// 库存经入库建立（v17 起扣料要按批次扣）。
 	stockPart(t, svc, partID, 20)
 
-	// 再加临时 5：合计 15 ≤ 库存 20，允许。
-	if err := svc.AddTempPart(usecase.AddTempPartInput{BatchID: batchID, PartID: partID, Qty: 5}); err != nil {
-		t.Fatalf("AddTempPart: %v", err)
+	// 新规则不允许把 BOM 内零件加成临时零件；这里直接写表，模拟历史数据，
+	// 继续验证"同件双来源只扣一次"的聚合逻辑仍然成立。
+	if err := store.WithTx(func(tx repository.TxOps) error {
+		return tx.AddTempPart(&model.BatchTempPart{BatchID: batchID, PartID: partID, Qty: 5})
+	}); err != nil {
+		t.Fatalf("insert temp part directly: %v", err)
 	}
 	res, err := svc.StockProjection(usecase.StockProjectionInput{})
 	if err != nil {
@@ -361,6 +365,7 @@ func TestTempPartSamePartAsBOMDeductsOnce(t *testing.T) {
 		t.Fatalf("projection = %+v，期望 committed=15 after=5", res.Parts)
 	}
 
+	recordBatchTracesForTest(t, svc, batchID)
 	if err := svc.UpdateBatchStatus(usecase.UpdateBatchStatusInput{ID: batchID, Status: 2, Operator: "测试"}); err != nil {
 		t.Fatalf("完成应当成功：%v", err)
 	}

@@ -51,6 +51,12 @@ var steps = []Step{
 		MySQL:   applyPartInboundRemainingMySQL,
 		SQLite:  applyPartInboundRemainingSQLite,
 	},
+	{
+		Version: 18,
+		Name:    "batch_trace_allocs",
+		MySQL:   applyTraceAllocsMySQL,
+		SQLite:  applyTraceAllocsSQLite,
+	},
 }
 
 // nextVersion 是下一条应新增迁移的版本号。

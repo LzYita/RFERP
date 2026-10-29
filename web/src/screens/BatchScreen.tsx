@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Badge, Btn, ScreenError, classifyLoadError, shortTime } from '../components/ui'
+import { Badge, Btn, ScreenError, classifyLoadError, fmtQty, shortTime } from '../components/ui'
 import { ConfirmDialog } from '../components/form'
 import { usePermissions } from '../lib/api'
 import { canWrite } from '../lib/permissions'
 import { TraceQuery } from './traceQuery'
 import { parts as partsApi, products as productsApi, bom as bomApi } from '../lib/catalog'
-import type { Part, Product } from '../lib/catalog'
+import type { Part, PartInbound, Product } from '../lib/catalog'
 import {
   BATCH_STATUS,
   batches,
   canChangeStatus,
   canManageParts,
+  canRecordTrace,
   findShortages,
   statusKind,
   statusText,
@@ -269,7 +270,11 @@ export function BatchScreen() {
   /* ---------- 投料 ---------- */
 
   async function recordTraces(
-    rows: { partId: number; usedQty: number; partBatchNo: string; supplier: string }[],
+    rows: {
+      partId: number
+      usedQty: number
+      allocations: { inbound_id: number; qty: number }[]
+    }[],
   ) {
     if (!selected) return
     if (rows.length === 0) {
@@ -287,13 +292,12 @@ export function BatchScreen() {
           batch_id: selected.id,
           part_id: r.partId,
           used_qty: r.usedQty,
-          part_batch_no: r.partBatchNo || undefined,
-          supplier: r.supplier || undefined,
+          allocations: r.allocations,
         })),
       )
       setDialog(null)
       setTrace(await traces.byBatch(selected.id))
-      setNotice(`成功记录 ${rows.length} 个零件的投料信息`)
+      setNotice(`已保存 ${rows.length} 个零件的投料信息（重复记录是覆盖，不会追加）`)
     } catch (e) {
       setErr(e instanceof Error ? e.message : '批量记录投料失败')
     } finally {
@@ -350,6 +354,10 @@ export function BatchScreen() {
       for (const partId of toRemove) await batches.removeSkip(selected.id, partId)
       // 跳过会改本批占用，可用库存与备料角标都跟着变。
       await reload()
+      if (toAdd.length > 0) {
+        // 后端在标记跳过时清掉该零件的投料记录，追溯表要跟着刷新。
+        setTrace(await traces.byBatch(selected.id))
+      }
       setDialog(null)
       setNotice(`已跳过 ${toAdd.length} 个零件，取消跳过 ${toRemove.length} 个零件`)
     } catch (e) {
@@ -388,19 +396,55 @@ export function BatchScreen() {
   // 「零件管理」里刚改过的内容在这里立刻可见。
   const [traceSkipped, setTraceSkipped] = useState<Set<number>>(new Set())
   const [traceTemps, setTraceTemps] = useState<TempPart[]>([])
+  // 每个零件的入库批次（带在产占用）与已保存的投料记录：
+  // 弹窗要按真实批次号排顺序，也要回显上一次保存的内容（改而不是重填）。
+  const [traceInbounds, setTraceInbounds] = useState<Map<number, PartInbound[]>>(new Map())
+  const [traceSaved, setTraceSaved] = useState<Map<number, BatchTrace>>(new Map())
+  // 入库批次或历史记录取不到时，可用量无法确认：弹窗要明说并禁止保存，
+  // 不能假装"没有批次"然后报"库存不足"。
+  const [traceLoadError, setTraceLoadError] = useState('')
 
   async function openTrace() {
     if (!selected) return
+    const guard = canRecordTrace(selected)
+    if (!guard.ok) {
+      setNotice(guard.msg)
+      return
+    }
     setBusy(true)
     try {
-      const [bom, skipped, temps] = await Promise.all([
+      let loadFailed = false
+      const [bom, skipped, temps, saved] = await Promise.all([
         bomApi.list(selected.product_id),
         batches.skipped(selected.id),
         batches.tempParts(selected.id),
+        traces.byBatch(selected.id).catch(() => {
+          loadFailed = true
+          return [] as BatchTrace[]
+        }),
       ])
+      const ids = new Set<number>()
+      for (const b of bom) ids.add(b.part_id)
+      for (const t of temps) ids.add(t.part_id)
+      for (const t of saved) ids.add(t.part_id)
+      // 一个零件一次请求：本地桌面应用，零件数不多；失败按"没有批次"降级，
+      // 不因为某一条取不到就把整个记录投料挡住。
+      const lists = await Promise.all(
+        [...ids].map(async (id) => {
+          try {
+            return [id, await partsApi.inbounds(id)] as const
+          } catch {
+            loadFailed = true
+            return [id, [] as PartInbound[]] as const
+          }
+        }),
+      )
+      setTraceLoadError(loadFailed ? '投料数据加载失败（入库批次或历史记录取不到）' : '')
       setTraceBom(bom)
       setTraceSkipped(new Set(skipped))
       setTraceTemps(temps)
+      setTraceInbounds(new Map(lists))
+      setTraceSaved(new Map(saved.map((t) => [t.part_id, t])))
       setErr('')
       setDialog({ kind: 'trace' })
     } catch (e) {
@@ -572,12 +616,14 @@ export function BatchScreen() {
         <div className="min-h-0 flex-1 overflow-auto">
           <table className="data-table is-compact">
             <colgroup>
-              <col style={{ width: 70 }} />
-              <col style={{ width: 130 }} />
-              <col />
-              <col className="num" style={{ width: 90 }} />
-              <col style={{ width: 150 }} />
-              <col style={{ width: 120 }} />
+              {/* 比例按内容定：编码/ID 定宽，名称给中等宽度，批次分配最长
+                  （RK-日期-序号 × 数量），供应商留得下常见厂名。 */}
+              <col style={{ width: 60 }} />
+              <col style={{ width: 110 }} />
+              <col style={{ width: 220 }} />
+              <col className="num" style={{ width: 84 }} />
+              <col style={{ width: 300 }} />
+              <col style={{ width: 180 }} />
             </colgroup>
             <thead>
               <tr>
@@ -585,7 +631,7 @@ export function BatchScreen() {
                 <th>零件编码</th>
                 <th>零件名称</th>
                 <th className="num">用量</th>
-                <th>零件批次</th>
+                <th>批次分配（按顺序扣）</th>
                 <th>供应商</th>
               </tr>
             </thead>
@@ -596,11 +642,28 @@ export function BatchScreen() {
                     {t.part_id}
                   </td>
                   <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{partById(t.part_id)?.code ?? '—'}</td>
-                  <td>{partById(t.part_id)?.name ?? '—'}</td>
+                  <td className="tree-inline" title={partById(t.part_id)?.name ?? ''}>
+                    {partById(t.part_id)?.name ?? '—'}
+                  </td>
                   {/* Fyne 用 %.2f 固定两位 */}
                   <td className="num">{t.used_qty.toFixed(2)}</td>
-                  <td>{t.part_batch_no ?? ''}</td>
-                  <td>{t.supplier ?? ''}</td>
+                  <td>
+                    {t.allocations && t.allocations.length > 0 ? (
+                      <div className="flex flex-col gap-0.5">
+                        {t.allocations.map((a) => (
+                          <span key={a.inbound_id} style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
+                            {a.batch_no} × {fmtQty(a.qty)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      // v18 之前的记录只有自由文本批次号，原样显示，不伪造分配。
+                      (t.part_batch_no ?? '')
+                    )}
+                  </td>
+                  <td className="tree-inline" title={t.supplier ?? ''}>
+                    {t.supplier ?? ''}
+                  </td>
                 </tr>
               ))}
               {sel !== null && (trace ?? []).length === 0 && traceBatch === sel && (
@@ -633,6 +696,9 @@ export function BatchScreen() {
           items={traceBom}
           skipped={traceSkipped}
           temps={traceTemps}
+          inbounds={traceInbounds}
+          existing={traceSaved}
+          loadError={traceLoadError}
           busy={busy}
           err={err}
           onSubmit={recordTraces}

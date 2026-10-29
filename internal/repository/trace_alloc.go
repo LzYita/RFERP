@@ -173,3 +173,32 @@ func (r *Repository) InboundOccupancy(partID int64) (map[int64][]model.PartInbou
 func (s *SQLiteStore) InboundOccupancy(partID int64) (map[int64][]model.PartInboundAlloc, error) {
 	return inboundOccupancy(s.db, partID)
 }
+
+// deletePartTraces 删掉 (batch, part) 的投料记录与批次分配，返回删掉的记录条数。
+// 「零件标记为跳过」时调用：跳过意味着这批不用它，残留的投料记录会同时
+// 出现在追溯表里、又不会被完成生产扣减，两者互相矛盾。
+func deletePartTraces(q queryer, batchID, partID int64) (int64, error) {
+	if _, err := q.Exec(`DELETE FROM batch_trace_allocs WHERE batch_id = ? AND part_id = ?`,
+		batchID, partID); err != nil {
+		return 0, fmt.Errorf("clear trace allocs: %w", err)
+	}
+	res, err := q.Exec(`DELETE FROM batch_trace WHERE batch_id = ? AND part_id = ?`, batchID, partID)
+	if err != nil {
+		return 0, fmt.Errorf("clear trace: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return n, nil
+}
+
+// DeletePartTrace 见 deletePartTraces。
+func (t *Tx) DeletePartTrace(batchID, partID int64) (int64, error) {
+	return deletePartTraces(t.tx, batchID, partID)
+}
+
+// DeletePartTrace 见 deletePartTraces。
+func (t *SQLiteTx) DeletePartTrace(batchID, partID int64) (int64, error) {
+	return deletePartTraces(t.q, batchID, partID)
+}

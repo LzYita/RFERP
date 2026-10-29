@@ -2,6 +2,7 @@ package service
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"app/internal/migrate"
@@ -226,5 +227,57 @@ func TestCompleteBatchFallsBackToFIFOWhenOrderedBatchRunsOut(t *testing.T) {
 	rem := f.remainingByBatch(t)
 	if rem[second.BatchNo] != 0 || rem[first.BatchNo] != 3 {
 		t.Fatalf("批次剩余 = %v, want 第二笔 0 / 第一笔 3（余量走先进先出）", rem)
+	}
+}
+
+// 先记录投料、再标记跳过：该批次该零件的投料记录与分配自动清掉。
+func TestSkipPartClearsRecordedTrace(t *testing.T) {
+	f := newTraceAllocFixture(t)
+	first := f.inbounds[0]
+
+	if err := f.svc.RecordTraces([]*model.BatchTrace{{
+		BatchID: f.batchID, PartID: f.partID, UsedQty: 10,
+		Allocations: []model.BatchTraceAlloc{{InboundID: first.ID, Qty: 10}},
+	}}); err != nil {
+		t.Fatalf("record traces: %v", err)
+	}
+	rows, err := f.svc.GetTraceByBatch(f.batchID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("记录后 rows=%d err=%v", len(rows), err)
+	}
+
+	if err := f.svc.AddSkipPart(f.batchID, f.partID); err != nil {
+		t.Fatalf("add skip part: %v", err)
+	}
+	rows, err = f.svc.GetTraceByBatch(f.batchID)
+	if err != nil {
+		t.Fatalf("get trace: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("标记跳过后仍有 %d 条投料记录", len(rows))
+	}
+	allocs, err := f.store.ListBatchTraceAllocs(f.batchID)
+	if err != nil {
+		t.Fatalf("list allocs: %v", err)
+	}
+	if len(allocs) != 0 {
+		t.Fatalf("标记跳过后仍有批次分配：%+v", allocs)
+	}
+}
+
+// 已跳过的零件不允许留下投料记录（接口层兜底，界面已经不给入口）。
+func TestRecordTracesRejectsSkippedPart(t *testing.T) {
+	f := newTraceAllocFixture(t)
+	if err := f.svc.AddSkipPart(f.batchID, f.partID); err != nil {
+		t.Fatalf("add skip part: %v", err)
+	}
+	err := f.svc.RecordTraces([]*model.BatchTrace{{
+		BatchID: f.batchID, PartID: f.partID, UsedQty: 10,
+	}})
+	if err == nil {
+		t.Fatal("已跳过的零件不应允许记录投料")
+	}
+	if !strings.Contains(err.Error(), "跳过") {
+		t.Fatalf("错误文案没有说明跳过：%v", err)
 	}
 }

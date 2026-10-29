@@ -632,6 +632,11 @@ func TestAddSkipPartCommitsAfterLockingMutableBatch(t *testing.T) {
 	mock.ExpectQuery(batchSelectForUpdate).WithArgs(int64(1)).WillReturnRows(batchRows(now, 1, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT IGNORE INTO batch_skip_parts (batch_id,part_id) VALUES (?,?)")).
 		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(1, 1))
+	// 标记跳过后清掉该零件在这批的投料记录与分配（先记投料后跳过的情况）。
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM batch_trace_allocs WHERE batch_id = ? AND part_id = ?")).
+		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM batch_trace WHERE batch_id = ? AND part_id = ?")).
+		WithArgs(int64(1), int64(20)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
 
 	if err := svc.AddSkipPart(1, 20); err != nil {

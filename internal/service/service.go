@@ -1514,6 +1514,11 @@ func (s *Service) AddSkipPart(batchID, partID int64) error {
 		if err := tx.AddSkipPart(batchID, partID); err != nil {
 			return fmt.Errorf("add skipped part: %w", err)
 		}
+		// 先记录投料、后标记跳过：这批已经声明不用该零件，残留的投料记录
+		// 会让追溯表显示"用过"、完成生产却不扣，两边对不上，这里一并清掉。
+		if _, err := tx.DeletePartTrace(batchID, partID); err != nil {
+			return fmt.Errorf("clear trace for skipped part: %w", err)
+		}
 		return nil
 	})
 }
@@ -1603,6 +1608,7 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 		}
 	}
 	return s.repo.WithTx(func(tx repository.TxOps) error {
+		skipCache := make(map[int64]map[int64]bool)
 		for i, trace := range traces {
 			// 供应商不由投料界面填写，直接取零件台账上的供应商：
 			// 同一种料在不同批次里手填出两个供应商，追溯就没法当成同一件事看。
@@ -1614,6 +1620,22 @@ func (s *Service) RecordTraces(traces []*model.BatchTrace) error {
 				return fmt.Errorf("第%d条投料记录的零件不存在", i+1)
 			}
 			trace.Supplier = part.Supplier
+			// 已跳过的零件不允许留投料记录：完成生产时不扣它，记了只会误导追溯。
+			skippedIDs, ok := skipCache[trace.BatchID]
+			if !ok {
+				ids, err := tx.GetSkippedParts(trace.BatchID)
+				if err != nil {
+					return fmt.Errorf("第%d条投料记录读取跳过零件失败: %w", i+1, err)
+				}
+				skippedIDs = make(map[int64]bool, len(ids))
+				for _, id := range ids {
+					skippedIDs[id] = true
+				}
+				skipCache[trace.BatchID] = skippedIDs
+			}
+			if skippedIDs[trace.PartID] {
+				return fmt.Errorf("零件 %s 已在本批标记为跳过，不能记录投料（如需使用请先取消跳过）", part.Code)
+			}
 			for _, a := range trace.Allocations {
 				in, err := tx.GetInbound(a.InboundID)
 				if err != nil {

@@ -353,6 +353,10 @@ export function BatchScreen() {
       for (const partId of toRemove) await batches.removeSkip(selected.id, partId)
       // 跳过会改本批占用，可用库存与备料角标都跟着变。
       await reload()
+      if (toAdd.length > 0) {
+        // 后端在标记跳过时清掉该零件的投料记录，追溯表要跟着刷新。
+        setTrace(await traces.byBatch(selected.id))
+      }
       setDialog(null)
       setNotice(`已跳过 ${toAdd.length} 个零件，取消跳过 ${toRemove.length} 个零件`)
     } catch (e) {

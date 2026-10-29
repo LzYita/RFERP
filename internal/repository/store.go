@@ -79,6 +79,9 @@ type TxOps interface {
 	ReplacePartTrace(trace *model.BatchTrace) (int64, error)
 	// DrawPartInboundForBatch 按该批次投料分配的顺序扣入库批次，余量走先进先出。
 	DrawPartInboundForBatch(partID, batchID int64, qty float64) error
+	// DeletePartTrace 删掉 (batch, part) 的投料记录与分配，返回删掉的记录条数
+	// （标记跳过时自动清理）。
+	DeletePartTrace(batchID, partID int64) (int64, error)
 	ListBatchConsumptions(batchID int64) ([]model.BatchConsumption, error)
 	GetSkippedParts(batchID int64) ([]int64, error)
 	AddSkipPart(batchID, partID int64) error

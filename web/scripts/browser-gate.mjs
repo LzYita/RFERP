@@ -1851,6 +1851,32 @@ async function lotTraceGate(page) {
     `提示：${shortAlert || '(无)'}`)
   await shortModal.locator('button', { hasText: '取消' }).click()
   await sleep(300)
+
+  // 先记录投料、再标记跳过：该批次该零件的投料记录应自动清掉，
+  // 卡片也不再有数量输入（跳过 = 这批不用它）。
+  await page.locator('input[aria-label="选择 B-LOT"]').click()
+  await sleep(300)
+  await headerBar.locator('button', { hasText: '零件管理' }).click()
+  await sleep(700)
+  const skipMgr = page.locator('div[class*="fixed"]').last()
+  await skipMgr.locator('label', { hasText: 'P-LOT-1' }).click()
+  await sleep(200)
+  await skipMgr.locator('button', { hasText: '保存' }).click()
+  await sleep(1000)
+  const afterSkip = (await section.count()) > 0 ? await section.innerText() : ''
+  check('标记跳过后该零件的投料记录被自动清掉', /共 0 条/.test(afterSkip),
+    `追溯区：${afterSkip.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  await headerBar.locator('button', { hasText: '记录投料' }).click()
+  await sleep(900)
+  const skipModal = page.locator('div[class*="fixed"]').last()
+  const skipCard = skipModal.locator('[data-part-code="P-LOT-1"]')
+  const skipText = (await skipCard.count()) > 0 ? await skipCard.innerText() : ''
+  check('已跳过的零件在投料弹窗里没有填写入口',
+    skipText.includes('已跳过') && (await skipCard.locator('input').count()) === 0,
+    `零件卡片：${skipText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}（输入框 ${await skipCard.locator('input').count()} 个）`)
+  await skipModal.locator('button', { hasText: '取消' }).click()
+  await sleep(300)
 }
 
 let browser
@@ -1973,7 +1999,8 @@ try {
     const bom = await api('/api/bom', {
       method: 'POST',
       headers: auth,
-      body: JSON.stringify({ product_id: prod.body.id, part_id: p.id, quantity: 1, loss_rate: 0, replaceable: 0, use_mode: 0 }),
+      // 可替换=1：让它出现在「零件管理 → 跳过」列表里，覆盖"先记投料后跳过"。
+      body: JSON.stringify({ product_id: prod.body.id, part_id: p.id, quantity: 1, loss_rate: 0, replaceable: 1, use_mode: 0 }),
     })
     if (bom.code !== 200) throw new Error(`预置投料 BOM 失败 ${bom.code} ${bom.text.slice(0, 120)}`)
     const bat = await api('/api/batches', {

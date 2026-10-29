@@ -255,21 +255,25 @@ it('lists skipped BOM parts as disabled rows and temp parts as new rows in 记�
     />,
   )
   const dialog = screen.getByRole('dialog')
+  const card = (code: string) => dialog.querySelector(`[data-part-code="${code}"]`) as HTMLElement | null
 
-  // 跳过行有标记且输入禁用；临时行带「临时」标记且预填数量
-  const skippedInput = within(dialog).getByDisplayValue('20') as HTMLInputElement // 10 × 2
-  expect(skippedInput.disabled).toBe(true)
-  expect(within(dialog).getByText('已跳过')).toBeTruthy()
-  expect(within(dialog).getByDisplayValue('5')).toBeTruthy() // 临时零件数量
-  expect(within(dialog).getByText('临时')).toBeTruthy()
+  // 跳过行有标记；用量由 BOM/临时零件决定，只读展示，不再有输入框
+  const skipped = card('M-001')!
+  expect(within(skipped).getByText('已跳过')).toBeTruthy()
+  expect(skipped.textContent).toContain('用量 20') // 10 台 × 2 个
+  const skippedInputs = [...skipped.querySelectorAll('input')]
+  expect(skippedInputs.length).toBe(1) // 只剩供应商一个输入框，用量是只读文本
+  expect(skippedInputs[0].placeholder).toBe('供应商')
+  const temp = card('M-002')!
+  expect(within(temp).getByText('临时')).toBeTruthy()
+  expect(temp.textContent).toContain('用量 5')
 
-  // 提交时跳过行不进入结果；临时行照常提交（把预填 5 改成 50 一起交）
-  await userEvent.type(within(dialog).getByDisplayValue('5'), '0')
+  // 提交时跳过行不进入结果；用量按 BOM/临时零件原样提交
   await userEvent.click(within(dialog).getByRole('button', { name: '确定' }))
   await waitFor(() =>
     expect(onSubmit).toHaveBeenCalledWith([
       { partId: 3, usedQty: 10, supplier: '', allocations: [] },
-      { partId: 2, usedQty: 50, supplier: '', allocations: [] },
+      { partId: 2, usedQty: 5, supplier: '', allocations: [] },
     ]),
   )
 })

@@ -23,7 +23,7 @@ var (
 	auditInsert          = regexp.QuoteMeta("INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)")
 	statusUpdate         = regexp.QuoteMeta("UPDATE product_batches SET status=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND status=?")
 	// v17：扣料/撤销/盘点都要读写入库批次剩余。sqlmock 会把空白折叠成单个空格。
-	inboundSelectForUpdate = regexp.QuoteMeta("SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at FROM part_inbounds WHERE part_id = ? ORDER BY id FOR UPDATE")
+	inboundSelectForUpdate = regexp.QuoteMeta("SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at FROM part_inbounds WHERE part_id = ? ORDER BY created_at, id FOR UPDATE")
 	inboundUpdateRemain    = regexp.QuoteMeta("UPDATE part_inbounds SET remaining = ? WHERE id = ?")
 	drawInsert             = regexp.QuoteMeta("INSERT INTO part_inbound_draws (batch_id, inbound_id, qty) VALUES (?, ?, ?)")
 	drawSelectByBatch      = regexp.QuoteMeta("SELECT inbound_id, SUM(qty) AS qty FROM part_inbound_draws WHERE batch_id = ? GROUP BY inbound_id")

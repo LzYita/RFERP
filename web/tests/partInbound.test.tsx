@@ -86,11 +86,13 @@ it('零件详情：一级只列仍有剩余的批次，并给出剩余合计', a
   expect(screen.queryByText('RK-20261010-0002')).toBeNull()
   expect(screen.queryByText('RK-20261001-0001')).toBeNull()
 
-  // 摘要把三件事分开说：现有 / 在产占用 / 可用（别把差异藏起来）。
+  // 摘要：现有（≡各批剩余之和）/ 在产占用 / 可用，三件事分开说。
   const summary = screen.getByTestId('part-detail-summary')
   expect(summary.textContent).toContain('现有')
-  expect(summary.textContent).toContain('25')
+  expect(summary.textContent).toContain('30') // part.stock_qty
+  expect(summary.textContent).toContain('在产占用')
   expect(summary.textContent).toContain('可用')
+  expect(summary.textContent).not.toContain('剩余合计') // 与"现有"恒等，不再重复
   expect(screen.getByText('仍有剩余的批次（1）')).toBeTruthy()
 })
 

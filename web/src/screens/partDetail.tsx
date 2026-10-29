@@ -34,10 +34,10 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
     <table className="data-table is-narrow is-compact">
       <colgroup>
         <col style={{ width: 150 }} />
-        <col className="num" style={{ width: 78 }} />
-        <col className="num" style={{ width: 78 }} />
-        <col className="num" style={{ width: 84 }} />
-        <col style={{ width: 108 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col className="num" style={{ width: 72 }} />
+        <col style={{ width: 126 }} />
         <col />
       </colgroup>
       <thead>
@@ -59,7 +59,13 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
               : '没有未完成批次预定这批料'
           return (
             <tr key={r.id}>
-              <td style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>{r.batch_no}</td>
+              <td
+                className="tree-inline"
+                title={r.batch_no}
+                style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}
+              >
+                {r.batch_no}
+              </td>
               <td className="num">
                 {fmtQty(r.qty)} {unit}
               </td>
@@ -69,8 +75,16 @@ function InboundTable({ rows, unit, empty }: { rows: PartInbound[]; unit: string
               <td className="num" title={title} style={{ color: r.occupied > 0 ? 'var(--color-warn)' : undefined }}>
                 {r.occupied > 0 ? `${fmtQty(r.occupied)} ${unit}` : '—'}
               </td>
-              <td style={{ color: 'var(--color-fg-muted)' }}>{fmtInboundTime(r.created_at)}</td>
-              <td style={{ color: 'var(--color-fg-muted)' }}>{r.note || '—'}</td>
+              <td className="tabular-nums" style={{ color: 'var(--color-fg-muted)' }}>
+                {fmtInboundTime(r.created_at)}
+              </td>
+              <td
+                className="tree-inline"
+                title={r.note || ''}
+                style={{ color: 'var(--color-fg-muted)' }}
+              >
+                {r.note || '—'}
+              </td>
             </tr>
           )
         })}
@@ -136,7 +150,7 @@ export function PartDetailModal({
       <Modal
         title={`零件详情 · ${part.code}`}
         onClose={onClose}
-        width={620}
+        width={720}
         zIndex={50}
         topMost={!exhaustedOpen}
         footer={<Btn onClick={onClose}>关闭</Btn>}
@@ -154,11 +168,11 @@ export function PartDetailModal({
             title={
               committed === null
                 ? '投影取不到，只显示投料计划里已排定的数量'
-                : '在产占用 = 全部未完成批次的需求合计；可用 = 剩余合计 − 在产占用'
+                : '现有库存恒等于各批次剩余之和；在产占用 = 全部未完成批次的需求合计；可用 = 现有 − 在产占用'
             }
           >
-            现有 <b>{fmtQty(part.stock_qty)}</b> · 剩余合计 <b>{fmtQty(remainingTotal)}</b> ·
-            在产占用 <b>{fmtQty(occupiedTotal)}</b> · 可用 <b>{fmtQty(available)}</b> {part.unit}
+            现有 <b>{fmtQty(part.stock_qty)}</b> · 在产占用 <b>{fmtQty(occupiedTotal)}</b> ·
+            可用 <b>{fmtQty(available)}</b> {part.unit}
           </span>
         </div>
 
@@ -172,7 +186,7 @@ export function PartDetailModal({
                   完全看不到这个界面，会以为功能没做。空态由二级弹窗说明。 */}
               <button
                 type="button"
-                className="text-[var(--color-primary)] underline"
+                className="whitespace-nowrap px-1 text-[var(--color-primary)] leading-5 underline decoration-1 underline-offset-4"
                 onClick={() => setExhaustedOpen(true)}
               >
                 查看已用完批次（{exhausted.length}）
@@ -194,7 +208,7 @@ export function PartDetailModal({
         <Modal
           title={`已用完批次 · ${part.code}（${exhausted.length}）`}
           onClose={() => setExhaustedOpen(false)}
-          width={600}
+          width={720}
           zIndex={60}
           footer={<Btn onClick={() => setExhaustedOpen(false)}>返回</Btn>}
         >

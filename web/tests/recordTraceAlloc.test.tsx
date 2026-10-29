@@ -1,5 +1,5 @@
-// 记录投料：每零件可排多个入库批次，顺序可调，右侧显示消耗后剩余；
-// 打开时回显上次保存的记录；提交带分配（服务端按顺序扣）。
+// 记录投料：每零件一张卡片，用量只读，批次数量可手改但合计必须等于用量；
+// 默认按入库时间由远到近；「按顺序消耗」恢复默认摊法。
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
@@ -37,6 +37,12 @@ const inbound = (over: Partial<PartInbound> = {}): PartInbound => ({
   ...over,
 })
 
+function card(dialog: HTMLElement, code = 'M-001'): HTMLElement {
+  const el = dialog.querySelector(`[data-part-code="${code}"]`)
+  if (!el) throw new Error(`找不到零件卡片 ${code}`)
+  return el as HTMLElement
+}
+
 function renderModal(opts: {
   planQty?: number
   inbounds?: Map<number, PartInbound[]>
@@ -62,42 +68,31 @@ function renderModal(opts: {
   return { onSubmit, dialog: screen.getByRole('dialog') }
 }
 
-it('按入库顺序摊用量，并显示每批的消耗与消耗后剩余', async () => {
-  const user = userEvent.setup()
+it('用量只读，默认按入库时间由远到近摊分', () => {
   const { dialog } = renderModal({
-    planQty: 3, // BOM: 每台 2 个 → 默认用量 6
+    planQty: 3, // 每台 2 个 → 用量 6
     inbounds: new Map([
       [
         1,
         [
-          inbound({ id: 2, batch_no: 'RK-B', remaining: 10 }),
-          inbound({ id: 1, batch_no: 'RK-A', remaining: 4 }),
+          // id 小的反而是较新的入库：默认顺序要看时间，不能看 id。
+          inbound({ id: 1, batch_no: 'RK-NEW', remaining: 10, created_at: '2026-10-20T08:00:00Z' }),
+          inbound({ id: 2, batch_no: 'RK-OLD', remaining: 4, created_at: '2026-09-01T08:00:00Z' }),
         ],
       ],
     ]),
   })
+  const body = card(dialog)
+  expect(body.textContent).toContain('用量 6')
+  expect((within(body).getAllByRole('textbox')[0] as HTMLInputElement).placeholder).toBe('供应商')
 
-  const rowText = (batchNo: string) =>
-    within(dialog)
-      .getByText(batchNo)
-      .closest('tr')!.textContent!.replace(/\s+/g, ' ')
-
-  // 默认用量 = 3 台 × 2 = 6；先扣先入库的 RK-A（4），再扣 RK-B（2）。
-  const usage = within(dialog).getAllByRole('textbox')[0] as HTMLInputElement
-  expect(usage.value).toBe('6')
-  expect(rowText('RK-A')).toContain('消耗 4')
-  expect(rowText('RK-A')).toContain('剩余 0')
-  expect(rowText('RK-B')).toContain('消耗 2')
-  expect(rowText('RK-B')).toContain('剩余 8')
-
-  // 上移 RK-B：现在它先扣，6 个全从它出。
-  await user.click(within(dialog).getByRole('button', { name: '上移批次 RK-B' }))
-  expect(rowText('RK-B')).toContain('消耗 6')
-  expect(rowText('RK-B')).toContain('剩余 4')
-  expect(rowText('RK-A')).toContain('消耗 0')
+  const qty = (label: string) => (within(body).getByLabelText(label) as HTMLInputElement).value
+  expect(qty('RK-OLD 本次消耗')).toBe('4')
+  expect(qty('RK-NEW 本次消耗')).toBe('2')
+  expect(body.textContent).toContain('合计 6 / 用量 6')
 })
 
-it('提交时带上有序的批次分配', async () => {
+it('手改数量后合计不等就拦下保存，点「按顺序消耗」恢复', async () => {
   const user = userEvent.setup()
   const onSubmit = vi.fn()
   const { dialog } = renderModal({
@@ -106,37 +101,92 @@ it('提交时带上有序的批次分配', async () => {
       [
         1,
         [
-          inbound({ id: 2, batch_no: 'RK-B', remaining: 10 }),
-          inbound({ id: 1, batch_no: 'RK-A', remaining: 4 }),
+          inbound({ id: 2, batch_no: 'RK-OLD', remaining: 4, created_at: '2026-09-01T08:00:00Z' }),
+          inbound({ id: 1, batch_no: 'RK-NEW', remaining: 10, created_at: '2026-10-20T08:00:00Z' }),
         ],
       ],
     ]),
     onSubmit,
   })
+  const body = card(dialog)
+  const input = within(body).getByLabelText('RK-OLD 本次消耗') as HTMLInputElement
+  await user.clear(input)
+  await user.type(input, '3')
+  expect(body.textContent).toContain('还差 1')
 
   await user.click(within(dialog).getByRole('button', { name: '确定' }))
+  expect(onSubmit).not.toHaveBeenCalled()
+  expect(screen.getByRole('alert').textContent).toContain('还差 1')
+
+  await user.click(within(body).getByRole('button', { name: 'M-001 按顺序消耗' }))
+  expect((within(body).getByLabelText('RK-OLD 本次消耗') as HTMLInputElement).value).toBe('4')
+  await user.click(within(dialog).getByRole('button', { name: '确定' }))
   expect(onSubmit).toHaveBeenCalledTimes(1)
+})
+
+it('手改数量后合计仍等于用量，提交带上有序分配', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn()
+  const { dialog } = renderModal({
+    planQty: 3,
+    inbounds: new Map([
+      [
+        1,
+        [
+          inbound({ id: 2, batch_no: 'RK-OLD', remaining: 4, created_at: '2026-09-01T08:00:00Z' }),
+          inbound({ id: 1, batch_no: 'RK-NEW', remaining: 10, created_at: '2026-10-20T08:00:00Z' }),
+        ],
+      ],
+    ]),
+    onSubmit,
+  })
+  const body = card(dialog)
+  const old = within(body).getByLabelText('RK-OLD 本次消耗') as HTMLInputElement
+  const fresh = within(body).getByLabelText('RK-NEW 本次消耗') as HTMLInputElement
+  await user.clear(old)
+  await user.type(old, '1')
+  await user.clear(fresh)
+  await user.type(fresh, '5')
+
+  await user.click(within(dialog).getByRole('button', { name: '确定' }))
   expect(onSubmit.mock.calls[0][0]).toEqual([
     {
       partId: 1,
       usedQty: 6,
       supplier: '',
       allocations: [
-        { inbound_id: 1, qty: 4 },
-        { inbound_id: 2, qty: 2 },
+        { inbound_id: 2, qty: 1 },
+        { inbound_id: 1, qty: 5 },
       ],
     },
   ])
 })
 
-it('打开时回显已保存的用量与批次顺序', () => {
+it('单批零件输入超过可用量会被封顶，不会出现负数或超量', async () => {
+  const user = userEvent.setup()
   const { dialog } = renderModal({
+    planQty: 1, // 用量 2
+    inbounds: new Map([[1, [inbound({ id: 1, batch_no: 'RK-ONE', remaining: 2 })]]]),
+  })
+  const body = card(dialog)
+  const input = within(body).getByLabelText('RK-ONE 本次消耗') as HTMLInputElement
+  await user.clear(input)
+  await user.type(input, '99')
+  expect(input.value).toBe('2')
+  await user.clear(input)
+  await user.type(input, '3')
+  expect(input.value).toBe('2')
+})
+
+it('打开时回显已保存的顺序与数量', () => {
+  const { dialog } = renderModal({
+    planQty: 2, // 用量 4
     inbounds: new Map([
       [
         1,
         [
-          inbound({ id: 1, batch_no: 'RK-A', remaining: 10 }),
-          inbound({ id: 2, batch_no: 'RK-B', remaining: 10 }),
+          inbound({ id: 2, batch_no: 'RK-OLD', remaining: 10, created_at: '2026-09-01T08:00:00Z' }),
+          inbound({ id: 1, batch_no: 'RK-NEW', remaining: 10, created_at: '2026-10-20T08:00:00Z' }),
         ],
       ],
     ]),
@@ -147,30 +197,35 @@ it('打开时回显已保存的用量与批次顺序', () => {
           id: 9,
           batch_id: 1,
           part_id: 1,
-          used_qty: 5,
+          used_qty: 4,
           supplier: '老供应商',
           allocations: [
-            { inbound_id: 2, batch_no: 'RK-B', qty: 3, position: 0 },
-            { inbound_id: 1, batch_no: 'RK-A', qty: 2, position: 1 },
+            { inbound_id: 1, batch_no: 'RK-NEW', qty: 3, position: 0 },
+            { inbound_id: 2, batch_no: 'RK-OLD', qty: 1, position: 1 },
           ],
         },
       ],
     ]),
   })
-
-  expect((within(dialog).getAllByRole('textbox')[0] as HTMLInputElement).value).toBe('5')
-  expect(within(dialog).getByDisplayValue('老供应商')).toBeTruthy()
-  // 保存过的顺序优先：RK-B 排第一，5 个用量全部从它出。
-  const rows = within(dialog).getAllByText(/^RK-/)
-  expect(rows.map((r) => r.textContent)).toEqual(['RK-B', 'RK-A'])
-  const first = rows[0].closest('tr')!.textContent!.replace(/\s+/g, ' ')
-  expect(first).toContain('消耗 5')
+  const body = card(dialog)
+  expect(within(body).getByDisplayValue('老供应商')).toBeTruthy()
+  expect((within(body).getByLabelText('RK-NEW 本次消耗') as HTMLInputElement).value).toBe('3')
+  expect((within(body).getByLabelText('RK-OLD 本次消耗') as HTMLInputElement).value).toBe('1')
+  // 行序也沿用保存时的顺序：RK-NEW 在 RK-OLD 之前。
+  const text = body.textContent ?? ''
+  expect(text.indexOf('RK-NEW')).toBeLessThan(text.indexOf('RK-OLD'))
 })
 
-it('用量超过可用批次时提示差额走先进先出', () => {
+it('库存不够分时允许把可用量分完，并说明余量走先进先出', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn()
   const { dialog } = renderModal({
-    planQty: 10,
-    inbounds: new Map([[1, [inbound({ id: 1, batch_no: 'RK-A', remaining: 5 })]]]),
+    planQty: 10, // 用量 20，但只有 5
+    inbounds: new Map([[1, [inbound({ id: 1, batch_no: 'RK-ONE', remaining: 5 })]]]),
+    onSubmit,
   })
-  expect(within(dialog).getByText(/还差 15 将按先进先出扣/)).toBeTruthy()
+  const body = card(dialog)
+  expect(body.textContent).toContain('库存不够分')
+  await user.click(within(dialog).getByRole('button', { name: '确定' }))
+  expect(onSubmit).toHaveBeenCalledTimes(1)
 })

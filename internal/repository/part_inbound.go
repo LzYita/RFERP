@@ -51,12 +51,15 @@ func listPartInbounds(q queryer, partID int64) ([]model.PartInbound, error) {
 		SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at
 		FROM part_inbounds
 		WHERE part_id = ?
-		ORDER BY id DESC`, partID)
+		ORDER BY created_at DESC, id DESC`, partID)
 	return list, err
 }
 
-// partInboundsForUpdate 按先进先出（id 升序）读零件全部批次并加行锁，
-// 供扣料与盘点在同一事务里改写剩余。
+// partInboundsForUpdate 按入库时间由远到近（created_at, id）读零件全部批次
+// 并加行锁，供扣料与盘点在同一事务里改写剩余。
+//
+// 排序按时间而不是 id：批次可以补录（迁移回填、样本数据），后插入的行
+// 可能代表更早的入库；"先进先出"说的是入库先后，不是行号先后。
 func partInboundsForUpdate(q queryer, partID int64, forUpdate bool) ([]model.PartInbound, error) {
 	list := make([]model.PartInbound, 0)
 	suffix := ""
@@ -67,7 +70,7 @@ func partInboundsForUpdate(q queryer, partID int64, forUpdate bool) ([]model.Par
 		SELECT id, part_id, batch_no, qty, COALESCE(remaining, 0) AS remaining, note, created_at
 		FROM part_inbounds
 		WHERE part_id = ?
-		ORDER BY id`+suffix, partID)
+		ORDER BY created_at, id`+suffix, partID)
 	return list, err
 }
 

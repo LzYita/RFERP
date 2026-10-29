@@ -460,6 +460,12 @@ func (c *Client) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
 	return out, err
 }
 
+func (c *Client) TraceByPartLot(batchNo string) ([]model.BatchTrace, error) {
+	var out []model.BatchTrace
+	err := c.do(http.MethodGet, "/api/traces/by-part-lot?batch_no="+url.QueryEscape(batchNo), nil, &out)
+	return out, err
+}
+
 func (c *Client) TraceByPart(partCode string) ([]model.BatchTrace, error) {
 	var out []model.BatchTrace
 	err := c.do(http.MethodGet, "/api/traces/by-part?part_code="+url.QueryEscape(partCode), nil, &out)

@@ -442,6 +442,15 @@ func (s *Server) handleTraceByPart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *Server) handleTraceByPartLot(w http.ResponseWriter, r *http.Request) {
+	out, err := s.apps.TraceByPartLot(r.URL.Query().Get("batch_no"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *Server) handleAuditByRecord(w http.ResponseWriter, r *http.Request) {
 	rid, err := strconv.ParseInt(r.URL.Query().Get("record_id"), 10, 64)
 	if err != nil {

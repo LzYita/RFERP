@@ -1739,7 +1739,7 @@ async function stockProjectionGate(page, product, batchNos) {
  * 合计不等于用量时保存被拦、保存后按零件一行且供应商来自零件台账，
  * 再次保存是覆盖而不是追加。
  */
-async function lotTraceGate(page) {
+async function lotTraceGate(page, lotBatchNo) {
   await page.click('text=批次追溯')
   await sleep(1000)
   await page.locator('input[aria-label="选择 B-LOT"]').click()
@@ -1839,6 +1839,66 @@ async function lotTraceGate(page) {
   const again = (await section.count()) > 0 ? await section.innerText() : ''
   check('重复保存仍是覆盖（条数不变）', /共 1 条/.test(again),
     `追溯区：${again.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  // 双向追溯查询：同一批数据用多种入口查，结果都指向 B-LOT。
+  // 「双向查询」在标题旁、不在右侧按钮组里。
+  await page.locator('button', { hasText: '双向查询' }).first().click()
+  await sleep(700)
+  const qm = page.getByRole('dialog', { name: /双向追溯查询/ })
+  const traceRequests = []
+  page.on('request', (req) => {
+    if (req.url().includes('/api/traces/')) traceRequests.push(req.url())
+  })
+  check('双向查询有四种模式', (await qm.locator('select').first().locator('option').count()) === 4,
+    `选项数：${await qm.locator('select').first().locator('option').count()}`)
+
+  // 1) 零件批次号：反查用过这批料的生产批次，结果按生产批次分组。
+  await qm.locator('select').first().selectOption({ label: '零件批次号' })
+  await sleep(200)
+  await qm.locator('input').first().fill(lotBatchNo)
+  await sleep(200)
+  await qm.locator('button', { hasText: '查询' }).click()
+  await sleep(900)
+  let qText = await qm.innerText()
+  check('按零件批次号查到生产批次', qText.includes('B-LOT') && qText.includes('P-LOT-1'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
+  check('零件批次号结果显示批次分配', qText.includes('× 4') && qText.includes('× 6'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
+
+  // 2) 产品名称/编码：模糊命中该产品的所有批次。
+  await qm.locator('select').first().selectOption({ label: '产品名称/编码' })
+  await sleep(200)
+  await qm.locator('input').first().fill('投料批次')
+  await sleep(200)
+  await qm.locator('button', { hasText: '查询' }).click()
+  await sleep(900)
+  qText = await qm.innerText()
+  check('按产品名称查到批次与投料', qText.includes('B-LOT') && qText.includes('P-LOT-1'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 3) 零件编码/名称：按编码精确查。
+  await qm.locator('select').first().selectOption({ label: '零件编码/名称' })
+  await sleep(200)
+  await qm.locator('input').first().fill('P-LOT-1')
+  await sleep(200)
+  await qm.locator('button', { hasText: '查询' }).click()
+  await sleep(900)
+  qText = await qm.innerText()
+  check('按零件编码查到生产批次', qText.includes('B-LOT') && qText.includes('P-LOT-1'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 240)}`)
+
+  // 4) 未命中给空态而不是旧结果。
+  await qm.locator('select').first().selectOption({ label: '零件批次号' })
+  await sleep(200)
+  await qm.locator('input').first().fill('RK-99999999-9999')
+  await sleep(200)
+  await qm.locator('button', { hasText: '查询' }).click()
+  await sleep(900)
+  qText = await qm.innerText()
+  check('未命中的查询显示空态', qText.includes('未找到追溯记录') && !qText.includes('B-LOT'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+
+  await qm.locator('button', { hasText: '关闭' }).click()
+  await sleep(400)
 
   // 库存不够就不许投料：B-LOT 已排定 10，剩 90；再建一个用量 95 的批次，
   // 卡片应标出库存不足，保存被整体拦下（不再有"余量按先进先出扣"的口子）。
@@ -2000,6 +2060,8 @@ try {
 
   // 投料批次分配场景：一个零件三笔入库（10/20/70），本批用量 10。
   // 供应商写在零件台账上——界面不再手填，记录投料时由服务端带出。
+  // lotBatchNo 记下第一笔入库批次号，双向查询用它反查。
+  let lotBatchNo = ''
   await seedPart(auth, 'P-LOT-1', '投料批次零件', '五金', { stock_qty: 0, warn_qty: 0, supplier: '样本供应商' })
   {
     const rows = await api('/api/parts', { headers: auth })
@@ -2013,7 +2075,9 @@ try {
         body: JSON.stringify({ part_id: p.id, qty }),
       })
       if (r.code !== 200) throw new Error(`预置 P-LOT-1 入库失败 ${r.code} ${r.text.slice(0, 120)}`)
+      if (!lotBatchNo) lotBatchNo = r.body?.batch_no ?? ''
     }
+    if (!lotBatchNo) throw new Error('没有拿到 P-LOT-1 的入库批次号')
     const prod = await api('/api/products', {
       method: 'POST',
       headers: auth,
@@ -2099,7 +2163,7 @@ try {
     await stockProjectionGate(page, BOM_PRODUCT, STOCK_BATCHES)
 
     // 投料批次分配：够了库存的独立批次，验证改序/改量/覆盖/供应商
-    await lotTraceGate(page)
+    await lotTraceGate(page, lotBatchNo)
 
     // 接口回读放最后：重新登录会作废浏览器会话
     await verifyPersisted()

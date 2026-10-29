@@ -109,6 +109,8 @@ type Trace interface {
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
 	TraceByProduct(batchNo string) ([]model.BatchTrace, error)
 	TraceByPart(partCode string) ([]model.BatchTrace, error)
+	// TraceByPartLot 按零件入库批次号反查用了它的生产批次。
+	TraceByPartLot(batchNo string) ([]model.BatchTrace, error)
 }
 
 // Audit 操作审计查询。

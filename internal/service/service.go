@@ -1906,6 +1906,34 @@ func (s *Service) TraceByPart(partCode string) ([]model.BatchTrace, error) {
 	return s.repo.TraceByPart(partCode)
 }
 
+func (s *Service) TraceByPartLot(batchNo string) ([]model.BatchTrace, error) {
+	batchNo = strings.TrimSpace(batchNo)
+	if batchNo == "" {
+		return nil, fmt.Errorf("请输入零件批次号")
+	}
+	rows, err := s.repo.TraceByPartLot(batchNo)
+	if err != nil {
+		return nil, err
+	}
+	// 查询结果要显示「从哪几个入库批次出料」：按批次挂上分配（与 GetTraceByBatch 一致）。
+	byBatch := make(map[int64][]model.BatchTrace)
+	for _, r := range rows {
+		byBatch[r.BatchID] = append(byBatch[r.BatchID], r)
+	}
+	for batchID := range byBatch {
+		allocs, err := s.repo.ListBatchTraceAllocs(batchID)
+		if err != nil {
+			return nil, fmt.Errorf("load trace allocations: %w", err)
+		}
+		for i := range rows {
+			if rows[i].BatchID == batchID {
+				rows[i].Allocations = allocs[rows[i].PartID]
+			}
+		}
+	}
+	return rows, nil
+}
+
 // ---- 审计 ----
 
 func (s *Service) GetAuditLogs(tableName string, recordID int64) ([]model.AuditLog, error) {

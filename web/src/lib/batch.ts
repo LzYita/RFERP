@@ -314,6 +314,11 @@ export const traces = {
     (await api.get<BatchTrace[] | null>(`/api/traces/by-part?part_code=${encodeURIComponent(partCode)}`)) ?? [],
   byBatch: async (batchId: number): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
+  /** 按零件入库批次号反查用了它的生产批次（RK-…）。 */
+  byPartLot: async (batchNo: string): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(
+      `/api/traces/by-part-lot?batch_no=${encodeURIComponent(batchNo)}`,
+    )) ?? [],
 
   /**
    * 整批提交，一个事务：任一条失败则全部回滚。

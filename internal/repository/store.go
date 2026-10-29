@@ -129,6 +129,8 @@ type Store interface {
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
 	TraceByProduct(batchNo string) ([]model.BatchTrace, error)
 	TraceByPart(partCode string) ([]model.BatchTrace, error)
+	// TraceByPartLot 按零件入库批次号反查用了它的生产批次。
+	TraceByPartLot(batchNo string) ([]model.BatchTrace, error)
 
 	ListStockLogsByDate(start, end time.Time, actions []string) ([]model.AuditLog, error)
 	ListAuditLogsByDate(start, end time.Time) ([]model.AuditLog, error)

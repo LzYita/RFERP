@@ -1851,13 +1851,10 @@ async function lotTraceGate(page, lotBatchNo) {
   check('双向查询有四种模式', (await qm.locator('select').first().locator('option').count()) === 4,
     `选项数：${await qm.locator('select').first().locator('option').count()}`)
 
-  // 匹配方式：默认部分匹配，只输片段就能查到；完全匹配才要求整串。
-  const matchSel = qm.locator('select').nth(1)
-  const matchOpts = await matchSel.locator('option').allInnerTexts()
-  check('匹配方式有部分匹配/完全匹配两档', matchOpts.length === 2 && matchOpts[0].includes('部分匹配'),
-    `匹配方式：${matchOpts.join('、')}`)
-  check('匹配方式默认部分匹配', (await matchSel.inputValue()) === 'partial',
-    `默认值：${await matchSel.inputValue()}`)
+  // 只有一个下拉（查询方式）；匹配固定按部分匹配，输片段即可。
+  check('查询弹窗只有一个下拉（不再选匹配方式）',
+    (await qm.locator('select').count()) === 1,
+    `下拉数：${await qm.locator('select').count()}`)
 
   await qm.locator('select').first().selectOption({ label: '产品批次号' })
   await sleep(200)
@@ -1868,17 +1865,6 @@ async function lotTraceGate(page, lotBatchNo) {
   let qText = await qm.innerText()
   check('部分匹配：只输批次号片段就查到', qText.includes('B-LOT') && qText.includes('P-LOT-1'),
     `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
-
-  // 同一片段切到完全匹配：不应命中，切回部分匹配继续后面的用例。
-  await matchSel.selectOption({ label: '完全匹配（整串相等）' })
-  await sleep(200)
-  await qm.locator('button', { hasText: '查询' }).click()
-  await sleep(900)
-  qText = await qm.innerText()
-  check('完全匹配：同一片段不命中', qText.includes('未找到追溯记录'),
-    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
-  await matchSel.selectOption({ label: '部分匹配（输片段即可）' })
-  await sleep(200)
 
   // 1) 零件批次号：反查用过这批料的生产批次，结果按生产批次分组。
   await qm.locator('select').first().selectOption({ label: '零件批次号' })

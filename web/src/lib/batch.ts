@@ -307,26 +307,26 @@ export const batches = {
     api.del<{ status: string }>(`/api/batches/temp-parts?batch_id=${batchId}&part_id=${partId}`),
 }
 
-/** 部分匹配参数：只在需要时附加，完全匹配保持旧 URL（服务端缺省即精确）。 */
-const matchQS = (partial?: boolean) => (partial ? '&match=partial' : '')
+/** 三个反查都走部分匹配：输整串时包含匹配天然只命中那一条。 */
+const PARTIAL = '&match=partial'
 
 export const traces = {
-  /** partial=true：批次号按包含关系匹配，界面「匹配方式」选部分匹配时传。 */
-  byProduct: async (batchNo: string, partial = false): Promise<BatchTrace[]> =>
+  /** 按批次号反查；部分匹配，输片段即可。 */
+  byProduct: async (batchNo: string): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(
-      `/api/traces/by-product?batch_no=${encodeURIComponent(batchNo)}${matchQS(partial)}`,
+      `/api/traces/by-product?batch_no=${encodeURIComponent(batchNo)}${PARTIAL}`,
     )) ?? [],
-  /** 服务端同时比对零件编码与名称；partial=true 时按包含关系。 */
-  byPart: async (value: string, partial = false): Promise<BatchTrace[]> =>
+  /** 按零件编码或名称反查；服务端同时比对两者，部分匹配。 */
+  byPart: async (value: string): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(
-      `/api/traces/by-part?part_code=${encodeURIComponent(value)}${matchQS(partial)}`,
+      `/api/traces/by-part?part_code=${encodeURIComponent(value)}${PARTIAL}`,
     )) ?? [],
   byBatch: async (batchId: number): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
-  /** 按零件入库批次号反查用了它的生产批次（RK-…）。 */
-  byPartLot: async (batchNo: string, partial = false): Promise<BatchTrace[]> =>
+  /** 按零件入库批次号反查用了它的生产批次（RK-…），部分匹配。 */
+  byPartLot: async (batchNo: string): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(
-      `/api/traces/by-part-lot?batch_no=${encodeURIComponent(batchNo)}${matchQS(partial)}`,
+      `/api/traces/by-part-lot?batch_no=${encodeURIComponent(batchNo)}${PARTIAL}`,
     )) ?? [],
 
   /**

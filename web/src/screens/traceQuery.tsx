@@ -5,7 +5,7 @@ import { traces, statusText, type Batch, type BatchTrace } from '../lib/batch'
 import type { Part } from '../lib/catalog'
 
 /**
- * 双向追溯查询：四种入口，对应四类查找路径；每种入口都能选匹配方式。
+ * 双向追溯查询：四种入口，对应四类查找路径。
  *
  *  | 模式           | 输入                 | 服务端路径                    |
  *  |----------------|----------------------|-------------------------------|
@@ -14,55 +14,25 @@ import type { Part } from '../lib/catalog'
  *  | 零件编码/名称  | 零件编码或名称       | /api/traces/by-part           |
  *  | 零件批次号     | 入库批次号 RK-…      | /api/traces/by-part-lot       |
  *
- * 匹配方式两档，默认部分匹配——追溯查询的目的是"找到"，不该逼用户先背出完整值：
- *  - 部分匹配：任意片段即可（服务端用 instr 做包含匹配，% / _ 按字面字符处理）；
- *  - 完全匹配：整串相等，命中范围最小。
+ * 统一走部分匹配，不再让用户选匹配方式：追溯查询的目的是"找到"，不该逼用户
+ * 先背出完整值；而部分匹配天然涵盖完全匹配——把整串输完，命中的就是那一条。
+ * 服务端用 instr 做包含匹配，% / _ 按字面字符处理，不是通配符。
  * 产品名称/编码的筛选在前端做：批次列表本来就在内存里，再造一套模糊端点
  * 只会多一种口径。结果统一按生产批次分组展示，命中的文字高亮。
  */
 
 type Mode = 'product' | 'productFuzzy' | 'part' | 'partLot'
-type Match = 'partial' | 'exact'
 
-const MODES: { value: Mode; label: string; input: string; placeholder: string; exactPlaceholder: string }[] = [
-  {
-    value: 'product',
-    label: '产品批次号',
-    input: '产品批次号',
-    placeholder: '可只输片段，如 20261008',
-    exactPlaceholder: '输入完整的产品批次号',
-  },
-  {
-    value: 'productFuzzy',
-    label: '产品名称/编码',
-    input: '产品名称或编码',
-    placeholder: '可只输片段，如 破壁机',
-    exactPlaceholder: '输入完整的产品名称或编码',
-  },
-  {
-    value: 'part',
-    label: '零件编码/名称',
-    input: '零件编码或名称',
-    placeholder: '可只输片段，如 加热',
-    exactPlaceholder: '输入完整的零件编码或名称',
-  },
-  {
-    value: 'partLot',
-    label: '零件批次号',
-    input: '零件批次号',
-    placeholder: '可只输片段，如 20261029',
-    exactPlaceholder: '输入完整的入库批次号，如 RK-20261029-0001',
-  },
+const MODES: { value: Mode; label: string; input: string; placeholder: string }[] = [
+  { value: 'product', label: '产品批次号', input: '产品批次号', placeholder: '可只输片段，如 20261008' },
+  { value: 'productFuzzy', label: '产品名称/编码', input: '产品名称或编码', placeholder: '可只输片段，如 破壁机' },
+  { value: 'part', label: '零件编码/名称', input: '零件编码或名称', placeholder: '可只输片段，如 加热' },
+  { value: 'partLot', label: '零件批次号', input: '零件批次号', placeholder: '可只输片段，如 20261029' },
 ]
 
-const MATCHES: { value: Match; label: string }[] = [
-  { value: 'partial', label: '部分匹配（输片段即可）' },
-  { value: 'exact', label: '完全匹配（整串相等）' },
-]
-
-/** 同一套比较规则：完全匹配比整串，部分匹配比包含（大小写不敏感）。 */
-function matchText(text: string, q: string, exact: boolean): boolean {
-  return exact ? text === q : text.toLowerCase().includes(q.toLowerCase())
+/** 包含匹配（大小写不敏感）：输整串时包含即相等，所以不必再区分两档。 */
+function containsText(text: string, q: string): boolean {
+  return text.toLowerCase().includes(q.toLowerCase())
 }
 
 /** 高亮匹配片段：查询值在结果里出现的位置标黄，命中原因一目了然。
@@ -133,7 +103,6 @@ export function TraceQuery({
   onClose: () => void
 }) {
   const [mode, setMode] = useState<Mode>('product')
-  const [match, setMatch] = useState<Match>('partial')
   const [query, setQuery] = useState('')
   const [rows, setRows] = useState<BatchTrace[] | null>(null)
   /** 查询命中的"对象"数：批次（按产品查）或零件（按零件查）。
@@ -146,7 +115,6 @@ export function TraceQuery({
   const partById = useMemo(() => new Map(parts.map((p) => [p.id, p])), [parts])
 
   const modeInfo = MODES.find((m) => m.value === mode)!
-  const exact = match === 'exact'
 
   async function search() {
     const value = query.trim()
@@ -161,28 +129,28 @@ export function TraceQuery({
       let found: BatchTrace[]
       let hitObjects = 0
       if (mode === 'product') {
-        found = await traces.byProduct(value, !exact)
+        found = await traces.byProduct(value)
         // 命中数按批次列表算：命中但还没有投料记录时要给另一句提示。
-        hitObjects = batches.filter((b) => matchText(b.batch_no, value, exact)).length
+        hitObjects = batches.filter((b) => containsText(b.batch_no, value)).length
       } else if (mode === 'productFuzzy') {
         // 产品名称/编码在前端匹配批次列表，再按命中的批次逐个取投料。
         const matched = batches.filter(
           (b) =>
-            matchText(b.product_name ?? '', value, exact) || matchText(b.product_code ?? '', value, exact),
+            containsText(b.product_name ?? '', value) || containsText(b.product_code ?? '', value),
         )
         hitObjects = matched.length
         const lists = await Promise.all(matched.map((b) => traces.byBatch(b.id)))
         found = lists.flat()
       } else if (mode === 'partLot') {
-        found = await traces.byPartLot(value, !exact)
+        found = await traces.byPartLot(value)
         // 一个入库批次可能被多个生产批次用；命中对象按生产批次计。
         hitObjects = new Set(found.map((r) => r.batch_id)).size
       } else {
         // 零件：编码与名称都由服务端比对，前端只数命中对象。
         hitObjects = parts.filter(
-          (p) => matchText(p.code, value, exact) || matchText(p.name ?? '', value, exact),
+          (p) => containsText(p.code, value) || containsText(p.name ?? '', value),
         ).length
-        found = await traces.byPart(value, !exact)
+        found = await traces.byPart(value)
       }
       setHits(hitObjects)
       setRows(found)
@@ -223,26 +191,9 @@ export function TraceQuery({
         />
       </FormRow>
       <FormRow
-        label="匹配方式"
-        hint={
-          exact
-            ? '整串必须一致；只记得一部分时切回「部分匹配」。'
-            : '不用输完整：输入片段即可，结果里命中的文字会高亮。'
-        }
+        label={modeInfo.input}
+        hint="不用输完整：输入片段即可，结果里命中的文字会高亮。"
       >
-        <Select
-          value={match}
-          disabled={busy}
-          onChange={(v) => {
-            setMatch(v as Match)
-            setRows(null)
-            setHits(0)
-            setError('')
-          }}
-          options={MATCHES}
-        />
-      </FormRow>
-      <FormRow label={modeInfo.input}>
         <TextInput
           value={query}
           disabled={busy}
@@ -251,7 +202,7 @@ export function TraceQuery({
             setRows(null)
           }}
           onEnter={() => void search()}
-          placeholder={exact ? modeInfo.exactPlaceholder : modeInfo.placeholder}
+          placeholder={modeInfo.placeholder}
         />
       </FormRow>
       <FormError text={error} />
@@ -260,7 +211,7 @@ export function TraceQuery({
           {hits > 0
             ? // 命中了批次/零件，但它们还没有投料记录——这是数据状态，不是查不到。
               `命中的${mode === 'part' ? '零件' : '批次'}还没有投料记录（在「记录投料」保存后即可查到）`
-            : '未找到追溯记录：请核对查询值、查询方式与匹配方式是否匹配'}
+            : '未找到追溯记录：请核对查询值与查询方式是否匹配'}
         </p>
       ) : null}
       {groups.length > 0 ? (

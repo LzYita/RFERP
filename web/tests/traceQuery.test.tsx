@@ -1,5 +1,5 @@
 // 双向追溯查询：四种模式各有输入口径，结果按生产批次分组。
-// 匹配方式默认「部分匹配」：输片段即可；「完全匹配」才要求整串相等。
+// 匹配统一走部分匹配：输片段即可，输整串时自然只命中那一条。
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
@@ -42,17 +42,13 @@ async function pickMode(label: string) {
   return u
 }
 
-async function pickMatch(u: ReturnType<typeof userEvent.setup>, label: string) {
-  await u.selectOptions(screen.getByRole('combobox', { name: '匹配方式' }), label)
-}
-
-it('产品批次号：默认部分匹配，输片段即带 match=partial 查询', async () => {
+it('产品批次号：部分匹配，输片段即带 match=partial 查询', async () => {
   const fetch = vi.fn().mockResolvedValue(jsonRows([row({})]))
   vi.stubGlobal('fetch', fetch)
   render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
   const u = await pickMode('产品批次号')
-  // 下拉默认就是部分匹配。
-  expect((screen.getByRole('combobox', { name: '匹配方式' }) as HTMLSelectElement).value).toBe('partial')
+  // 只有一个下拉：不再提供匹配方式选择。
+  expect(screen.getAllByRole('combobox')).toHaveLength(1)
   await u.type(screen.getByPlaceholderText(/可只输片段/), '成品')
   await u.click(screen.getByRole('button', { name: '查询' }))
 
@@ -132,20 +128,17 @@ it('零件批次号：按入库批次反查，结果列出批次分配', async (
   )
 })
 
-it('切到完全匹配：请求不带 match 参数，且只认整串', async () => {
+it('片段也没有命中时给出"未找到"并提示核对查询值', async () => {
   const fetch = vi.fn().mockResolvedValue(new Response('[]'))
   vi.stubGlobal('fetch', fetch)
   render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
   const u = await pickMode('产品批次号')
-  await pickMatch(u, '完全匹配（整串相等）')
-  await u.type(screen.getByPlaceholderText(/输入完整的产品批次号/), '成品')
+  await u.type(screen.getByPlaceholderText(/可只输片段/), '不存在')
   await u.click(screen.getByRole('button', { name: '查询' }))
 
-  expect(fetch).toHaveBeenCalledWith('/api/traces/by-product?batch_no=%E6%88%90%E5%93%81', expect.anything())
-  // 「成品」只是「成品批次」的片段：完全匹配下没有命中对象，给"未找到"。
   expect(await screen.findByRole('status')).toHaveProperty(
     'textContent',
-    '未找到追溯记录：请核对查询值、查询方式与匹配方式是否匹配',
+    '未找到追溯记录：请核对查询值与查询方式是否匹配',
   )
 })
 

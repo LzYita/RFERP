@@ -2,9 +2,11 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
@@ -131,9 +133,12 @@ func contractCases(t *testing.T, open storeFactory) {
 	// is asserted there instead.
 	t.Run("duplicate_product_code_allowed", func(t *testing.T) {
 		s, _ := open(t)
+		// MySQL 适配器上整个包共用一个库，前面的用例会留下产品行；
+		// 用本次唯一的编码并只数这些行，断言才和"同码允许多条"这件事对齐。
+		code := fmt.Sprintf("FAM-%d", time.Now().UnixNano())
 		for _, name := range []string{"绿", "粉", "白"} {
 			if _, err := withTxRet(s, func(tx TxOps) (int64, error) {
-				return tx.CreateProduct(&model.Product{Code: "FAM-1", Name: name, Unit: "台", Status: 1})
+				return tx.CreateProduct(&model.Product{Code: code, Name: name, Unit: "台", Status: 1})
 			}); err != nil {
 				t.Fatalf("create product %s: %v", name, err)
 			}
@@ -142,8 +147,14 @@ func contractCases(t *testing.T, open storeFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(list) != 3 {
-			t.Fatalf("products=%d, want 3 rows sharing one code", len(list))
+		same := 0
+		for _, p := range list {
+			if p.Code == code {
+				same++
+			}
+		}
+		if same != 3 {
+			t.Fatalf("products with code %s = %d, want 3 rows sharing one code", code, same)
 		}
 	})
 

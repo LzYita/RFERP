@@ -142,6 +142,42 @@ it('片段也没有命中时给出"未找到"并提示核对查询值', async ()
   )
 })
 
+it('零件批次号查不到时，说明可能还没投产而不是"查不到"', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')))
+  render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
+  const u = await pickMode('零件批次号')
+  await u.type(screen.getByPlaceholderText(/可只输片段/), 'RK-20990101-0001')
+  await u.click(screen.getByRole('button', { name: '查询' }))
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent',
+    '没有找到使用这个入库批次的生产批次：可能这批料还没投产，或片段没输对',
+  )
+})
+
+it('结果达到上限时提示只显示前 500 条', async () => {
+  const many = Array.from({ length: 500 }, (_, i) => row({ id: 100 + i }))
+  vi.stubGlobal('fetch', vi.fn(async () => jsonRows(many)))
+  render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
+  const u = await pickMode('产品批次号')
+  await u.type(screen.getByPlaceholderText(/可只输片段/), '0')
+  await u.click(screen.getByRole('button', { name: '查询' }))
+
+  const status = await screen.findByText(/结果超过 500 条/)
+  expect(status).toBeTruthy()
+})
+
+it('查询值前后有空格时也能高亮（高亮用 trim 后的值）', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => jsonRows([row({})])))
+  render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)
+  const u = await pickMode('产品批次号')
+  await u.type(screen.getByPlaceholderText(/可只输片段/), ' 成品 ')
+  await u.click(screen.getByRole('button', { name: '查询' }))
+
+  await waitFor(() => expect(document.querySelector('mark')).toBeTruthy())
+  expect([...document.querySelectorAll('mark')].map((m) => m.textContent)).toContain('成品')
+})
+
 it('命中批次但没有投料记录时，提示去记录投料而不是"未找到"', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')))
   render(<TraceQuery batches={batches} parts={parts} onClose={() => {}} />)

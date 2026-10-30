@@ -38,8 +38,13 @@ func TestAPIStockInFlowIntegration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// 每次跑干净库，避免依赖外部状态。
+	// 每次跑干净库，避免依赖外部状态。子表先删（含 v14–v18 新增表），
+	// 否则 MySQL 会因外键拒绝 DROP product_batches / parts。
 	for _, stmt := range []string{
+		"DROP TABLE IF EXISTS batch_trace_allocs",
+		"DROP TABLE IF EXISTS part_inbound_draws",
+		"DROP TABLE IF EXISTS part_inbounds",
+		"DROP TABLE IF EXISTS batch_temp_parts",
 		"DROP TABLE IF EXISTS batch_consumptions",
 		"DROP TABLE IF EXISTS batch_skip_parts",
 		"DROP TABLE IF EXISTS batch_trace",
@@ -50,6 +55,7 @@ func TestAPIStockInFlowIntegration(t *testing.T) {
 		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS users",
 		"DROP TABLE IF EXISTS schema_migrations",
+		"DROP TABLE IF EXISTS db_identity",
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("reset %s: %v", stmt, err)

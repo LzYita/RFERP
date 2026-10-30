@@ -35,6 +35,13 @@ function containsText(text: string, q: string): boolean {
   return text.toLowerCase().includes(q.toLowerCase())
 }
 
+/**
+ * 服务端每条 SQL 的返回上限（trace_query.go 的 LIMIT 500）。
+ * 达到上限就提示"只显示前 500 条"——片段太短时这是唯一能让用户知道
+ * 结果不完整的地方；两处数字必须一起改。
+ */
+const RESULT_LIMIT = 500
+
 /** 高亮匹配片段：查询值在结果里出现的位置标黄，命中原因一目了然。
  *  拆分大小写不敏感；查询值为空或文本不含它时原样返回。 */
 function Highlight({ text, query }: { text: string; query: string }) {
@@ -104,10 +111,14 @@ export function TraceQuery({
 }) {
   const [mode, setMode] = useState<Mode>('product')
   const [query, setQuery] = useState('')
+  /** 真正发起查询时用的值（已 trim）：高亮要跟着它走，不能跟着输入框里的空格走。 */
+  const [lastQuery, setLastQuery] = useState('')
   const [rows, setRows] = useState<BatchTrace[] | null>(null)
   /** 查询命中的"对象"数：批次（按产品查）或零件（按零件查）。
       与记录条数分开：命中了对象但对象还没有投料记录，是另一种空态。 */
   const [hits, setHits] = useState(0)
+  /** 结果被服务端 LIMIT 截断（条数到达上限）。 */
+  const [truncated, setTruncated] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -119,12 +130,14 @@ export function TraceQuery({
   async function search() {
     const value = query.trim()
     setRows(null)
+    setTruncated(false)
     if (!value) {
       setError('请输入查询值')
       return
     }
     setBusy(true)
     setError('')
+    setLastQuery(value)
     try {
       let found: BatchTrace[]
       let hitObjects = 0
@@ -153,6 +166,7 @@ export function TraceQuery({
         found = await traces.byPart(value)
       }
       setHits(hitObjects)
+      setTruncated(found.length >= RESULT_LIMIT)
       setRows(found)
     } catch (e) {
       setError(e instanceof Error ? e.message : '查询失败')
@@ -192,7 +206,7 @@ export function TraceQuery({
       </FormRow>
       <FormRow
         label={modeInfo.input}
-        hint="不用输完整：输入片段即可，结果里命中的文字会高亮。"
+        hint="不用输完整：输入片段即可（建议至少 2 个字符），结果里命中的文字会高亮。"
       >
         <TextInput
           value={query}
@@ -200,18 +214,27 @@ export function TraceQuery({
           onChange={(v) => {
             setQuery(v)
             setRows(null)
+            setTruncated(false)
           }}
           onEnter={() => void search()}
           placeholder={modeInfo.placeholder}
         />
       </FormRow>
       <FormError text={error} />
+      {truncated ? (
+        <p role="status" className="mb-1.5 text-[11.5px] text-[var(--color-warn)]">
+          结果超过 {RESULT_LIMIT} 条，仅显示前 {RESULT_LIMIT} 条，请输入更长的片段。
+        </p>
+      ) : null}
       {rows?.length === 0 ? (
         <p role="status">
           {hits > 0
             ? // 命中了批次/零件，但它们还没有投料记录——这是数据状态，不是查不到。
               `命中的${mode === 'part' ? '零件' : '批次'}还没有投料记录（在「记录投料」保存后即可查到）`
-            : '未找到追溯记录：请核对查询值与查询方式是否匹配'}
+            : mode === 'partLot'
+              ? // 入库批次存在但还没被任何生产批次使用，和"查不到"是两回事。
+                '没有找到使用这个入库批次的生产批次：可能这批料还没投产，或片段没输对'
+              : '未找到追溯记录：请核对查询值与查询方式是否匹配'}
         </p>
       ) : null}
       {groups.length > 0 ? (
@@ -220,14 +243,14 @@ export function TraceQuery({
             <div key={g.batch?.id ?? g.rows[0].batch_id} className="border-b border-[var(--color-border-subtle)] last:border-b-0">
               <div className="flex items-center gap-2 bg-[var(--color-canvas)] px-3 py-1.5 text-[11.5px]">
                 <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                  {g.batch ? <Highlight text={g.batch.batch_no} query={query} /> : `批次 #${g.rows[0].batch_id}`}
+                  {g.batch ? <Highlight text={g.batch.batch_no} query={lastQuery} /> : `批次 #${g.rows[0].batch_id}`}
                 </span>
                 <span className="text-[var(--color-fg-muted)]">
                   {g.batch ? (
                     <>
-                      <Highlight text={g.batch.product_name ?? ''} query={query} />
+                      <Highlight text={g.batch.product_name ?? ''} query={lastQuery} />
                       {' ['}
-                      <Highlight text={g.batch.product_code ?? ''} query={query} />
+                      <Highlight text={g.batch.product_code ?? ''} query={lastQuery} />
                       {'] · '}
                       {statusText(g.batch.status)}
                     </>
@@ -257,10 +280,10 @@ export function TraceQuery({
                       <tr key={r.id}>
                         <td>
                           <span style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                            {part ? <Highlight text={part.code} query={query} /> : `#${r.part_id}`}
+                            {part ? <Highlight text={part.code} query={lastQuery} /> : `#${r.part_id}`}
                           </span>
                           <span className="ml-1 text-[11px] text-[var(--color-fg-muted)]">
-                            {part ? <Highlight text={part.name ?? ''} query={query} /> : ''}
+                            {part ? <Highlight text={part.name ?? ''} query={lastQuery} /> : ''}
                           </span>
                         </td>
                         <td className="num">{fmtQty(r.used_qty)}</td>
@@ -269,13 +292,13 @@ export function TraceQuery({
                             <div className="flex flex-col">
                               {r.allocations.map((a) => (
                                 <span key={a.inbound_id} style={{ fontFamily: 'Consolas, monospace', fontSize: 12 }}>
-                                  <Highlight text={a.batch_no} query={query} /> × {fmtQty(a.qty)}
+                                  <Highlight text={a.batch_no} query={lastQuery} /> × {fmtQty(a.qty)}
                                 </span>
                               ))}
                             </div>
                           ) : (
                             <span style={{ color: 'var(--color-fg-muted)' }}>
-                              {r.part_batch_no ? <Highlight text={r.part_batch_no} query={query} /> : '—'}
+                              {r.part_batch_no ? <Highlight text={r.part_batch_no} query={lastQuery} /> : '—'}
                             </span>
                           )}
                         </td>

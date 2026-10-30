@@ -3,6 +3,7 @@ package repository
 import (
 	"app/internal/migrate"
 	"app/internal/model"
+	"fmt"
 	"github.com/jmoiron/sqlx"
 	"os"
 	"path/filepath"
@@ -122,6 +123,43 @@ func TestTraceQueries(t *testing.T) {
 					}
 				})
 			}
+
+			// 上限：501 个批次各一条投料，部分匹配只能回 500 条（LIMIT 500）。
+			if err := store.WithTx(func(tx TxOps) error {
+				capPartID, e := tx.CreatePart(&model.Part{Code: "TRACE-CAP-P", Name: "上限零件", Unit: "个", Status: 1})
+				if e != nil {
+					return e
+				}
+				capProductID, e := tx.CreateProduct(&model.Product{Code: "TRACE-CAP", Name: "上限产品", Unit: "台", Status: 1})
+				if e != nil {
+					return e
+				}
+				for i := 0; i < 501; i++ {
+					bid, e := tx.CreateBatch(&model.ProductBatch{
+						BatchNo:   fmt.Sprintf("TRACE-CAP-%03d", i),
+						ProductID: capProductID,
+						PlanQty:   1,
+					})
+					if e != nil {
+						return e
+					}
+					if _, e := tx.CreateTrace(&model.BatchTrace{BatchID: bid, PartID: capPartID, UsedQty: 1}); e != nil {
+						return e
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Run("limit", func(t *testing.T) {
+				rows, e := store.TraceByProduct("TRACE-CAP", true)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if len(rows) != 500 {
+					t.Fatalf("部分匹配应被 LIMIT 500 截断：got=%d", len(rows))
+				}
+			})
 		})
 	}
 }

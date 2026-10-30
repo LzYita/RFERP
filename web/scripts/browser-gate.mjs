@@ -1913,8 +1913,10 @@ async function lotTraceGate(page, lotBatchNo) {
   await qm.locator('button', { hasText: '查询' }).click()
   await sleep(900)
   qText = await qm.innerText()
-  check('未命中的查询显示空态', qText.includes('未找到追溯记录') && !qText.includes('B-LOT'),
-    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 200)}`)
+  // 零件批次号的空态要说明"可能还没投产"，不能和"查不到"混为一谈。
+  check('零件批次号未命中时说明可能还没投产',
+    qText.includes('没有找到使用这个入库批次的生产批次') && qText.includes('还没投产') && !qText.includes('B-LOT'),
+    `查询结果：${qText.replace(/\s*\n\s*/g, ' | ').slice(0, 220)}`)
 
   await qm.locator('button', { hasText: '关闭' }).click()
   await sleep(400)

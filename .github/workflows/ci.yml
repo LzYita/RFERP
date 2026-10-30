@@ -186,3 +186,50 @@ jobs:
         run: |
           go test -race ./... -count=1 -shuffle=on -timeout 10m
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # MySQL 适配器在 Windows 作业里是 skip 的（没有 RFERP_TEST_DSN），
+  # 于是"SQLite 通过、MySQL 炸"这类问题只能等用户手工发现。这个作业用
+  # 一次性的 MySQL 服务把同一批集成测试真跑一遍。
+  #
+  # 为什么是 Linux：GitHub 的 services 容器只在 Linux runner 上可用。
+  # 为什么 -p 1：三个包共用同一个测试库，各自会重置/迁移表，并行会互相拆台。
+  mysql:
+    name: Linux / MySQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      mysql:
+        image: mysql:8.0 # 与部署环境一致，不跟最新的 8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-pw
+          MYSQL_DATABASE: rferp_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-pw --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+          cache: true
+
+      - name: Test against MySQL
+        env:
+          RFERP_TEST_DSN: 'root:ci-root-pw@tcp(127.0.0.1:3306)/rferp_ci?parseTime=true&charset=utf8mb4&loc=Local'
+        run: |
+          # 三个包共用同一个测试库，逐条命令串行执行（各自会重置/迁移表）。
+          go test -count=1 -timeout 15m ./internal/repository/
+          # internal/api 里有一批用例依赖 DPAPI（仅 Windows），Linux 上只跑数据库端到端那条。
+          go test -count=1 -timeout 10m -run '^TestAPIStockInFlowIntegration$' ./internal/api/
+          go test -count=1 -timeout 10m ./internal/service/

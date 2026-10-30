@@ -263,7 +263,14 @@ func connectTestDB(t *testing.T, dsn string) *sqlx.DB {
 
 func resetTestTables(t *testing.T, db *sqlx.DB) {
 	t.Helper()
+	// 先删含外键的子表、再删被引用的父表：MySQL 不会因为 DROP 顺序给面子，
+	// 父子顺序反了直接报 Error 3730。v14–v18 引入的表必须都在这里，
+	// 否则 CI 跑 MySQL 时会在第一次 reset 就失败。
 	for _, stmt := range []string{
+		"DROP TABLE IF EXISTS batch_trace_allocs",
+		"DROP TABLE IF EXISTS part_inbound_draws",
+		"DROP TABLE IF EXISTS part_inbounds",
+		"DROP TABLE IF EXISTS batch_temp_parts",
 		"DROP TABLE IF EXISTS batch_consumptions",
 		"DROP TABLE IF EXISTS batch_skip_parts",
 		"DROP TABLE IF EXISTS batch_trace",

@@ -58,6 +58,7 @@ var permissions = []UseCasePermission{
 	{Name: "Trace.GetTraceByBatch", Module: auth.ModuleBatch, Access: auth.AccessRead},
 	{Name: "Trace.TraceByProduct", Module: auth.ModuleBatch, Access: auth.AccessRead},
 	{Name: "Trace.TraceByPart", Module: auth.ModuleBatch, Access: auth.AccessRead},
+	{Name: "Trace.TraceByPartLot", Module: auth.ModuleBatch, Access: auth.AccessRead},
 	{Name: "Trace.RecordTrace", Module: auth.ModuleBatch, Access: auth.AccessWrite},
 	{Name: "Trace.RecordTraces", Module: auth.ModuleBatch, Access: auth.AccessWrite},
 

@@ -107,8 +107,11 @@ type Trace interface {
 	RecordTrace(t *model.BatchTrace) (*model.BatchTrace, error)
 	RecordTraces(traces []*model.BatchTrace) error
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
-	TraceByProduct(batchNo string) ([]model.BatchTrace, error)
-	TraceByPart(partCode string) ([]model.BatchTrace, error)
+	// partial=true 表示按包含关系匹配；入口的「匹配方式」下拉传它。
+	TraceByProduct(batchNo string, partial bool) ([]model.BatchTrace, error)
+	TraceByPart(value string, partial bool) ([]model.BatchTrace, error)
+	// TraceByPartLot 按零件入库批次号反查用了它的生产批次。
+	TraceByPartLot(batchNo string, partial bool) ([]model.BatchTrace, error)
 }
 
 // Audit 操作审计查询。

@@ -424,8 +424,14 @@ func (s *Server) handleTraceByBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// partialMatch 读「匹配方式」参数：只有显式 match=partial 才做部分匹配，
+// 缺省与任何未知值都退回完全匹配（保持旧客户端的语义）。
+func partialMatch(r *http.Request) bool {
+	return r.URL.Query().Get("match") == "partial"
+}
+
 func (s *Server) handleTraceByProduct(w http.ResponseWriter, r *http.Request) {
-	out, err := s.apps.TraceByProduct(r.URL.Query().Get("batch_no"))
+	out, err := s.apps.TraceByProduct(r.URL.Query().Get("batch_no"), partialMatch(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -434,7 +440,16 @@ func (s *Server) handleTraceByProduct(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTraceByPart(w http.ResponseWriter, r *http.Request) {
-	out, err := s.apps.TraceByPart(r.URL.Query().Get("part_code"))
+	out, err := s.apps.TraceByPart(r.URL.Query().Get("part_code"), partialMatch(r))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleTraceByPartLot(w http.ResponseWriter, r *http.Request) {
+	out, err := s.apps.TraceByPartLot(r.URL.Query().Get("batch_no"), partialMatch(r))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

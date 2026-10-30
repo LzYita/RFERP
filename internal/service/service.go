@@ -1890,20 +1890,51 @@ func (s *Service) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 	return rows, nil
 }
 
-func (s *Service) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
+// TraceByProduct 按产品批次号反查投料记录；partial=true 时按包含关系匹配
+// （界面「匹配方式」选部分匹配，用户可以只输批次号片段）。
+func (s *Service) TraceByProduct(batchNo string, partial bool) ([]model.BatchTrace, error) {
 	batchNo = strings.TrimSpace(batchNo)
 	if batchNo == "" {
 		return nil, fmt.Errorf("请输入产品批次号")
 	}
-	return s.repo.TraceByProduct(batchNo)
+	return s.repo.TraceByProduct(batchNo, partial)
 }
 
-func (s *Service) TraceByPart(partCode string) ([]model.BatchTrace, error) {
-	partCode = strings.TrimSpace(partCode)
-	if partCode == "" {
-		return nil, fmt.Errorf("请输入零件编码")
+// TraceByPart 按零件编码或名称反查；两种匹配方式都会同时比对编码与名称。
+func (s *Service) TraceByPart(value string, partial bool) ([]model.BatchTrace, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, fmt.Errorf("请输入零件编码或名称")
 	}
-	return s.repo.TraceByPart(partCode)
+	return s.repo.TraceByPart(value, partial)
+}
+
+func (s *Service) TraceByPartLot(batchNo string, partial bool) ([]model.BatchTrace, error) {
+	batchNo = strings.TrimSpace(batchNo)
+	if batchNo == "" {
+		return nil, fmt.Errorf("请输入零件批次号")
+	}
+	rows, err := s.repo.TraceByPartLot(batchNo, partial)
+	if err != nil {
+		return nil, err
+	}
+	// 查询结果要显示「从哪几个入库批次出料」：按批次挂上分配（与 GetTraceByBatch 一致）。
+	byBatch := make(map[int64][]model.BatchTrace)
+	for _, r := range rows {
+		byBatch[r.BatchID] = append(byBatch[r.BatchID], r)
+	}
+	for batchID := range byBatch {
+		allocs, err := s.repo.ListBatchTraceAllocs(batchID)
+		if err != nil {
+			return nil, fmt.Errorf("load trace allocations: %w", err)
+		}
+		for i := range rows {
+			if rows[i].BatchID == batchID {
+				rows[i].Allocations = allocs[rows[i].PartID]
+			}
+		}
+	}
+	return rows, nil
 }
 
 // ---- 审计 ----

@@ -41,8 +41,9 @@ func TestTraceQueries(t *testing.T) {
 			}
 			var bids, pids, tids []int64
 			err = store.WithTx(func(tx TxOps) error {
-				for _, code := range []string{"TRACE-A", "TRACE-B"} {
-					id, e := tx.CreatePart(&model.Part{Code: code, Name: code, Unit: "个", Status: 1})
+				// 编码与名称刻意不同：按名称（精确/部分）也要能命中同一个零件。
+				for _, p := range [][2]string{{"TRACE-A", "加热管"}, {"TRACE-B", "温控器"}} {
+					id, e := tx.CreatePart(&model.Part{Code: p[0], Name: p[1], Unit: "个", Status: 1})
 					if e != nil {
 						return e
 					}
@@ -75,19 +76,33 @@ func TestTraceQueries(t *testing.T) {
 			for _, tc := range []struct {
 				name, query string
 				part        bool
+				partial     bool
 				want        []int64
 			}{
-				{"batch", "TRACE-B1", false, tids[:2]}, {"part across products", "TRACE-A", true, []int64{tids[0], tids[2]}},
-				{"unknown batch", "missing", false, []int64{}}, {"unknown part", "missing", true, []int64{}},
-				{"batch injection", "' OR 1=1 --", false, []int64{}}, {"part injection", "' OR 1=1 --", true, []int64{}},
+				{"batch", "TRACE-B1", false, false, tids[:2]},
+				{"part across products", "TRACE-A", true, false, []int64{tids[0], tids[2]}},
+				{"unknown batch", "missing", false, false, []int64{}},
+				{"unknown part", "missing", true, false, []int64{}},
+				{"batch injection", "' OR 1=1 --", false, false, []int64{}},
+				{"part injection", "' OR 1=1 --", true, false, []int64{}},
+				// 部分匹配：只输片段就命中。
+				{"batch partial fragment", "E-B1", false, true, tids[:2]},
+				{"batch partial across batches", "ACE-B", false, true, tids},
+				{"part partial by code", "RACE-A", true, true, []int64{tids[0], tids[2]}},
+				{"part by name exact", "温控器", true, false, []int64{tids[1]}},
+				{"part by name partial", "温控", true, true, []int64{tids[1]}},
+				// 部分匹配不是通配符：% 与 _ 按字面字符比对。
+				{"batch partial wildcard is literal", "%", false, true, []int64{}},
+				{"part partial wildcard is literal", "_", true, true, []int64{}},
+				{"part partial injection", "' OR 1=1 --", true, true, []int64{}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var rows []model.BatchTrace
 					var e error
 					if tc.part {
-						rows, e = store.TraceByPart(tc.query)
+						rows, e = store.TraceByPart(tc.query, tc.partial)
 					} else {
-						rows, e = store.TraceByProduct(tc.query)
+						rows, e = store.TraceByProduct(tc.query, tc.partial)
 					}
 					if e != nil {
 						t.Fatal(e)

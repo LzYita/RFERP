@@ -307,13 +307,27 @@ export const batches = {
     api.del<{ status: string }>(`/api/batches/temp-parts?batch_id=${batchId}&part_id=${partId}`),
 }
 
+/** 三个反查都走部分匹配：输整串时包含匹配天然只命中那一条。 */
+const PARTIAL = '&match=partial'
+
 export const traces = {
+  /** 按批次号反查；部分匹配，输片段即可。 */
   byProduct: async (batchNo: string): Promise<BatchTrace[]> =>
-    (await api.get<BatchTrace[] | null>(`/api/traces/by-product?batch_no=${encodeURIComponent(batchNo)}`)) ?? [],
-  byPart: async (partCode: string): Promise<BatchTrace[]> =>
-    (await api.get<BatchTrace[] | null>(`/api/traces/by-part?part_code=${encodeURIComponent(partCode)}`)) ?? [],
+    (await api.get<BatchTrace[] | null>(
+      `/api/traces/by-product?batch_no=${encodeURIComponent(batchNo)}${PARTIAL}`,
+    )) ?? [],
+  /** 按零件编码或名称反查；服务端同时比对两者，部分匹配。 */
+  byPart: async (value: string): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(
+      `/api/traces/by-part?part_code=${encodeURIComponent(value)}${PARTIAL}`,
+    )) ?? [],
   byBatch: async (batchId: number): Promise<BatchTrace[]> =>
     (await api.get<BatchTrace[] | null>(`/api/traces/by-batch?batch_id=${batchId}`)) ?? [],
+  /** 按零件入库批次号反查用了它的生产批次（RK-…），部分匹配。 */
+  byPartLot: async (batchNo: string): Promise<BatchTrace[]> =>
+    (await api.get<BatchTrace[] | null>(
+      `/api/traces/by-part-lot?batch_no=${encodeURIComponent(batchNo)}${PARTIAL}`,
+    )) ?? [],
 
   /**
    * 整批提交，一个事务：任一条失败则全部回滚。

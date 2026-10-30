@@ -48,6 +48,7 @@ export function TextInput({
   autoFocus,
   maxLength,
   onEnter,
+  'aria-label': ariaLabel,
 }: {
   value: string
   onChange: (v: string) => void
@@ -58,10 +59,13 @@ export function TextInput({
   // 与后端字段长度上限对齐时用（如入库备注 200 字），浏览器原生截断。
   maxLength?: number
   onEnter?: () => void
+  /** FormRow 会注入；替换 placeholder 作为可读名称。 */
+  'aria-label'?: string
 }) {
   return (
     <input
       className={inputCls}
+      aria-label={ariaLabel}
       style={mono ? { fontFamily: 'Consolas, monospace' } : undefined}
       value={value}
       placeholder={placeholder}
@@ -84,15 +88,19 @@ export function Select<T extends string>({
   onChange,
   options,
   disabled,
+  'aria-label': ariaLabel,
 }: {
   value: T
   onChange: (v: T) => void
   options: readonly (T | { value: T; label: string })[]
   disabled?: boolean
+  /** FormRow 会注入；原生 select 没有可读名称时读屏只能念选项值。 */
+  'aria-label'?: string
 }) {
   return (
     <select
       className={inputCls}
+      aria-label={ariaLabel}
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value as T)}

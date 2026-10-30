@@ -454,22 +454,30 @@ func (c *Client) GetTraceByBatch(batchID int64) ([]model.BatchTrace, error) {
 	return out, err
 }
 
-func (c *Client) TraceByProduct(batchNo string) ([]model.BatchTrace, error) {
+func (c *Client) TraceByProduct(batchNo string, partial bool) ([]model.BatchTrace, error) {
 	var out []model.BatchTrace
-	err := c.do(http.MethodGet, "/api/traces/by-product?batch_no="+url.QueryEscape(batchNo), nil, &out)
+	err := c.do(http.MethodGet, "/api/traces/by-product?batch_no="+url.QueryEscape(batchNo)+matchQuery(partial), nil, &out)
 	return out, err
 }
 
-func (c *Client) TraceByPartLot(batchNo string) ([]model.BatchTrace, error) {
+func (c *Client) TraceByPartLot(batchNo string, partial bool) ([]model.BatchTrace, error) {
 	var out []model.BatchTrace
-	err := c.do(http.MethodGet, "/api/traces/by-part-lot?batch_no="+url.QueryEscape(batchNo), nil, &out)
+	err := c.do(http.MethodGet, "/api/traces/by-part-lot?batch_no="+url.QueryEscape(batchNo)+matchQuery(partial), nil, &out)
 	return out, err
 }
 
-func (c *Client) TraceByPart(partCode string) ([]model.BatchTrace, error) {
+func (c *Client) TraceByPart(partCode string, partial bool) ([]model.BatchTrace, error) {
 	var out []model.BatchTrace
-	err := c.do(http.MethodGet, "/api/traces/by-part?part_code="+url.QueryEscape(partCode), nil, &out)
+	err := c.do(http.MethodGet, "/api/traces/by-part?part_code="+url.QueryEscape(partCode)+matchQuery(partial), nil, &out)
 	return out, err
+}
+
+// matchQuery 只在部分匹配时附加参数；完全匹配保持旧 URL（服务端缺省即精确）。
+func matchQuery(partial bool) string {
+	if partial {
+		return "&match=partial"
+	}
+	return ""
 }
 
 func (c *Client) GetAuditLogs(tableName string, recordID int64) ([]model.AuditLog, error) {

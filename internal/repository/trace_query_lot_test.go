@@ -102,7 +102,7 @@ func TestTraceByPartLot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rows, err := store.TraceByPartLot("RK-LOT")
+			rows, err := store.TraceByPartLot("RK-LOT", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,12 +121,28 @@ func TestTraceByPartLot(t *testing.T) {
 			if len(rows) != 3 {
 				t.Fatalf("应命中 3 条记录：got=%d", len(rows))
 			}
-			miss, err := store.TraceByPartLot("RK-MISSING")
+			miss, err := store.TraceByPartLot("RK-MISSING", false)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if miss == nil || len(miss) != 0 {
 				t.Fatalf("未命中应返回空数组：%+v", miss)
+			}
+			// 部分匹配：只输批次号片段（K-LO）命中同样的 3 条，对应界面
+			// 「匹配方式 = 部分匹配」；未命中仍返回空数组。
+			partial, err := store.TraceByPartLot("K-LO", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(partial) != 3 {
+				t.Fatalf("部分匹配应命中 3 条：got=%d", len(partial))
+			}
+			partialMiss, err := store.TraceByPartLot("RK-MIS", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if partialMiss == nil || len(partialMiss) != 0 {
+				t.Fatalf("部分匹配未命中应返回空数组：%+v", partialMiss)
 			}
 		})
 	}

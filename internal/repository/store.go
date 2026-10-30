@@ -127,10 +127,11 @@ type Store interface {
 	GetAllTempParts() ([]model.BatchTempPart, error)
 	CreateTrace(t *model.BatchTrace) (int64, error)
 	GetTraceByBatch(batchID int64) ([]model.BatchTrace, error)
-	TraceByProduct(batchNo string) ([]model.BatchTrace, error)
-	TraceByPart(partCode string) ([]model.BatchTrace, error)
+	// 三个反查都带 partial：true 时按包含关系匹配（只输片段即可查到）。
+	TraceByProduct(batchNo string, partial bool) ([]model.BatchTrace, error)
+	TraceByPart(value string, partial bool) ([]model.BatchTrace, error)
 	// TraceByPartLot 按零件入库批次号反查用了它的生产批次。
-	TraceByPartLot(batchNo string) ([]model.BatchTrace, error)
+	TraceByPartLot(batchNo string, partial bool) ([]model.BatchTrace, error)
 
 	ListStockLogsByDate(start, end time.Time, actions []string) ([]model.AuditLog, error)
 	ListAuditLogsByDate(start, end time.Time) ([]model.AuditLog, error)

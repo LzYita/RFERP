@@ -227,4 +227,9 @@ jobs:
       - name: Test against MySQL
         env:
           RFERP_TEST_DSN: 'root:ci-root-pw@tcp(127.0.0.1:3306)/rferp_ci?parseTime=true&charset=utf8mb4&loc=Local'
-        run: go test -p 1 -count=1 -timeout 15m ./internal/repository/ ./internal/api/ ./internal/service/
+        run: |
+          # 三个包共用同一个测试库，逐条命令串行执行（各自会重置/迁移表）。
+          go test -count=1 -timeout 15m ./internal/repository/
+          # internal/api 里有一批用例依赖 DPAPI（仅 Windows），Linux 上只跑数据库端到端那条。
+          go test -count=1 -timeout 10m -run '^TestAPIStockInFlowIntegration$' ./internal/api/
+          go test -count=1 -timeout 10m ./internal/service/

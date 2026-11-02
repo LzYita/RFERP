@@ -163,6 +163,24 @@ func TestHostCannotBeDeleted(t *testing.T) {
 	}
 }
 
+func TestHostProtectionWithoutStartupCache(t *testing.T) {
+	svc, _ := newLANTService(t)
+	hostID, err := svc.EnsureHostDevice()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewWithSnapshot(svc.repo, nil, nil)
+	for _, operation := range []func(string, string) error{fresh.RevokeDevice, fresh.DeleteDevice} {
+		if err := operation(hostID, "cli"); err == nil {
+			t.Fatal("host mutation allowed without startup cache")
+		}
+	}
+	host, err := svc.repo.GetDeviceByHash(hostID)
+	if err != nil || host == nil || host.Status != model.DeviceStatusActive || host.Kind != model.DeviceKindHost {
+		t.Fatalf("host changed: %+v err=%v", host, err)
+	}
+}
+
 // 授权文件被篡改时不覆盖已生效的授权（客户现场最常见的误操作）。
 func TestBadLicenseDoesNotOverwrite(t *testing.T) {
 	priv, restore := withTestLicenseKey(t)

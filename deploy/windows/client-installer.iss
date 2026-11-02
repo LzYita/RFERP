@@ -87,17 +87,47 @@ begin
   end;
 end;
 
+function JsonString(Value: String): String;
+begin
+  StringChangeEx(Value, '\', '\\', True);
+  StringChangeEx(Value, '"', '\"', True);
+  StringChangeEx(Value, #13, '\r', True);
+  StringChangeEx(Value, #10, '\n', True);
+  StringChangeEx(Value, #9, '\t', True);
+  Result := '"' + Value + '"';
+end;
+
 procedure WriteClientConfig(Server: String);
 var
-  Dir, Json: String;
+  Dir, ConfigPath, TemporaryPath: String;
+  Lines: TArrayOfString;
 begin
+  Server := Trim(Server);
   if Server = '' then
     exit;
+  if Pos('://', Server) = 0 then
+    Server := 'http://' + Server;
   Dir := ExpandConstant('{userappdata}\RFERP');
-  ForceDirectories(Dir);
-  Json := '{"mode":"client","serverUrl":"' + Server + '","dataDir":"' +
-          ExpandConstant('{localappdata}\RFERP\client') + '"}';
-  SaveStringToFile(Dir + '\config.json', Json, False);
+  ConfigPath := Dir + '\config.json';
+  if FileExists(ConfigPath) then
+  begin
+    Log('Existing RFERP configuration preserved: ' + ConfigPath);
+    exit;
+  end;
+  if not ForceDirectories(Dir) then
+    RaiseException('Cannot create RFERP configuration directory: ' + Dir);
+  SetArrayLength(Lines, 1);
+  Lines[0] := '{"mode":"client","serverUrl":' + JsonString(Server) +
+              ',"dataDir":' + JsonString(ExpandConstant('{localappdata}\RFERP\client')) + '}';
+  TemporaryPath := GenerateUniqueName(Dir, '.tmp');
+  try
+    if not SaveStringsToUTF8File(TemporaryPath, Lines, False) then
+      RaiseException('Cannot write RFERP client configuration.');
+    if not RenameFile(TemporaryPath, ConfigPath) then
+      RaiseException('Cannot save RFERP client configuration. Existing configuration was preserved.');
+  finally
+    DeleteFile(TemporaryPath);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

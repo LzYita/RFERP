@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,16 +103,7 @@ func (c *Client) StreamBackup(name string) (*http.Response, error) {
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var er struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(raw, &er)
-		msg := strings.TrimSpace(er.Error)
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
-		}
-		return nil, &APIError{Status: resp.StatusCode, Code: er.Code, Message: msg}
+		return nil, responseError(resp.StatusCode, raw)
 	}
 	return resp, nil
 }
@@ -149,11 +139,7 @@ func (c *Client) CreateBackupStream() (*http.Response, error) {
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := strings.TrimSpace(string(raw))
-		if msg == "" {
-			msg = http.StatusText(resp.StatusCode)
-		}
-		return nil, &APIError{Status: resp.StatusCode, Message: msg}
+		return nil, responseError(resp.StatusCode, raw)
 	}
 	return resp, nil
 }

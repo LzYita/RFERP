@@ -264,5 +264,8 @@ func (s *Server) activeSessions() int {
 // 服务端的会话条目永久留存——拿着旧 token 的人仍能继续用。
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	s.revokeToken(bearerToken(r))
+	if remote, ok := s.apps.(interface{ SetToken(string) }); ok {
+		remote.SetToken("")
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

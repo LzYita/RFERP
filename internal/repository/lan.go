@@ -41,25 +41,21 @@ func (r *Repository) ListDevices() ([]model.Device, error) {
 // 等价语法是 ON CONFLICT DO UPDATE，两边写法不同，容易在某一侧漏字段。
 // 这里只依赖最基础的 UPDATE/INSERT，两端逐字一致。
 func (r *Repository) SaveDeviceSeen(d *model.Device) (*model.Device, error) {
-	now := time.Now()
-	res, err := r.db.Exec(deviceSeenSQL(d.Kind),
-		deviceSeenArgs(d, now)...)
-	if err != nil {
-		return nil, TranslateError(err)
+	return saveDeviceSeen(r.db, d)
+}
+
+func (r *Repository) RegisterClientDevice(device *model.Device, maxClients int) error {
+	return r.WithTx(func(tx TxOps) error {
+		return tx.RegisterClientDevice(device, maxClients)
+	})
+}
+
+func (t *Tx) RegisterClientDevice(device *model.Device, maxClients int) error {
+	var licenseID int
+	if err := t.tx.Get(&licenseID, `SELECT id FROM license WHERE id=1 FOR UPDATE`); err != nil {
+		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return r.GetDeviceByHash(d.DeviceIDHash)
-	}
-	d.FirstSeenAt = now
-	d.LastSeenAt = now
-	if _, err := r.db.Exec(`INSERT INTO devices
-		(device_id_hash,name,kind,status,user_id,app_version,os,first_seen_at,last_seen_at,last_ip,revoked_by)
-		VALUES (?,?,?,?,?,?,?,?,?,?,'')`,
-		d.DeviceIDHash, d.Name, d.Kind, model.DeviceStatusActive, d.UserID,
-		d.AppVersion, d.OS, now, now, d.LastIP); err != nil {
-		return nil, TranslateError(err)
-	}
-	return r.GetDeviceByHash(d.DeviceIDHash)
+	return registerClientDevice(t.tx, device, maxClients)
 }
 
 func (r *Repository) RevokeDevice(hash, by string) error {
@@ -182,25 +178,72 @@ func (s *SQLiteStore) ListDevices() ([]model.Device, error) {
 }
 
 func (s *SQLiteStore) SaveDeviceSeen(d *model.Device) (*model.Device, error) {
+	return saveDeviceSeen(s.db, d)
+}
+
+func (s *SQLiteStore) RegisterClientDevice(device *model.Device, maxClients int) error {
+	return s.WithTx(func(tx TxOps) error {
+		return tx.RegisterClientDevice(device, maxClients)
+	})
+}
+
+func (t *SQLiteTx) RegisterClientDevice(device *model.Device, maxClients int) error {
+	return registerClientDevice(t.q, device, maxClients)
+}
+
+func registerClientDevice(q queryer, device *model.Device, maxClients int) error {
+	var existing model.Device
+	err := q.Get(&existing, `SELECT * FROM devices WHERE device_id_hash=?`, device.DeviceIDHash)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		if existing.Status == model.DeviceStatusRevoked {
+			return ErrDeviceRevoked
+		}
+		if strings.TrimSpace(device.Name) == "" {
+			device.Name = existing.Name
+		}
+	} else {
+		var used int
+		if err := q.Get(&used, `SELECT COUNT(*) FROM devices WHERE kind=?`, model.DeviceKindClient); err != nil {
+			return err
+		}
+		if maxClients >= 0 && used >= maxClients {
+			return ErrDeviceLimit
+		}
+	}
+	_, err = saveDeviceSeen(q, device)
+	return err
+}
+
+func saveDeviceSeen(q queryer, d *model.Device) (*model.Device, error) {
 	now := time.Now()
-	res, err := s.db.Exec(deviceSeenSQL(d.Kind),
+	_, err := q.Exec(deviceSeenSQL(d.Kind),
 		deviceSeenArgs(d, now)...)
 	if err != nil {
 		return nil, TranslateError(err)
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return s.GetDeviceByHash(d.DeviceIDHash)
+	var existing model.Device
+	err = q.Get(&existing, `SELECT * FROM devices WHERE device_id_hash=?`, d.DeviceIDHash)
+	if err == nil {
+		return &existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
 	}
 	d.FirstSeenAt = now
 	d.LastSeenAt = now
-	if _, err := s.db.Exec(`INSERT INTO devices
+	if _, err := q.Exec(`INSERT INTO devices
 		(device_id_hash,name,kind,status,user_id,app_version,os,first_seen_at,last_seen_at,last_ip,revoked_by)
 		VALUES (?,?,?,?,?,?,?,?,?,?,'')`,
 		d.DeviceIDHash, d.Name, d.Kind, model.DeviceStatusActive, d.UserID,
 		d.AppVersion, d.OS, now, now, d.LastIP); err != nil {
 		return nil, TranslateError(err)
 	}
-	return s.GetDeviceByHash(d.DeviceIDHash)
+	var inserted model.Device
+	err = q.Get(&inserted, `SELECT * FROM devices WHERE device_id_hash=?`, d.DeviceIDHash)
+	return &inserted, err
 }
 
 func (s *SQLiteStore) RevokeDevice(hash, by string) error {

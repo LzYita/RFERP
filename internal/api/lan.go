@@ -307,6 +307,13 @@ func (s *Server) handleLANConnect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.mu.Lock()
+	clear(s.sessions)
+	s.mu.Unlock()
+	s.remember.mu.Lock()
+	clear(s.remember.byID)
+	s.remember.mu.Unlock()
+	s.remember.clearDisk()
 	writeJSON(w, http.StatusOK, map[string]string{"serverUrl": url})
 }
 
@@ -322,7 +329,9 @@ func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
 	}); ok {
 		resp, err := remote.StreamBackup(name)
 		if err != nil {
-			writeErr(w, http.StatusBadGateway, "从主机获取备份失败："+err.Error())
+			if !writeUpstreamErr(w, err) {
+				writeErr(w, http.StatusBadGateway, "从主机获取备份失败："+err.Error())
+			}
 			return
 		}
 		defer resp.Body.Close()

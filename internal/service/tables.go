@@ -40,6 +40,9 @@ var preservedTables = []string{
 	"users",
 	"schema_migrations",
 	"db_identity",
+	"devices",
+	"license",
+	"security_events",
 }
 
 // isPreservedTable 判断表是否属于必须保留的系统表。

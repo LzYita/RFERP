@@ -338,6 +338,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if remote, ok := apps.(interface{ RemoteDeployment() bool }); ok && remote.RemoteDeployment() {
+		s.rememberEnabled = false
+	}
 	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
 	s.remember.file = s.rememberFile
 	if s.jobs == nil {
@@ -426,6 +429,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/remember/load", s.handleLoadRemember)
 		mux.HandleFunc("POST /api/remember/forget", s.handleForgetRemember)
 		mux.HandleFunc("POST /api/remember/exchange", s.handleExchangeRemember)
+	} else if remote, ok := s.apps.(interface{ RemoteDeployment() bool }); ok && remote.RemoteDeployment() {
+		mux.HandleFunc("GET /api/remember/load", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "enabled": false})
+		})
 	}
 	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
 	// 旧 token 在服务端仍然有效。
@@ -604,8 +611,17 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 // writeServerErr 把内部错误记入日志，只向客户端返回通用信息，
 // 避免把 SQL 语句、表名等内部细节泄露出去。
 func writeServerErr(w http.ResponseWriter, err error) {
+	if writeUpstreamErr(w, err) {
+		return
+	}
 	log.Printf("api: internal error: %v", err)
 	writeErr(w, http.StatusInternalServerError, "internal error")
+}
+
+func writeAppErr(w http.ResponseWriter, status int, err error) {
+	if !writeUpstreamErr(w, err) {
+		writeErr(w, status, err.Error())
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -703,7 +719,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		rt := s.deviceGuard.Runtime()
 		out["runtime"] = rt
 	}
-	if body.Remember {
+	if body.Remember && s.rememberEnabled {
 		rt, err := s.remember.issue(u)
 		if err != nil {
 			// 记住登录失败不该挡住正常登录：用户照样能用，只是下次要输密码。
@@ -728,7 +744,7 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 	// GET /api/setup/status 对匿名都回答这个问题。
 	n, err := s.apps.UserCount()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeAppErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if n > 0 {
@@ -767,7 +783,7 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 		u, err = s.apps.CreateInitialAdmin(body.Username, body.Password, body.DisplayName)
 	}
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
@@ -780,6 +796,18 @@ func (s *Server) auth(next http.HandlerFunc, opName string) http.HandlerFunc {
 		if !ok {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
+		}
+		if remote, ok := s.apps.(interface{ CheckSession(int64) error }); ok {
+			if err := remote.CheckSession(u.ID); err != nil {
+				var upstream *APIError
+				if errors.As(err, &upstream) && upstream.Status == http.StatusUnauthorized {
+					s.revokeToken(bearerToken(r))
+				}
+				if !writeUpstreamErr(w, err) {
+					writeErr(w, http.StatusBadGateway, "无法连接主机")
+				}
+				return
+			}
 		}
 		if msg := s.rejectOldClient(deviceHeaders(r).Version); msg != "" {
 			writeCodeErr(w, http.StatusUpgradeRequired, usecase.CodeVersionTooOld, msg)
@@ -882,7 +910,7 @@ func (s *Server) handleStockIn(w http.ResponseWriter, r *http.Request) {
 		Operator: operatorName(u),
 	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// 批次号带回界面：入库完成的提示要能指认"这一笔记成了哪批"。
@@ -901,7 +929,7 @@ func (s *Server) handleListPartInbounds(w http.ResponseWriter, r *http.Request) 
 	}
 	rows, err := s.apps.ListPartInbounds(pid)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeAppErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
@@ -936,7 +964,7 @@ func (s *Server) handleAdjustInbounds(w http.ResponseWriter, r *http.Request) {
 		Items:    items,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -957,7 +985,7 @@ func (s *Server) handleAdjustStock(w http.ResponseWriter, r *http.Request) {
 		NewQty:   body.NewQty,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -987,7 +1015,7 @@ func (s *Server) handleUpdateBatchStatus(w http.ResponseWriter, r *http.Request)
 		Status:   body.Status,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

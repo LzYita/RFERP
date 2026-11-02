@@ -251,6 +251,7 @@ export interface LoginResult {
 
 interface RememberLoad {
   token: string | null
+  enabled?: boolean
   user_id?: number
   username?: string
 }

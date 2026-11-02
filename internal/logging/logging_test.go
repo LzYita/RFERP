@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,6 +31,44 @@ func TestRunningLogRotation(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".3"); !os.IsNotExist(err) {
 		t.Fatalf("rotation exceeded retained file count: %v", err)
+	}
+}
+
+func TestRotationRecoversAfterTemporaryOpenFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rferp.log")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &rotatingWriter{file: file, path: path, maxSize: 8, keep: 2}
+	t.Cleanup(func() { _ = writer.Close() })
+	if _, err := writer.Write([]byte("first\n")); err != nil {
+		t.Fatal(err)
+	}
+	originalOpen := openLogFile
+	t.Cleanup(func() { openLogFile = originalOpen })
+	failNext := true
+	openLogFile = func(path string, flags int, mode os.FileMode) (*os.File, error) {
+		if failNext {
+			failNext = false
+			return nil, os.ErrPermission
+		}
+		return originalOpen(path, flags, mode)
+	}
+	if _, err := writer.Write([]byte("second\n")); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected temporary open failure: %v", err)
+	}
+	if _, err := writer.Write([]byte("last\n")); err != nil {
+		t.Fatalf("logging did not recover: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for suffix, want := range map[string]string{"": "last\n", ".1": "first\n"} {
+		got, err := os.ReadFile(path + suffix)
+		if err != nil || string(got) != want {
+			t.Fatalf("log%s=%q want=%q err=%v", suffix, got, want, err)
+		}
 	}
 }
 

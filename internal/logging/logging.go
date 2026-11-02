@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,8 @@ const (
 	maxSize int64 = 5 << 20
 	keep          = 3
 )
+
+var openLogFile = os.OpenFile
 
 // Options 供服务端覆盖默认的滚动参数。
 //
@@ -54,16 +57,10 @@ func InitWith(dir string, opt Options) error {
 	if err := rotateN(path, size, n); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
+	writer := &rotatingWriter{path: path, maxSize: size, keep: n}
+	if err := writer.open(); err != nil {
 		return err
 	}
-	info, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	writer := &rotatingWriter{file: f, path: path, maxSize: size, keep: n, size: info.Size()}
 	log.SetOutput(io.MultiWriter(writer, os.Stderr))
 	log.SetFlags(log.LstdFlags)
 	return nil
@@ -81,21 +78,21 @@ type rotatingWriter struct {
 func (w *rotatingWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.file == nil {
+		if err := w.open(); err != nil {
+			return 0, err
+		}
+	}
 	if w.size > 0 && w.size+int64(len(data)) > w.maxSize {
-		if err := w.file.Close(); err != nil {
+		file := w.file
+		w.file = nil
+		if err := file.Close(); err != nil {
 			return 0, err
 		}
 		rotateErr := rotateN(w.path, 0, w.keep)
-		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			return 0, err
+		if err := w.open(); err != nil {
+			return 0, errors.Join(rotateErr, err)
 		}
-		w.file = file
-		info, err := file.Stat()
-		if err != nil {
-			return 0, err
-		}
-		w.size = info.Size()
 		if rotateErr != nil {
 			return 0, rotateErr
 		}
@@ -105,10 +102,29 @@ func (w *rotatingWriter) Write(data []byte) (int, error) {
 	return n, err
 }
 
+func (w *rotatingWriter) open() error {
+	file, err := openLogFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	w.file, w.size = file, info.Size()
+	return nil
+}
+
 func (w *rotatingWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.file.Close()
+	if w.file == nil {
+		return nil
+	}
+	file := w.file
+	w.file = nil
+	return file.Close()
 }
 
 func rotateN(path string, size int64, keep int) error {

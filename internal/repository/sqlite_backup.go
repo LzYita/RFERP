@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -49,17 +50,48 @@ func SnapshotSQLiteFile(dbPath, saveDir string) (string, error) {
 // （前缀_时间戳.db）。供「破坏性操作前的自动副本」区分用途：
 // pre_clear。产物仍是完整库文件，可直接用于另一次整库恢复。
 func SnapshotSQLiteFileTo(dbPath, saveDir, prefix string) (string, error) {
-	return snapshotSQLiteFileTo(dbPath, saveDir, prefix, time.Now())
+	at := time.Now()
+	var lastErr error
+	// 同一秒内第二次备份（连点两次「一键备份」、自动备份与手动备份撞在一起）
+	// 不能直接失败：名字按秒生成，第二次会撞上 O_EXCL。这里用 `.2`、`.3`
+	// 后缀避让——点号后缀正好在恢复文件名规则允许的范围内
+	// （`\.[A-Za-z0-9_-]+`），时间戳不变，恢复口令照常能算出来。
+	for seq := 0; seq < 100; seq++ {
+		name := snapshotName(prefix, at, seq)
+		path, err := snapshotInto(dbPath, saveDir, name)
+		if err == nil {
+			return path, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+		lastErr = err
+	}
+	return "", fmt.Errorf("同一秒内生成过多备份，请稍后重试: %w", lastErr)
 }
 
-func snapshotSQLiteFileTo(dbPath, saveDir, prefix string, at time.Time) (_ string, retErr error) {
+// snapshotName 生成备份文件名；seq=0 是规范名，>0 加 .seq 后缀。
+func snapshotName(prefix string, at time.Time, seq int) string {
 	if prefix == "" {
 		prefix = "backup"
 	}
+	base := fmt.Sprintf("%s_%s", prefix, at.Format("20060102_150405"))
+	if seq > 0 {
+		base = fmt.Sprintf("%s.%d", base, seq+1)
+	}
+	return base + ".db"
+}
+
+func snapshotSQLiteFileTo(dbPath, saveDir, prefix string, at time.Time) (string, error) {
+	return snapshotInto(dbPath, saveDir, snapshotName(prefix, at, 0))
+}
+
+// snapshotInto 把库快照到 saveDir/name。名字已被占用时返回 fs.ErrExist，
+// 由调用方决定是报错（确定性时刻）还是换名重试（面向用户的备份）。
+func snapshotInto(dbPath, saveDir, name string) (_ string, retErr error) {
 	if err := os.MkdirAll(saveDir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%s_%s.db", prefix, at.Format("20060102_150405"))
 	out := filepath.Join(saveDir, name)
 	// VACUUM INTO accepts an empty file; reserve it so cleanup cannot delete an old backup.
 	reserved, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -82,7 +114,7 @@ func snapshotSQLiteFileTo(dbPath, saveDir, prefix string, at time.Time) (_ strin
 		return "", err
 	}
 	defer db.Close()
-	if err := VacuumInto(db, out); err != nil {
+	if err := vacuumIntoWithRetry(db, out); err != nil {
 		return "", err
 	}
 	// Re-open snapshot and verify independently of the source connection.
@@ -189,6 +221,31 @@ func restoreSQLiteFile(dbPath, snapshotPath string, at time.Time) (preRestoreBac
 		return preRestoreBackup, fmt.Errorf("restored database verification failed: %w", verr)
 	}
 	return preRestoreBackup, nil
+}
+
+// vacuumIntoWithRetry 在库忙时重试 VACUUM INTO。
+//
+// 为什么要重试：备份是唯一"用户正在干活时也要能完成"的操作（自动备份、
+// 一键备份都可能在写入高峰触发）。VACUUM INTO 需要一个读事务，遇到正在
+// 提交的写事务会返回 BUSY；busy_timeout 只能覆盖到 5 秒，而 WAL 检查点
+// 撞在一起时仍可能超时。这里再退避重试几次（总量约 3 秒），把"偶发 500"
+// 压成"慢一点但成功"。
+func vacuumIntoWithRetry(db *sqlx.DB, out string) error {
+	backoff := 100 * time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err := VacuumInto(db, out); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !transientSQLiteError(err) {
+				return err
+			}
+		}
+		time.Sleep(backoff)
+		backoff *= 2
+	}
+	return fmt.Errorf("备份时数据库持续忙（已重试 5 次）: %w", lastErr)
 }
 
 func copyFile(src, dst string, flag int) error {

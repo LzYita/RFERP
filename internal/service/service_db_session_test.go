@@ -54,7 +54,7 @@ func (p *fakeSnapshotPort) Restore(snapshotPath string) (string, error) {
 // 签死具体类型就传不进来。
 func newRestoreMockService(t *testing.T, port usecase.SnapshotPort) (*Service, sqlmock.Sqlmock) {
 	t.Helper()
-	t.Setenv("MES_DATA_DIR", t.TempDir())
+	t.Setenv("MES_DATA_DIR", testTempDir(t))
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("open sql mock: %v", err)
@@ -67,7 +67,7 @@ func newRestoreMockService(t *testing.T, port usecase.SnapshotPort) (*Service, s
 // writeDump 写一个带 mysqldump 完成标记的备份文件。
 func writeDump(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "backup_20260101_000000.sql")
+	path := filepath.Join(testTempDir(t), "backup_20260101_000000.sql")
 	content := body + "\n-- Dump completed on 2026-01-01 00:00:00\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write dump fixture: %v", err)
@@ -132,7 +132,7 @@ func TestRestoreDatabasePropagatesSessionSetupErrorAndRestoresChecks(t *testing.
 func TestRestoreDatabaseRejectsDumpWithoutCompletionMarker(t *testing.T) {
 	port := &fakeSnapshotPort{kind: "mysql"}
 	svc, mock := newRestoreMockService(t, port)
-	path := filepath.Join(t.TempDir(), "truncated.sql")
+	path := filepath.Join(testTempDir(t), "truncated.sql")
 	if err := os.WriteFile(path, []byte("INSERT INTO products (code) VALUES ('P-1');\n"), 0o600); err != nil {
 		t.Fatalf("write truncated fixture: %v", err)
 	}
@@ -169,10 +169,10 @@ func TestRestoreDatabaseAbortsWhenSafetyCopyFails(t *testing.T) {
 }
 
 func TestRestoreSQLiteCreatesSelectableSafetyCopyBeforeReplacingFile(t *testing.T) {
-	t.Setenv("MES_DATA_DIR", t.TempDir())
+	t.Setenv("MES_DATA_DIR", testTempDir(t))
 	port := &fakeSnapshotPort{kind: "sqlite"}
 	svc := NewWithSnapshot(nil, port, nil)
-	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	path := filepath.Join(testTempDir(t), "backup_20260101_000000.db")
 	seedRestoreSQLite(t, path)
 
 	res, err := svc.RestoreDatabase(path)
@@ -191,10 +191,10 @@ func TestRestoreSQLiteCreatesSelectableSafetyCopyBeforeReplacingFile(t *testing.
 }
 
 func TestRestoreSQLiteStopsBeforeReplacingFileWhenSafetyCopyFails(t *testing.T) {
-	t.Setenv("MES_DATA_DIR", t.TempDir())
+	t.Setenv("MES_DATA_DIR", testTempDir(t))
 	port := &fakeSnapshotPort{kind: "sqlite", destructive: true}
 	svc := NewWithSnapshot(nil, port, nil)
-	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	path := filepath.Join(testTempDir(t), "backup_20260101_000000.db")
 	seedRestoreSQLite(t, path)
 
 	if _, err := svc.RestoreDatabase(path); err == nil {
@@ -335,7 +335,7 @@ func TestRestoreDatabaseRejectsQualifiedInsertAndRollsBack(t *testing.T) {
 func TestRestoreDatabaseSkipsSQLiteSnapshotOnMySQL(t *testing.T) {
 	port := &fakeSnapshotPort{kind: "mysql"}
 	svc, _ := newRestoreMockService(t, port)
-	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	path := filepath.Join(testTempDir(t), "backup_20260101_000000.db")
 	if err := os.WriteFile(path, append([]byte("SQLite format 3\x00"), make([]byte, 64)...), 0o600); err != nil {
 		t.Fatalf("write sqlite fixture: %v", err)
 	}

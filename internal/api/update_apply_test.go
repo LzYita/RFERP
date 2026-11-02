@@ -45,7 +45,7 @@ func newUpdateServer(t *testing.T) (*Server, *[]string) {
 // seedZip 造一个"下载产物"，返回路径与它的 sha256。
 func seedZip(t *testing.T, body string) (string, string) {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "rferp-update-1.zip")
+	p := filepath.Join(testTempDir(t), "rferp-update-1.zip")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestApplyUpdateIgnoresClientSuppliedPath(t *testing.T) {
 	real, sha := seedZip(t, "verified update")
 	s.setPendingUpdate(real, sha)
 
-	evil := filepath.Join(t.TempDir(), "attacker.zip")
+	evil := filepath.Join(testTempDir(t), "attacker.zip")
 	if err := os.WriteFile(evil, []byte("evil"), 0o600); err != nil {
 		t.Fatal(err)
 	}

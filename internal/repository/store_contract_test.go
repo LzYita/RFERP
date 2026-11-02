@@ -303,7 +303,7 @@ func contractCases(t *testing.T, open storeFactory) {
 
 func TestSQLiteStoreContract(t *testing.T) {
 	contractCases(t, func(t *testing.T) (Store, string) {
-		path := filepath.Join(t.TempDir(), "contract.db")
+		path := filepath.Join(testTempDir(t), "contract.db")
 		db, err := OpenSQLite(path)
 		if err != nil {
 			t.Fatalf("open: %v", err)
@@ -334,7 +334,7 @@ func TestMySQLStoreContract(t *testing.T) {
 		// （一次性测试库可能非空且有待升级步骤，此时迁移会要求先备份）。
 		if _, err := migrate.Run(db, migrate.Options{
 			DSN:       dsn,
-			BackupDir: t.TempDir(),
+			BackupDir: testTempDir(t),
 			Backup:    func(string, string, string) (string, error) { return "test-backup", nil },
 		}); err != nil {
 			t.Fatalf("migrate mysql: %v", err)

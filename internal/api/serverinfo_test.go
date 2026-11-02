@@ -20,7 +20,7 @@ func TestWriteServerInfoReportsVersionAndDatabase(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeServerInfo(rec, fakeDescriptor{info: usecase.ServerInfo{
 		APIVersion: 1, SchemaVersion: 13, DatabaseID: "db-1", Storage: "mysql",
-	}}, "1.3.0")
+	}}, "1.3.0", "")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d, want 200", rec.Code)
@@ -69,7 +69,7 @@ func TestProbeReadsServerInfo(t *testing.T) {
 		}
 		writeServerInfo(w, fakeDescriptor{info: usecase.ServerInfo{
 			APIVersion: 1, SchemaVersion: 13, DatabaseID: "db-7", Storage: "mysql",
-		}}, "9.9.9")
+		}}, "9.9.9", "")
 	}))
 	defer ts.Close()
 

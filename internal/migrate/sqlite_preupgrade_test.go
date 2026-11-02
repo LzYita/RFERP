@@ -67,7 +67,7 @@ func countRecordedVersion(t *testing.T, db *sqlx.DB, version int) int {
 
 // 有 pending 步骤时，必须先把非空库快照下来，而且快照要发生在步骤之前。
 func TestRunSQLiteSnapshotsBeforePendingSteps(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "existing.db")
 	db := openSQLiteAt(t, path)
 	seedSQLiteV11(t, db)
@@ -129,7 +129,7 @@ func TestRunSQLiteSnapshotsBeforePendingSteps(t *testing.T) {
 
 // 快照失败必须中止迁移：步骤不得执行。
 func TestRunSQLiteAbortsWhenSnapshotFails(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "existing.db")
 	db := openSQLiteAt(t, path)
 	seedSQLiteV11(t, db)
@@ -153,7 +153,7 @@ func TestRunSQLiteAbortsWhenSnapshotFails(t *testing.T) {
 
 // 非空库 + pending 步骤但未配置快照 → 拒绝升级（fail-closed）。
 func TestRunSQLiteRequiresSnapshotConfigOnExistingDatabase(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "existing.db")
 	db := openSQLiteAt(t, path)
 	seedSQLiteV11(t, db)
@@ -168,7 +168,7 @@ func TestRunSQLiteRequiresSnapshotConfigOnExistingDatabase(t *testing.T) {
 
 // 空库初始化不需要快照。
 func TestRunSQLiteFreshDatabaseTakesNoSnapshot(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "fresh.db")
 	db := openSQLiteAt(t, path)
 
@@ -191,7 +191,7 @@ func TestRunSQLiteFreshDatabaseTakesNoSnapshot(t *testing.T) {
 
 // 没有待执行步骤时既不做快照也不改库。
 func TestRunSQLiteNoSnapshotWhenNothingPending(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "uptodate.db")
 	db := openSQLiteAt(t, path)
 	if _, err := RunSQLite(db, SQLiteOptions{}); err != nil {

@@ -11,7 +11,7 @@ import (
 )
 
 func TestSQLiteVacuumIntoSnapshotVerified(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "src.db")
+	path := filepath.Join(testTempDir(t), "src.db")
 	db, err := OpenSQLite(path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -25,7 +25,7 @@ func TestSQLiteVacuumIntoSnapshotVerified(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	saveDir := filepath.Join(t.TempDir(), "backups")
+	saveDir := filepath.Join(testTempDir(t), "backups")
 	out, err := SnapshotSQLiteFile(path, saveDir)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
@@ -53,7 +53,7 @@ func TestTranslateErrorUnique(t *testing.T) {
 }
 
 func TestRestoreSQLiteFileRollsBackToSnapshot(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "src.db")
 	db, err := OpenSQLite(path)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestRestoreSQLiteFileRollsBackToSnapshot(t *testing.T) {
 
 // 陈旧 WAL/SHM 若残留，SQLite 会用旧日志回放刚替换进来的文件并造成损坏。
 func TestRestoreSQLiteFileRemovesStaleSidecars(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "src.db")
 	db, err := OpenSQLite(path)
 	if err != nil {
@@ -141,6 +141,42 @@ func TestRestoreSQLiteFileRemovesStaleSidecars(t *testing.T) {
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
 			t.Fatalf("stale %s survived restore", suffix)
+		}
+	}
+}
+
+// 同一秒内连续两次备份必须都成功：文件名用 .2 后缀避让，时间戳不变。
+//
+// 现场场景：用户连点两次「一键备份」，或自动备份与手动备份落在同一秒。
+// 修复前第二次会以 "The file exists" 失败，界面只看到"备份失败"。
+func TestSnapshotSQLiteFileAllowsSameSecondRepeat(t *testing.T) {
+	dir := testTempDir(t)
+	src := filepath.Join(dir, "src.db")
+	db, err := OpenSQLite(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	saveDir := filepath.Join(dir, "backups")
+	first, err := SnapshotSQLiteFileTo(src, saveDir, "backup")
+	if err != nil {
+		t.Fatalf("第一次备份: %v", err)
+	}
+	second, err := SnapshotSQLiteFileTo(src, saveDir, "backup")
+	if err != nil {
+		t.Fatalf("同一秒内第二次备份应成功: %v", err)
+	}
+	if first == second {
+		t.Fatalf("两次备份落到了同一个文件: %s", first)
+	}
+	for _, p := range []string{first, second} {
+		if err := VerifySQLiteFile(p); err != nil {
+			t.Fatalf("备份不可用 %s: %v", p, err)
 		}
 	}
 }

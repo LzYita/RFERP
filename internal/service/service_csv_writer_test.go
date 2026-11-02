@@ -19,7 +19,7 @@ type testCSVOutput struct {
 }
 
 func TestFinalizeCSVByCopyExclusivePublishesAndRemovesSource(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	src, dst := filepath.Join(dir, "temp.csv"), filepath.Join(dir, "output.csv")
 	want := bytes.Repeat([]byte("商品,数量\r\n"), 4096)
 	if err := os.WriteFile(src, want, 0o600); err != nil {
@@ -40,7 +40,7 @@ func TestFinalizeCSVByCopyExclusivePublishesAndRemovesSource(t *testing.T) {
 func TestFinalizeCSVByCopyExclusiveFailureCleanup(t *testing.T) {
 	for _, kind := range []string{"existing file", "existing directory", "missing parent", "copy error"} {
 		t.Run(kind, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testTempDir(t)
 			src, dst := filepath.Join(dir, "temp.csv"), filepath.Join(dir, "output.csv")
 			if kind == "copy error" {
 				if err := os.Mkdir(src, 0o700); err != nil {
@@ -87,7 +87,7 @@ func TestFinalizeCSVByCopyExclusiveFailureCleanup(t *testing.T) {
 }
 
 func TestFinalizeCSVByCopyExclusiveConcurrentWinner(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	dst := filepath.Join(dir, "output.csv")
 	const count = 8
 	var wg sync.WaitGroup
@@ -175,7 +175,7 @@ func TestWriteCSVFileReturnsCloseError(t *testing.T) {
 }
 
 func TestWriteCSVFileAtomicPreservesExistingOutput(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	path := filepath.Join(dir, "audit.csv")
 	original := []byte("existing export\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
@@ -195,7 +195,7 @@ func TestWriteCSVFileAtomicPreservesExistingOutput(t *testing.T) {
 }
 
 func TestFinalizeCSVExclusiveDoesNotOverwrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	tempPath := filepath.Join(dir, ".audit.csv.tmp")
 	path := filepath.Join(dir, "audit.csv")
 	if err := os.WriteFile(tempPath, []byte("new export\n"), 0o600); err != nil {
@@ -218,7 +218,7 @@ func TestFinalizeCSVExclusiveDoesNotOverwrite(t *testing.T) {
 }
 
 func TestFinalizeCSVExclusivePublishesNewTarget(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	tempPath := filepath.Join(dir, ".audit.csv.tmp")
 	path := filepath.Join(dir, "audit.csv")
 	if err := os.WriteFile(tempPath, []byte("new export\n"), 0o600); err != nil {

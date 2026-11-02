@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { ConfirmDialog } from './components/form'
 import { LoginScreen } from './screens/LoginScreen'
+import { ServerAddressBar } from './screens/ServerAddressBar'
 import { SetupScreen } from './screens/SetupScreen'
 import { renderScreen } from './screens/registry'
 import {
@@ -179,11 +180,25 @@ export default function App() {
 
   // 向导优先于登录：还没有账号时，登录页是没有意义的。
   if (needsSetup && !me) {
-    return <SetupScreen version={version} onDone={onSetupDone} />
+    // 客户端模式下这一屏同样要给「改主机地址」的入口：地址填错时
+    // 用户连初始化都做不了，而这一屏是他在建管理员之前唯一能看到的界面。
+    return (
+      <>
+        <SetupScreen version={version} onDone={onSetupDone} />
+        <ServerAddressBar />
+      </>
+    )
   }
 
   if (screen.kind !== 'shell' || !me) {
-    return <LoginScreen onLoggedIn={onLoggedIn} version={version} notice={sessionNotice} />
+    // 客户端模式下登录页右下角常驻主机地址：主机 IP 变化时用户连登录都
+    // 进不去，只有在登录之前就能改地址，这条路径才算真的可用（FR-17）。
+    return (
+      <>
+        <LoginScreen onLoggedIn={onLoggedIn} version={version} notice={sessionNotice} />
+        <ServerAddressBar />
+      </>
+    )
   }
 
   const activeKey = screen.key

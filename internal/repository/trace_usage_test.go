@@ -11,7 +11,7 @@ import (
 // 删除零件前的第二道守卫：按批次汇总投料记录。
 // 汇总错了会直接误导用户（「到底哪几个批次用过它」），所以连条数一起断言。
 func TestTracesForPart(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "trace-usage.db"))
+	db, err := OpenSQLite(filepath.Join(testTempDir(t), "trace-usage.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

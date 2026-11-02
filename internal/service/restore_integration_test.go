@@ -32,13 +32,13 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 	resetTestTables(t, db)
 	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
 	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
-	paths.SetDataDir(t.TempDir())
+	paths.SetDataDir(testTempDir(t))
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	backupDir := t.TempDir()
+	backupDir := testTempDir(t)
 	apps := service.New(repository.New(db), dsn, mysqldump, nil)
 
 	// --- 备份时刻的数据 ---
@@ -141,13 +141,13 @@ func TestRestoreDatabaseRollsBackOnBrokenDumpIntegration(t *testing.T) {
 	resetTestTables(t, db)
 	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
 	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
-	paths.SetDataDir(t.TempDir())
+	paths.SetDataDir(testTempDir(t))
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	backupDir := t.TempDir()
+	backupDir := testTempDir(t)
 	apps := service.New(repository.New(db), dsn, mysqldump, nil)
 	if _, err := apps.CreatePart(&model.Part{Code: "ATOMIC-1", Name: "原子性验证", Unit: "个", Status: 1, Operator: strPtr("tester")}); err != nil {
 		t.Fatalf("create part: %v", err)
@@ -170,7 +170,7 @@ func TestRestoreDatabaseRollsBackOnBrokenDumpIntegration(t *testing.T) {
 	}
 	body := strings.Replace(string(raw), marker,
 		"INSERT INTO `parts` (`column_that_does_not_exist`) VALUES (1);\n"+marker, 1)
-	broken := filepath.Join(t.TempDir(), "backup_20260101_000000.sql")
+	broken := filepath.Join(testTempDir(t), "backup_20260101_000000.sql")
 	if err := os.WriteFile(broken, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestRestoreDatabaseRejectsTruncatedDumpIntegration(t *testing.T) {
 	resetTestTables(t, db)
 	// 破坏性操作前副本写到临时目录：cfg 为 nil 时 paths.DataDir() 会退回用户主目录，
 	// 测试绝不能把副本写进开发者的 ~/RFERP/备份。
-	paths.SetDataDir(t.TempDir())
+	paths.SetDataDir(testTempDir(t))
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if _, err := migrate.Run(db, migrate.Options{DSN: dsn}); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -228,7 +228,7 @@ func TestRestoreDatabaseRejectsTruncatedDumpIntegration(t *testing.T) {
 	}
 	before := tableCounts(t, db)
 
-	truncated := filepath.Join(t.TempDir(), "backup_20260101_000000.sql")
+	truncated := filepath.Join(testTempDir(t), "backup_20260101_000000.sql")
 	if err := os.WriteFile(truncated, []byte("INSERT INTO parts (code) VALUES ('X');\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +280,11 @@ func resetTestTables(t *testing.T, db *sqlx.DB) {
 		"DROP TABLE IF EXISTS products",
 		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS users",
+		// 局域网版 v19/v20 的表：不删的话它们会让"空库"判断为假，
+		// 迁移就会以"库非空但未配置备份目录"中止（CI 上必现）。
+		"DROP TABLE IF EXISTS security_events",
+		"DROP TABLE IF EXISTS license",
+		"DROP TABLE IF EXISTS devices",
 		"DROP TABLE IF EXISTS schema_migrations",
 		"DROP TABLE IF EXISTS db_identity",
 	} {

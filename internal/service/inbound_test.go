@@ -17,7 +17,7 @@ import (
 // 把记账、回显、备注、排序和删除级联都钉住。
 func newInboundFixture(t *testing.T) (*Service, repository.Store) {
 	t.Helper()
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "inbound.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "inbound.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

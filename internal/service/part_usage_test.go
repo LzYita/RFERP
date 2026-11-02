@@ -14,7 +14,7 @@ import (
 // 删除零件前必须说清它还挂在哪个批次的哪种用途上：临时零件/跳过零件/完成扣料。
 // 三张表都有 parts 外键且不级联，不拦就只剩 FOREIGN KEY constraint failed。
 func TestDeletePartRefusesBatchReferences(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "delete.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "delete.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

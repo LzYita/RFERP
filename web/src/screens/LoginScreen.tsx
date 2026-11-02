@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { api, ApiError, remember, type LoginResult } from '../lib/api'
 import { EyeIcon } from '../components/form'
 import { MarkBox } from '../components/MarkBox'
+import { BrandMode } from '../components/BrandMode'
 
 
 
@@ -272,7 +273,7 @@ export function LoginScreen({
 
           <p>版本 {version}</p>
 
-          <p className="mt-1">本机运行 · 数据不离开本机</p>
+          <BrandMode />
 
         </div>
 

@@ -13,6 +13,8 @@ var (
 	ErrUniqueConflict = errors.New("唯一键冲突")
 	// ErrOptimisticLock is returned when a versioned update matches zero rows.
 	ErrOptimisticLock = errors.New("并发版本冲突，请刷新后重试")
+	// ErrNotFound 表示按键定位的记录不存在（设备撤销/删除等按影响行数判断的操作）。
+	ErrNotFound = errors.New("记录不存在")
 )
 
 // uniqueConstraintMessage maps a table.column pair to a message a user can act

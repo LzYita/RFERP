@@ -25,7 +25,7 @@ import (
 
 func setup(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	paths.SetDataDir(dir)
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
@@ -264,7 +264,7 @@ func TestResolveFindsLegacyAndCategorized(t *testing.T) {
 func TestResolveRejectsTraversal(t *testing.T) {
 	root := setup(t)
 	put(t, root, filepath.Join("备份", "manual", "backup_20261003_120000.sql"), 10)
-	outside := filepath.Join(t.TempDir(), "secret.sql")
+	outside := filepath.Join(testTempDir(t), "secret.sql")
 	if err := os.WriteFile(outside, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestResolveMissingFile(t *testing.T) {
 
 func TestResolveRejectsFileSymlinkOutsideBackupRoot(t *testing.T) {
 	setup(t)
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	const name = "backup_20261003_120000.sql"
 	put(t, outside, name, 10)
 	if err := os.MkdirAll(paths.ManualBackupDir(), 0700); err != nil {
@@ -310,7 +310,7 @@ func TestResolveRejectsFileSymlinkOutsideBackupRoot(t *testing.T) {
 
 func TestResolveRejectsCategoryLinkOutsideBackupRoot(t *testing.T) {
 	setup(t)
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	const name = "backup_20261003_120000.sql"
 	put(t, outside, name, 10)
 	link := paths.ManualBackupDir()
@@ -371,7 +371,7 @@ func makeCategoryLink(t *testing.T, link, target string) {
 
 func TestDirForRejectsCategoryLinksOutsideBackupRoot(t *testing.T) {
 	setup(t)
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	sentinel := filepath.Join(outside, "keep.txt")
 	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
@@ -407,8 +407,8 @@ func TestDirForRejectsCategoryAliasToAnotherCategory(t *testing.T) {
 }
 
 func TestDirForAllowsLinkedBackupRoot(t *testing.T) {
-	dataDir := t.TempDir()
-	physicalRoot := filepath.Join(t.TempDir(), "backup-root")
+	dataDir := testTempDir(t)
+	physicalRoot := filepath.Join(testTempDir(t), "backup-root")
 	if err := os.MkdirAll(physicalRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -443,8 +443,8 @@ func TestDirForRejectsFileAtCategoryPath(t *testing.T) {
 }
 
 func TestMigrateLegacyWorksWithLinkedBackupRoot(t *testing.T) {
-	dataDir := t.TempDir()
-	physicalRoot := filepath.Join(t.TempDir(), "backup-root")
+	dataDir := testTempDir(t)
+	physicalRoot := filepath.Join(testTempDir(t), "backup-root")
 	if err := os.MkdirAll(physicalRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestMigrateLegacyLeavesFileWhenCategoryLinkEscapes(t *testing.T) {
 	root := setup(t)
 	const name = "backup_20261001_120000.sql"
 	put(t, root, filepath.Join("备份", name), 7)
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	sentinel := filepath.Join(outside, "keep.txt")
 	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)
@@ -493,7 +493,7 @@ func TestMigrateLegacyLeavesFileWhenCategoryLinkEscapes(t *testing.T) {
 func TestMigrateLegacyDoesNotWriteThroughMigrationLogLink(t *testing.T) {
 	root := setup(t)
 	put(t, root, filepath.Join("备份", "backup_20261001_120000.sql"), 7)
-	outside := filepath.Join(t.TempDir(), MigrationLogName)
+	outside := filepath.Join(testTempDir(t), MigrationLogName)
 	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestMigrateLegacyDoesNotWriteThroughMigrationLogLink(t *testing.T) {
 func TestMigrateLegacyLeavesFileSymlinkInLegacyRoot(t *testing.T) {
 	root := setup(t)
 	const name = "backup_20261001_120000.sql"
-	outside := filepath.Join(t.TempDir(), "outside.sql")
+	outside := filepath.Join(testTempDir(t), "outside.sql")
 	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestMigrateLegacyPreservesDanglingDestinationLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(paths.ManualBackupDir(), name)
-	target := filepath.Join(t.TempDir(), "missing.sql")
+	target := filepath.Join(testTempDir(t), "missing.sql")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("file symlinks unavailable: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestMigrateLegacyPreservesDanglingDestinationLink(t *testing.T) {
 }
 
 func TestCopyFileThenRemovePreservesExistingDestination(t *testing.T) {
-	root := t.TempDir()
+	root := testTempDir(t)
 	src := filepath.Join(root, "source.sql")
 	dst := filepath.Join(root, "manual", "backup_20261001_120000.sql")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

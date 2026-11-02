@@ -1,0 +1,7 @@
+{
+  "_comment": "客户端配置示例。放在 RFERP.exe 同目录的 config.json，或 %APPDATA%\\RFERP\\config.json。",
+  "_device": "设备指纹由客户端自动计算，不需要填写。",
+  "mode": "client",
+  "serverUrl": "http://192.168.1.10:8080",
+  "dataDir": "C:/Users/Public/RFERPClient"
+}

@@ -31,7 +31,7 @@ func newTraceAllocFixture(t *testing.T) *traceAllocFixture {
 // newTraceAllocFixtureWithStock 用两笔入库建立库存：先入 firstQty，再入 secondQty。
 func newTraceAllocFixtureWithStock(t *testing.T, firstQty, secondQty float64) *traceAllocFixture {
 	t.Helper()
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "trace.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "trace.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

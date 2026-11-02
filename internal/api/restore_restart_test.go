@@ -27,7 +27,7 @@ func TestRestoreRestartGate(t *testing.T) {
 				}
 				return r, nil
 			}}
-			s := newBackupServer(t, apps, WithHostOperations(), WithRemember(filepath.Join(t.TempDir(), "remember.bin")), WithProcessExit(func() { exited <- struct{}{} }))
+			s := newBackupServer(t, apps, WithHostOperations(), WithRemember(filepath.Join(testTempDir(t), "remember.bin")), WithProcessExit(func() { exited <- struct{}{} }))
 			tok := issueAdmin(t, s)
 			u := user(1, "admin", "admin")
 			rt, err := s.remember.issue(u)

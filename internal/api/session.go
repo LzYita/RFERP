@@ -30,6 +30,8 @@ const (
 	sessionAbsoluteTTL = 24 * time.Hour
 	sessionIdleTTL     = 4 * time.Hour
 	sessionSweepEvery  = 5 * time.Minute
+	// deviceRecheckEvery 是会话回库确认设备状态的最小间隔（局域网版）。
+	deviceRecheckEvery = time.Minute
 )
 
 type session struct {
@@ -37,6 +39,14 @@ type session struct {
 	User  *model.User
 	// UserID 冗余一份，便于按用户踢下线时不必解引用 User。
 	UserID int64
+	// DeviceID 是登录时携带的设备指纹（局域网版）。
+	// 空串表示单机形态（不启用设备门禁）——那种形态下没有设备头，
+	// 强行要求会让现有单机用户全部登不进去。
+	DeviceID string
+	// DeviceCheckedAt 是上一次回库确认设备状态的时间。
+	// 进程内撤销由 revoked 集合即时生效；跨进程（CLI）撤销靠这个字段
+	// 每分钟兜底查一次库，把生效时间从"下次重启"压到一分钟内。
+	DeviceCheckedAt time.Time
 	// CreatedAt 是绝对上限的起点，不随使用滑动。
 	CreatedAt time.Time
 	// LastSeenAt 每次成功鉴权都前移，是空闲超时的依据。
@@ -52,13 +62,20 @@ func (s *session) expired(now time.Time) bool {
 }
 
 // issueSession 为 u 建立会话，并踢掉该用户已有的其它会话（单用户单会话）。
-func (s *Server) issueSession(u *model.User) (string, error) {
+//
+// deviceID 可选：局域网形态必传，单机形态不传。用可变参数而不是新增一个函数，
+// 是为了让"单机不需要设备"这件事在调用点一眼可见，而不是到处传空串。
+func (s *Server) issueSession(u *model.User, deviceID ...string) (string, error) {
 	var raw [24]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
 	tok := hex.EncodeToString(raw[:])
 	now := time.Now()
+	dev := ""
+	if len(deviceID) > 0 {
+		dev = deviceID[0]
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,6 +89,7 @@ func (s *Server) issueSession(u *model.User) (string, error) {
 		Token:      tok,
 		User:       u,
 		UserID:     u.ID,
+		DeviceID:   dev,
 		CreatedAt:  now,
 		LastSeenAt: now,
 		ExpiresAt:  now.Add(sessionAbsoluteTTL),
@@ -81,6 +99,10 @@ func (s *Server) issueSession(u *model.User) (string, error) {
 
 // userFromRequest 解析 Bearer token 并做空闲/绝对双重校验。
 // 校验通过时前移 LastSeenAt（滑动续期）。
+//
+// 局域网形态额外做两件事：会话绑定的设备必须与本次请求头一致，
+// 且设备当前未被撤销。两者任一不满足都返回 401——token 本身没失效，
+// 但"拿 token 的人不在那台机器上"，语义上就是未授权（FR-28）。
 func (s *Server) userFromRequest(r *http.Request) (*model.User, bool) {
 	tok := bearerToken(r)
 	if tok == "" {
@@ -89,16 +111,61 @@ func (s *Server) userFromRequest(r *http.Request) (*model.User, bool) {
 	now := time.Now()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sess, ok := s.sessions[tok]
 	if !ok || sess.expired(now) {
 		if ok {
 			delete(s.sessions, tok)
 		}
+		s.mu.Unlock()
 		return nil, false
 	}
 	sess.LastSeenAt = now
-	return sess.User, true
+	u, boundDevice := sess.User, sess.DeviceID
+	needRecheck := now.Sub(sess.DeviceCheckedAt) >= deviceRecheckEvery
+	s.mu.Unlock()
+
+	if s.deviceGuard != nil {
+		got := normalizeDeviceID(r.Header.Get("X-RFERP-Device-ID"))
+		if boundDevice == "" || got != boundDevice {
+			return nil, false
+		}
+		if err := s.deviceGuard.ValidateSession(got); err != nil {
+			return nil, false
+		}
+		// 周期回库复核：只覆盖"另一个进程把它撤销了"这一类，
+		// 本进程撤销已在上面即时生效，不必每请求查库。
+		if needRecheck {
+			if v, ok := s.deviceGuard.(interface{ VerifyDevice(string) error }); ok {
+				if err := v.VerifyDevice(got); err != nil {
+					return nil, false
+				}
+				s.mu.Lock()
+				sess.DeviceCheckedAt = now
+				s.mu.Unlock()
+			}
+		}
+	}
+	return u, true
+}
+
+// revokeDeviceSessions 作废绑定到某台设备的全部会话，返回条数。
+//
+// 单用户单会话下通常只有一条，但主机与客户端可能用同一个账号——撤销一台
+// 设备时把别的设备一并踢掉是不可接受的，所以按设备而不是按用户筛。
+func (s *Server) revokeDeviceSessions(deviceID string) int {
+	if deviceID == "" {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for t, sess := range s.sessions {
+		if sess.DeviceID == deviceID {
+			delete(s.sessions, t)
+			n++
+		}
+	}
+	return n
 }
 
 // bearerToken 从 Authorization 头取出 token，取不到返回空串。

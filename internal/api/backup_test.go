@@ -58,7 +58,7 @@ func TestSetDataDirRequiresHostAndAdmin(t *testing.T) {
 				}
 				s := newBackupServer(t, apps, options...)
 				before := apps.dataDir
-				target := filepath.Join(t.TempDir(), "selected")
+				target := filepath.Join(testTempDir(t), "selected")
 				var token string
 				if role != "" {
 					token = issue(t, s, user(1, "operator", role))
@@ -113,7 +113,7 @@ func (a *backupApps) ClearDatabase() (usecase.ClearResult, error) {
 // （如 usecase.BackupInspector），签死具体类型就传不进来。
 func newBackupServer(t *testing.T, apps usecase.Applications, opts ...Option) *Server {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	paths.SetDataDir(dir)
 	// 有些用例传的是包装类型（实现了额外可选端口），但 DataDir 得落到被包的那个上，
 	// 否则断言看到的是包装类型自己那份空串。
@@ -376,7 +376,7 @@ func TestRestoreRejectsPathsOutsideBackupDir(t *testing.T) {
 	tok := issueAdmin(t, s)
 
 	// 先在备份目录外放一个"看起来能恢复"的文件，证明不是"文件不存在"挡住的
-	outside := filepath.Join(t.TempDir(), "secret.sql")
+	outside := filepath.Join(testTempDir(t), "secret.sql")
 	if err := os.WriteFile(outside, []byte("-- Dump completed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestBackupDownloadRejectsOutsideManualCategoryLink(t *testing.T) {
 	apps := &backupApps{}
 	s := newBackupServer(t, apps)
 	tok := issueAdmin(t, s)
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	sentinel := filepath.Join(outside, "keep.txt")
 	if err := os.WriteFile(sentinel, []byte("preserve"), 0o600); err != nil {
 		t.Fatal(err)

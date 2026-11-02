@@ -7,7 +7,7 @@ import (
 )
 
 func TestVerifyDumpFileRejectsTruncatedDump(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	truncated := filepath.Join(dir, "truncated.sql")
 	if err := os.WriteFile(truncated, []byte("INSERT INTO products VALUES (1);\n"), 0o600); err != nil {
@@ -31,7 +31,7 @@ func TestVerifyDumpFileRejectsTruncatedDump(t *testing.T) {
 }
 
 func TestVerifyDumpFileAcceptsCompleteDump(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	// 标记必须落在尾部区间内；mysqldump 正是这样写的。
 	path := filepath.Join(dir, "ok.sql")
 	body := "INSERT INTO products VALUES (1);\n-- Dump completed on 2026-01-01 00:00:00\n"
@@ -44,7 +44,7 @@ func TestVerifyDumpFileAcceptsCompleteDump(t *testing.T) {
 }
 
 func TestPruneSnapshotsKeepsNewestFilesPerPrefix(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	// 6 份 pre_restore + 2 份 pre_clear + 1 份常规备份
 	for i := 1; i <= 6; i++ {
 		name := "pre_restore_2026010" + string(rune('0'+i)) + "_000000.sql"
@@ -84,7 +84,7 @@ func TestPruneSnapshotsKeepsNewestFilesPerPrefix(t *testing.T) {
 }
 
 func TestPruneSnapshotsIsNoopWhenUnderLimit(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	for i := 1; i <= 3; i++ {
 		name := "pre_clear_2026010" + string(rune('0'+i)) + "_000000.sql"
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
@@ -104,13 +104,13 @@ func TestPruneSnapshotsIsNoopWhenUnderLimit(t *testing.T) {
 }
 
 func TestPruneSnapshotsToleratesMissingDir(t *testing.T) {
-	if removed := PruneSnapshots(filepath.Join(t.TempDir(), "nope"), "pre_restore", 5); len(removed) != 0 {
+	if removed := PruneSnapshots(filepath.Join(testTempDir(t), "nope"), "pre_restore", 5); len(removed) != 0 {
 		t.Fatalf("PruneSnapshots on a missing dir removed %v", removed)
 	}
 }
 
 func TestPruneSnapshotsKeepsSQLiteAndMySQLCopiesSeparately(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	for _, ext := range []string{".db", ".sql"} {
 		for i := 1; i <= 6; i++ {
 			name := "pre_restore_2026010" + string(rune('0'+i)) + "_000000" + ext

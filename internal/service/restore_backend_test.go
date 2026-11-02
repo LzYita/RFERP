@@ -12,7 +12,7 @@ import (
 
 // 备份类型按文件内容判断，不看扩展名；UI 与 Service 必须同一口径。
 func TestIsSQLiteSnapshotUsesFileHeaderNotExtension(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	// SQLite 魔数 + 伪装成 .sql 的文件名
 	snapshot := filepath.Join(dir, "backup.sql")
@@ -39,7 +39,7 @@ func TestIsSQLiteSnapshotUsesFileHeaderNotExtension(t *testing.T) {
 }
 
 func TestRestoreDatabaseRejectsCrossBackendBackup(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	snapshot := filepath.Join(dir, "s.db")
 	if err := os.WriteFile(snapshot, []byte("SQLite format 3\x00padding"), 0o600); err != nil {
 		t.Fatal(err)

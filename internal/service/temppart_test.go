@@ -15,7 +15,7 @@ import (
 // 完成时要扣、投影要算占用、撤销要回退。这里用真实 SQLite 把四件事都钉住。
 func newTempPartFixture(t *testing.T) (*Service, repository.Store) {
 	t.Helper()
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "temp.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "temp.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

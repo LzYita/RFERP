@@ -21,7 +21,7 @@ import (
 //  3. 总量盘点的差额也落回批次（盘亏扣旧批、盘盈补一笔可指认的批次）。
 func newInboundCountFixture(t *testing.T) (*Service, repository.Store) {
 	t.Helper()
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "count.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "count.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

@@ -159,6 +159,38 @@ type Store interface {
 	GetDatabaseID() (string, error)
 	// GetSchemaVersion 返回已应用的最高迁移版本。
 	GetSchemaVersion() (int, error)
+
+	// ---- 局域网版（v14/v15）----
+	//
+	// 设备与授权是**服务端**的状态，不随业务数据导出/清空：整库恢复会整体
+	// 替换 SQLite 文件，设备与授权跟着快照走（方案 §6.2）；MySQL 整库恢复时
+	// 这三张表在 preservedTables 里保留现场。
+
+	// GetDeviceByHash 按指纹查设备；不存在返回 (nil, nil)。
+	GetDeviceByHash(hash string) (*model.Device, error)
+	// ListDevices 列出全部设备（含已撤销），主机在前。
+	ListDevices() ([]model.Device, error)
+	// SaveDeviceSeen 登记新设备或刷新已知设备的最近在线事实。
+	SaveDeviceSeen(d *model.Device) (*model.Device, error)
+	// RevokeDevice 撤销设备；不存在返回 ErrNotFound。
+	RevokeDevice(hash, by string) error
+	// DeleteDevice 删除设备记录以释放额度；不存在返回 ErrNotFound。
+	DeleteDevice(hash string) error
+	// CountDevices 统计指定类型（host/client）且处于指定状态的设备数。
+	CountDevices(kind, status string) (int, error)
+
+	// GetLicense 返回当前授权；未导入（或表不存在）返回 (nil, nil)。
+	GetLicense() (*model.LicenseRecord, error)
+	// SaveLicense 覆盖写入唯一一行授权。
+	SaveLicense(rec *model.LicenseRecord) error
+
+	// AppendSecurityEvent 追加一条留痕；失败在内部降级为不阻塞主操作。
+	AppendSecurityEvent(e *model.SecurityEvent) error
+	// ListSecurityEvents 返回最近 limit 条事件，新的在前。
+	ListSecurityEvents(limit int) ([]model.SecurityEvent, error)
+
+	// Ping 供 /readyz 探活使用。
+	Ping() error
 }
 
 var (

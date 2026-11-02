@@ -59,6 +59,8 @@ type Config struct {
 	Storage string
 	// SQLitePath 仅 StorageSQLite：数据库文件路径；空则用 DataDir/rferp.db。
 	SQLitePath string
+	// MinClientVersion 是服务端要求的最低客户端版本；空表示不设门禁。
+	MinClientVersion string
 
 	path string
 }
@@ -100,10 +102,47 @@ type fileConfig struct {
 	ServerURL      string `json:"serverUrl,omitempty"`
 	Storage        string `json:"storage,omitempty"`
 	SQLitePath     string `json:"sqlitePath,omitempty"`
+	// Server 是服务端监听配置（局域网版）。安装器生成的 server.json 里有这一段，
+	// 不解析它的话 `-Port 18080` 会被静默忽略：服务听 8080、防火墙开 18080，
+	// 客户看到的是"装了但连不上"。
+	Server           *serverFileConfig `json:"server,omitempty"`
+	MinClientVersion string            `json:"minClientVersion,omitempty"`
 }
 
+type serverFileConfig struct {
+	Addr string `json:"addr,omitempty"`
+}
+
+// Load 按候选顺序读取配置（RFERP_CONFIG → exe 目录 → CWD → 用户配置目录）。
 func Load() *Config {
-	path, fc := readConfigFile()
+	cfg, err := LoadAt("")
+	if err != nil {
+		log.Printf("config: %v", err)
+	}
+	return cfg
+}
+
+// LoadAt 读取指定路径的配置文件；path 为空时等价于 Load 的候选顺序。
+//
+// 显式指定必须"读不到就失败"：局域网主机上服务端与桌面端可能同机运行，
+// 若 -config 指到错误路径却悄悄退化成"未配置"，服务端会去连默认 MySQL，
+// 或者更糟——连上一份不该它用的库。宁可启动失败，也不能猜。
+func LoadAt(path string) (*Config, error) {
+	var fc *fileConfig
+	if strings.TrimSpace(path) != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("读取配置文件 %s: %w", path, err)
+		}
+		data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+		var parsed fileConfig
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			return nil, fmt.Errorf("解析配置文件 %s: %w", path, err)
+		}
+		fc = &parsed
+	} else {
+		path, fc = readConfigFile()
+	}
 
 	cfg := &Config{AutoUpdate: true}
 	if fc != nil {
@@ -133,6 +172,9 @@ func Load() *Config {
 		cfg.UpdateURL = DefaultUpdateURL
 	}
 	cfg.Srv.Addr = os.Getenv("SRV_ADDR")
+	if cfg.Srv.Addr == "" && fc != nil && fc.Server != nil {
+		cfg.Srv.Addr = strings.TrimSpace(fc.Server.Addr)
+	}
 	if cfg.Srv.Addr == "" {
 		cfg.Srv.Addr = ":8080"
 	}
@@ -145,7 +187,7 @@ func Load() *Config {
 			log.Printf("config migrate warning: %v", err)
 		}
 	}
-	return cfg
+	return cfg, nil
 }
 
 func applyFile(cfg *Config, fc *fileConfig) {
@@ -170,6 +212,7 @@ func applyFile(cfg *Config, fc *fileConfig) {
 	cfg.ServerURL = fc.ServerURL
 	cfg.Storage = normalizeStorage(fc.Storage)
 	cfg.SQLitePath = fc.SQLitePath
+	cfg.MinClientVersion = strings.TrimSpace(fc.MinClientVersion)
 	if fc.AutoUpdate != nil {
 		cfg.AutoUpdate = *fc.AutoUpdate
 	}
@@ -285,21 +328,25 @@ func writeEncrypted(path string, cfg *Config) error {
 	}
 
 	out := fileConfig{
-		Host:           cfg.DB.Host,
-		Port:           cfg.DB.Port,
-		User:           cfg.DB.User,
-		PasswordEnc:    base64.StdEncoding.EncodeToString(enc),
-		DBName:         cfg.DB.DBName,
-		DataDir:        cfg.DataDir,
-		MySQLService:   cfg.MySQLService,
-		MysqldumpPath:  cfg.MysqldumpPath,
-		UpdateURL:      cfg.UpdateURL,
-		AutoUpdate:     &cfg.AutoUpdate,
-		AutoBackupDays: intPtr(cfg.AutoBackupDays),
-		Mode:           cfg.Mode,
-		ServerURL:      cfg.ServerURL,
-		Storage:        cfg.Storage,
-		SQLitePath:     cfg.SQLitePath,
+		Host:             cfg.DB.Host,
+		Port:             cfg.DB.Port,
+		User:             cfg.DB.User,
+		PasswordEnc:      base64.StdEncoding.EncodeToString(enc),
+		DBName:           cfg.DB.DBName,
+		DataDir:          cfg.DataDir,
+		MySQLService:     cfg.MySQLService,
+		MysqldumpPath:    cfg.MysqldumpPath,
+		UpdateURL:        cfg.UpdateURL,
+		AutoUpdate:       &cfg.AutoUpdate,
+		AutoBackupDays:   intPtr(cfg.AutoBackupDays),
+		Mode:             cfg.Mode,
+		ServerURL:        cfg.ServerURL,
+		Storage:          cfg.Storage,
+		SQLitePath:       cfg.SQLitePath,
+		MinClientVersion: cfg.MinClientVersion,
+	}
+	if cfg.Srv.Addr != "" {
+		out.Server = &serverFileConfig{Addr: cfg.Srv.Addr}
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -319,6 +366,12 @@ func writeEncrypted(path string, cfg *Config) error {
 
 func (c *Config) Loaded() bool {
 	return c.path != ""
+}
+
+// Path 返回本次实际加载的配置文件路径；空表示没有从文件加载。
+// 服务端启动日志会打印它，用来核对服务端与客户端是否读错了同一份配置（R10）。
+func (c *Config) Path() string {
+	return c.path
 }
 
 // ModeChosen 是否已在首启选定运行模式（D3）。
@@ -371,8 +424,21 @@ func (c *Config) StorageKind() string {
 }
 
 // IsSQLite 是否使用本地 SQLite 文件（仅 Local 形态）。
+//
+// 注意：这是**桌面端**的判据。服务端不得用它的结果决定存储通道——
+// 局域网主机上服务端与桌面端共用一台机器时，客户端配置里的 mode=client
+// 会让服务端误判成"不是 SQLite"，进而去连 MySQL。服务端请用 StorageIsSQLite。
 func (c *Config) IsSQLite() bool {
 	return c.Mode != ModeClient && c.StorageKind() == StorageSQLite
+}
+
+// StorageIsSQLite 只看 storage，不看 mode。
+//
+// cmd/server 必须走这条判据（局域网版 D-003：SQLite 唯一，服务端选库与
+// 运行模式无关）。服务端的 config 里即便残留了 mode=client，也只能影响
+// 它要不要当客户端，不能影响它怎么读库。
+func (c *Config) StorageIsSQLite() bool {
+	return c.StorageKind() == StorageSQLite
 }
 
 // ResolveSQLitePath 返回 SQLite 文件完整路径；未配置时为 DataDir/rferp.db。
@@ -465,6 +531,11 @@ func readConfigFile() (string, *fileConfig) {
 
 func candidatePaths() []string {
 	var out []string
+	// RFERP_CONFIG 优先：安装器用它把服务端与客户端指向各自的配置文件，
+	// 避免两者共读同一份（R10）。服务包装器（WinSW）通过环境变量注入最省事。
+	if v := strings.TrimSpace(os.Getenv("RFERP_CONFIG")); v != "" {
+		out = append(out, v)
+	}
 	if exe, err := os.Executable(); err == nil {
 		out = append(out, filepath.Join(filepath.Dir(exe), "config.json"))
 	}

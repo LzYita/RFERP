@@ -507,8 +507,9 @@ export function BackupScreen() {
             <Field label="备份间隔">
               <select
                 value={auto?.days ?? 0}
-                // 改间隔会写配置并立刻触发一次备份，属于本机操作
-                disabled={!destructiveReady || busy !== null || !!auto?.reason}
+                // 改间隔会写配置并立刻触发一次备份，属于本机操作；
+                // 远程形态下这个下拉只是展示，改不了主机的设置（FR-16）。
+                disabled={!hostOperations || !destructiveReady || busy !== null || !!auto?.reason}
                 onChange={(e) => void setAutoDays(Number(e.target.value))}
                 aria-label="自动备份间隔"
                 className="h-[26px] w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 text-[11.5px] outline-none focus:border-[var(--color-primary)] disabled:bg-[var(--color-canvas)]"
@@ -523,7 +524,11 @@ export function BackupScreen() {
           </div>
           {busy === 'autoschedule' ? <span className="pb-1 text-[11px]">保存中…</span> : null}
         </div>
-        {auto?.reason ? (
+        {!hostOperations ? (
+          <p className="mt-1.5 text-[11px] text-[var(--color-fg-muted)]">
+            自动备份由主机负责。要调整间隔，请在主机上的 RFERP 设置页操作。
+          </p>
+        ) : auto?.reason ? (
           <p className="mt-1.5 text-[11px] text-[#8A6100]">当前不可用：{auto.reason}</p>
         ) : null}
         {auto?.enabled ? (
@@ -546,7 +551,9 @@ export function BackupScreen() {
         ) : null}
       </Panel>
 
-      {/* 整库恢复 */}
+      {/* 整库恢复：远程形态隐藏（FR-16）。留一个禁用按钮等于把"只能在主机做"
+          这件事变成一次失败尝试。 */}
+      {hostOperations ? (
       <Panel className="p-3">
         <SectionTitle>整库恢复（覆盖现有数据）</SectionTitle>
         <div className="mt-2 grid grid-cols-2 gap-2.5">
@@ -648,8 +655,9 @@ export function BackupScreen() {
           </Btn>
         </div>
       </Panel>
+      ) : null}
 
-      {/* 清空业务数据 */}
+      {hostOperations ? (
       <Panel className="p-3">
         <SectionTitle>清空业务数据（危险操作）</SectionTitle>
         <p className="mt-1 text-[11.5px] text-[var(--color-fg-muted)]">
@@ -679,6 +687,7 @@ export function BackupScreen() {
           </Btn>
         </div>
       </Panel>
+      ) : null}
 
       {/* 审计日志导出 */}
       <Panel className="p-3">

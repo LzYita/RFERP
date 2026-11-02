@@ -52,7 +52,7 @@ func collisionBytes(t *testing.T, path string) []byte {
 func TestSnapshotSQLiteFileToPreservesExistingOutput(t *testing.T) {
 	for _, empty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("empty=%v", empty), func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testTempDir(t)
 			src := filepath.Join(dir, "source.db")
 			collisionDatabase(t, src, 9)
 			out := filepath.Join(dir, "backup_20261014_123456.db")
@@ -77,7 +77,7 @@ func TestSnapshotSQLiteFileToPreservesExistingOutput(t *testing.T) {
 }
 
 func TestSnapshotSQLiteFileToSameTimePreservesFirstSnapshot(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	src := filepath.Join(dir, "source.db")
 	collisionDatabase(t, src, 9)
 	out, err := snapshotSQLiteFileTo(src, dir, "pre_clear", collisionTime)
@@ -99,7 +99,7 @@ func TestSnapshotSQLiteFileToSameTimePreservesFirstSnapshot(t *testing.T) {
 }
 
 func TestSnapshotSQLiteFileToConcurrentCallsPreserveOneSnapshot(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	src := filepath.Join(dir, "source.db")
 	collisionDatabase(t, src, 9)
 	errorsByCall := make(chan error, 8)
@@ -128,7 +128,7 @@ func TestSnapshotSQLiteFileToConcurrentCallsPreserveOneSnapshot(t *testing.T) {
 }
 
 func TestSnapshotSQLiteFileToCleansFailedOutput(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	src := filepath.Join(dir, "invalid.db")
 	if err := os.WriteFile(src, []byte("not a database"), 0600); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestSnapshotSQLiteFileToCleansFailedOutput(t *testing.T) {
 func TestRestoreSQLiteFilePreservesExistingSidecar(t *testing.T) {
 	for _, empty := range []bool{false, true} {
 		t.Run(fmt.Sprintf("empty=%v", empty), func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testTempDir(t)
 			live, snapshot := filepath.Join(dir, "live.db"), filepath.Join(dir, "snapshot.db")
 			collisionDatabase(t, live, 9)
 			collisionDatabase(t, snapshot, 7)
@@ -184,7 +184,7 @@ func TestRestoreSQLiteFilePreservesExistingSidecar(t *testing.T) {
 }
 
 func TestRestoreSQLiteFilePreservesExistingStage(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	live, snapshot := filepath.Join(dir, "live.db"), filepath.Join(dir, "snapshot.db")
 	collisionDatabase(t, live, 9)
 	collisionDatabase(t, snapshot, 7)
@@ -205,7 +205,7 @@ func TestRestoreSQLiteFilePreservesExistingStage(t *testing.T) {
 }
 
 func TestRestoreSQLiteFileSameTimePreservesFirstBackup(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	live, snapshot, next := filepath.Join(dir, "live.db"), filepath.Join(dir, "snapshot.db"), filepath.Join(dir, "next.db")
 	collisionDatabase(t, live, 9)
 	collisionDatabase(t, snapshot, 7)
@@ -226,9 +226,9 @@ func TestRestoreSQLiteFileSameTimePreservesFirstBackup(t *testing.T) {
 }
 
 func TestCopyFileCleansOnlyOwnedFailedCopy(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	out := filepath.Join(dir, "incomplete")
-	if err := copyFile(t.TempDir(), out, os.O_EXCL); err == nil {
+	if err := copyFile(testTempDir(t), out, os.O_EXCL); err == nil {
 		t.Fatal("directory source must fail")
 	}
 	if _, err := os.Stat(out); !os.IsNotExist(err) {

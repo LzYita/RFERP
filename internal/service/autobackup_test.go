@@ -50,7 +50,7 @@ func (p *writingSnapshotPort) PrefixSnapshot(saveDir, prefix string) (string, er
 
 func newAutoBackupService(t *testing.T, days int) *Service {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	paths.SetDataDir(dir)
 	t.Cleanup(func() { paths.SetDataDir("") })
 	svc, _ := newRestoreMockService(t, &writingSnapshotPort{})
@@ -90,7 +90,7 @@ func TestMaybeAutoBackupRejectsLinkedCategoryBeforeWritingOrPruning(t *testing.T
 	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	for i := 0; i < paths.AutoBackupKeep+1; i++ {
 		name := fmt.Sprintf("auto_20260101_%06d.sql", i)
 		if err := os.WriteFile(filepath.Join(outside, name), []byte("keep"), 0o600); err != nil {
@@ -112,12 +112,12 @@ func TestMaybeAutoBackupRejectsLinkedCategoryBeforeWritingOrPruning(t *testing.T
 }
 
 func TestPruneSafetyCopiesDoesNotFollowLinkedCategory(t *testing.T) {
-	paths.SetDataDir(t.TempDir())
+	paths.SetDataDir(testTempDir(t))
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if err := os.MkdirAll(paths.BackupDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	for i := 0; i < paths.SafetyCopyKeep+1; i++ {
 		name := fmt.Sprintf("pre_restore_20260101_%06d.sql", i)
 		if err := os.WriteFile(filepath.Join(outside, name), []byte("keep"), 0o600); err != nil {

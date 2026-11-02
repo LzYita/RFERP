@@ -54,6 +54,11 @@ func TestAPIStockInFlowIntegration(t *testing.T) {
 		"DROP TABLE IF EXISTS products",
 		"DROP TABLE IF EXISTS audit_log",
 		"DROP TABLE IF EXISTS users",
+		// 局域网版 v19/v20 的表：不删的话它们会让"空库"判断为假，
+		// 迁移就会以"库非空但未配置备份目录"中止（CI 上必现）。
+		"DROP TABLE IF EXISTS security_events",
+		"DROP TABLE IF EXISTS license",
+		"DROP TABLE IF EXISTS devices",
 		"DROP TABLE IF EXISTS schema_migrations",
 		"DROP TABLE IF EXISTS db_identity",
 	} {

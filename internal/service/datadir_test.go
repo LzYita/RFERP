@@ -11,7 +11,7 @@ import (
 func TestSetDataDirCreatesOperatorSelectedDirectory(t *testing.T) {
 	before := paths.DataDir()
 	t.Cleanup(func() { paths.SetDataDir(before) })
-	target := filepath.Join(t.TempDir(), "chosen", "data")
+	target := filepath.Join(testTempDir(t), "chosen", "data")
 	if err := (&Service{}).SetDataDir(target); err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +24,7 @@ func TestSetDataDirCreatesOperatorSelectedDirectory(t *testing.T) {
 func TestSetDataDirRejectsFileWithoutChangingRoot(t *testing.T) {
 	before := paths.DataDir()
 	t.Cleanup(func() { paths.SetDataDir(before) })
-	target := filepath.Join(t.TempDir(), "file")
+	target := filepath.Join(testTempDir(t), "file")
 	if err := os.WriteFile(target, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}

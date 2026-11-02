@@ -156,6 +156,15 @@ func main() {
 		}
 	}
 
+	// 客户端模式：不打开本地业务库，直接把界面接在局域网主机上（FR-10）。
+	//
+	// 必须放在 bootstrap 之前：客户端的本机没有业务数据，走 Build 会因为
+	// "未配置数据库"把用户送进首启向导——那正是局域网版最不该出现的画面。
+	if cfg.ModeChosen() && cfg.Mode == config.ModeClient {
+		runLANClient(cfg, updateURL, *serveOnly, *serveAddr)
+		return
+	}
+
 	res, err := bootstrap.Build(cfg, bootstrap.Options{
 		Logf: log.Printf,
 		// 本机 MySQL 没在跑时先尝试拉起服务；需要管理员权限时只把
@@ -231,6 +240,14 @@ func main() {
 
 	log.Printf("RFERP %s embedded server on http://%s (storage=%s)", version, emb.addr, res.Kind)
 
+	runDesktopWindow(emb, dirPicker)
+}
+
+// runDesktopWindow 是两种形态（单机 / 客户端）共用的窗口装配。
+//
+// 抽出来的理由：窗口参数、WebView2 提示与回退判据对两种形态完全一致，
+// 抄一份迟早会漂移——而漂移的后果是某个形态下 WebView2 缺失时提示是英文的。
+func runDesktopWindow(emb *embeddedServer, dirPicker *nativeDirPicker) {
 	winW, winH := fitWindow(1360, 860)
 	if err := runWails(&options.App{
 		Title:  "RFERP-仁风仓库管理系统 v" + version,
@@ -415,12 +432,28 @@ func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer
 // serveOnWithPicker 同 serveOn，但可注入宿主的原生目录选择框。
 // picker 为 nil 时那条端点回"无法弹框，请手填"——缺省安全，且测试无需 Wails 窗口。
 func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker) (*embeddedServer, func(), error) {
+	return serveEmbedded(apps, addr, updateURL, picker, false, nil)
+}
+
+// serveOnClient 是「客户端模式」的内嵌服务：它把请求转发到局域网主机。
+//
+// 与单机形态的三处差别，每一处都对应一个安全边界：
+//   - **不**开 hostOperations：整库恢复/清空/改数据目录只能主机做（FR-16）；
+//   - **不**注入原生目录选择框：那几项本来就不可用，弹框只会误导；
+//   - 允许在登录前改主机地址（onConnect）。
+func serveOnClient(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker,
+	onConnect func(string) (string, error)) (*embeddedServer, func(), error) {
+	return serveEmbedded(apps, addr, updateURL, picker, true, onConnect)
+}
+
+func serveEmbedded(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker,
+	remote bool, onConnect func(string) (string, error)) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
 	}
 
-	apiSrv := api.New(apps,
+	opts := []api.Option{
 		api.WithVersion(version),
 		api.WithStartupToken(tok),
 		// 前端挂载成功后报到：更新后的回退判据靠它，见 notifyUIReady。
@@ -436,6 +469,14 @@ func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker
 		// 便携测试版指向自己的目录）一起变，测试不会污染用户真实凭证，
 		// 也不会和另一份实例抢同一个文件。
 		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
+		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
+		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
+		api.WithStaticFS(webassets.FS(), webassets.Dir),
+	}
+	if remote {
+		// 客户端模式：只加"改地址"，绝不加破坏性能力。
+		opts = append(opts, api.WithLANConnect(onConnect))
+	} else {
 		// 单机桌面形态才允许破坏性操作：整库恢复、清空业务数据、修改数据目录。
 		//
 		// 依据 §4.5 本地/远程能力矩阵（wails-migration.md:750-769）：这三项在
@@ -443,14 +484,15 @@ func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker
 		// 确认门建立在"操作者就是这台机器的主人"之上，跨机后它只剩仪式。
 		//
 		// 与 WithUpdate / WithRemember 同构：默认不放行，漏传就是安全的。
-		api.WithHostOperations(),
-		// 原生目录选择框：只有 Wails 形态传（有窗口才能弹框）。
-		// 无头 -serve 与测试走的是 nil 那条路。
-		api.WithDirectoryPicker(picker),
-		// 页面由内嵌服务提供：代理把 "/" 转发过来，这里返回前端构建产物。
-		// 这样页面与 /api/ 同源，启动 Cookie 与 Bearer 都不跨源。
-		api.WithStaticFS(webassets.FS(), webassets.Dir),
-	)
+		opts = append(opts,
+			api.WithHostOperations(),
+			// 原生目录选择框：只有 Wails 形态传（有窗口才能弹框）。
+			// 无头 -serve 与测试走的是 nil 那条路。
+			api.WithDirectoryPicker(picker),
+		)
+	}
+
+	apiSrv := api.New(apps, opts...)
 
 	// 就绪等待：Listen 成功即代表端口已可用，之后才 Serve。
 	ln, err := listenLoopback(addr)

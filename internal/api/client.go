@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"app/internal/model"
@@ -23,6 +24,79 @@ type Client struct {
 	hc        *http.Client
 	tok       string
 	lastCount string
+	// device 是局域网版要求的设备身份（方案 §7.1）。单机形态留空——
+	// 服务端没有设备门禁时这些头会被忽略，但也不能凭空编一个。
+	device DeviceIdentity
+	// mu 保护 base：界面允许在运行期切换主机地址（FR-17），而请求是并发的。
+	mu sync.RWMutex
+}
+
+// RemoteDeployment 标记这是"业务数据在远端主机"的形态。
+//
+// 供 /api/datadir 之类的端点判断：客户端本机没有业务目录可展示，
+// 返回路径只会让人以为备份在本地（FR-16 / R14）。
+func (c *Client) RemoteDeployment() bool { return true }
+
+// ServerURL 返回当前主机地址。
+func (c *Client) ServerURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.base
+}
+
+// SetServerURL 切换主机地址（运行期生效，不必重启）。
+//
+// 之所以能热切：Client 的每个方法都是"读一次 base、发一次请求"，
+// 没有连接池或长连接需要重建——局域网 HTTP 下切换就是换个地址。
+func (c *Client) SetServerURL(u string) {
+	c.mu.Lock()
+	c.base = strings.TrimRight(strings.TrimSpace(u), "/")
+	c.mu.Unlock()
+}
+
+// DeviceIdentity 是客户端随请求上报的设备事实。
+type DeviceIdentity struct {
+	ID      string
+	Name    string
+	Version string
+	OS      string
+}
+
+// SetDevice 设置设备身份。必须在登录前调用：登录本身就要带设备头，
+// 服务端据此登记并计额度。
+func (c *Client) SetDevice(d DeviceIdentity) { c.device = d }
+
+// newRequest 统一构造请求并补上头。
+//
+// 收在一处的原因：Authorization 与设备头必须"每一条请求都带"。之前
+// do/doBytes 各写一遍，新增一个头就得记得改两处，漏掉的那条表现为
+// "偶尔 401"，是最难查的一类缺陷。
+func (c *Client) newRequest(method, path string, in any) (*http.Request, error) {
+	var body io.Reader
+	if in != nil {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, c.ServerURL()+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.tok != "" {
+		req.Header.Set("Authorization", "Bearer "+c.tok)
+	}
+	if c.device.ID != "" {
+		req.Header.Set("X-RFERP-Device-ID", c.device.ID)
+		req.Header.Set("X-RFERP-Device-Name", c.device.Name)
+		req.Header.Set("X-RFERP-Client-Version", c.device.Version)
+		req.Header.Set("X-RFERP-Client-OS", c.device.OS)
+	}
+	return req, nil
 }
 
 var _ usecase.Applications = (*Client)(nil)
@@ -42,23 +116,20 @@ func (c *Client) SetToken(tok string) { c.tok = tok }
 func (c *Client) Token() string { return c.tok }
 
 func (c *Client) do(method, path string, in any, out any) error {
-	var body io.Reader
-	if in != nil {
-		raw, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(context.Background(), method, c.base+path, body)
+	return c.doWithHeaders(method, path, in, out, nil)
+}
+
+// doWithHeaders 在统一请求之上加一次性头（目前只有初始化令牌用到）。
+//
+// 做成参数而不是 Client 上的可变字段：令牌只在"首建管理员"这一次请求里有效，
+// 挂在 Client 上会跟着后续所有请求走，也会在切换主机地址后误发到新主机。
+func (c *Client) doWithHeaders(method, path string, in any, out any, extra map[string]string) error {
+	req, err := c.newRequest(method, path, in)
 	if err != nil {
 		return err
 	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.tok != "" {
-		req.Header.Set("Authorization", "Bearer "+c.tok)
+	for k, v := range extra {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -72,6 +143,7 @@ func (c *Client) do(method, path string, in any, out any) error {
 	if resp.StatusCode >= 400 {
 		var er struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		_ = json.Unmarshal(raw, &er)
 		if er.Error == "" {
@@ -80,7 +152,7 @@ func (c *Client) do(method, path string, in any, out any) error {
 		if er.Error == "" {
 			er.Error = http.StatusText(resp.StatusCode)
 		}
-		return &APIError{Status: resp.StatusCode, Message: er.Error}
+		return &APIError{Status: resp.StatusCode, Code: er.Code, Message: er.Error}
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
@@ -89,23 +161,9 @@ func (c *Client) do(method, path string, in any, out any) error {
 }
 
 func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
-	var body io.Reader
-	if in != nil {
-		raw, err := json.Marshal(in)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(context.Background(), method, c.base+path, body)
+	req, err := c.newRequest(method, path, in)
 	if err != nil {
 		return nil, err
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.tok != "" {
-		req.Header.Set("Authorization", "Bearer "+c.tok)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -120,6 +178,7 @@ func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		var er struct {
 			Error string `json:"error"`
+			Code  string `json:"code"`
 		}
 		_ = json.Unmarshal(raw, &er)
 		if er.Error == "" {
@@ -128,7 +187,7 @@ func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
 		if er.Error == "" {
 			er.Error = http.StatusText(resp.StatusCode)
 		}
-		return nil, &APIError{Status: resp.StatusCode, Message: er.Error}
+		return nil, &APIError{Status: resp.StatusCode, Code: er.Code, Message: er.Error}
 	}
 	return raw, nil
 }
@@ -136,8 +195,12 @@ func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
 // APIError 保留 HTTP 状态，便于 UI/上层判断。
 type APIError struct {
 	Status  int
+	Code    string
 	Message string
 }
+
+// IsCode 判断错误是否属于某个错误契约码。
+func (e *APIError) IsCode(code string) bool { return e != nil && e.Code == code }
 
 func (e *APIError) Error() string {
 	if e.Message != "" {
@@ -175,10 +238,26 @@ func (c *Client) Login(username, password string) (*model.User, error) {
 }
 
 func (c *Client) CreateInitialAdmin(username, password, displayName string) (*model.User, error) {
+	return c.createInitialAdmin(username, password, displayName, "")
+}
+
+// CreateInitialAdminWithToken 带初始化令牌首建管理员（局域网主机，FR-41）。
+//
+// 服务端在空库启动时生成令牌并要求 `X-Bootstrap-Token`；客户端没有别的
+// 途径把它传过去，因此单独这一个方法承担"透传令牌"的职责。
+func (c *Client) CreateInitialAdminWithToken(username, password, displayName, token string) (*model.User, error) {
+	return c.createInitialAdmin(username, password, displayName, token)
+}
+
+func (c *Client) createInitialAdmin(username, password, displayName, token string) (*model.User, error) {
 	// 空库引导：无会话也可调用；已有用户则服务端 409。
 	var u model.User
 	in := map[string]string{"username": username, "password": password, "display_name": displayName}
-	if err := c.do(http.MethodPost, "/api/bootstrap-admin", in, &u); err != nil {
+	var extra map[string]string
+	if token != "" {
+		extra = map[string]string{"X-Bootstrap-Token": token}
+	}
+	if err := c.doWithHeaders(http.MethodPost, "/api/bootstrap-admin", in, &u, extra); err != nil {
 		return nil, err
 	}
 	// bootstrap 只建号不发 token，必须再登录，否则后续请求全是 unauthorized。

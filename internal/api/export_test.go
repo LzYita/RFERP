@@ -73,7 +73,7 @@ func TestExportAuditEndDateIsInclusive(t *testing.T) {
 
 // 端到端：真的发一次界面会发的请求，确认不再是 invalid body。
 func TestExportAuditEndpointAcceptsWebPayload(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	paths.SetDataDir(dir)
 	t.Cleanup(func() { paths.SetDataDir("") })
 
@@ -237,7 +237,7 @@ func TestExportAllUsesGroupedSubdirectory(t *testing.T) {
 
 // 打开文件夹是本机操作：远程形态必须挡下。
 func TestOpenExportFolderRequiresHostOperations(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	paths.SetDataDir(dir)
 	t.Cleanup(func() { paths.SetDataDir("") })
 	if err := os.MkdirAll(paths.ExportDir(), 0o755); err != nil {
@@ -338,7 +338,7 @@ func TestOpenExportFolderRejectsDirectoryLinkOutsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(paths.ExportDir(), "escape")
-	outside := t.TempDir()
+	outside := testTempDir(t)
 	if runtime.GOOS == "windows" {
 		if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, outside).CombinedOutput(); err != nil {
 			t.Fatalf("create junction: %v: %s", err, out)

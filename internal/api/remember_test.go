@@ -111,7 +111,7 @@ func (rs *rememberStore) byIDToken(tok string) (*rememberEntry, bool) {
 
 // 改密码 / 停用 / 改角色必须让凭证失效，否则「记住登录」会绕过这些控制。
 func TestRevokeRememberForUser(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	s := New(&sessionApps{}, WithRemember(filepath.Join(dir, "remember.bin")))
 	u := &model.User{ID: 42, Username: "wh", Role: string(auth.RoleWarehouse)}
 	tok, _ := s.remember.issue(u)
@@ -127,7 +127,7 @@ func TestRevokeRememberForUser(t *testing.T) {
 
 // 端点串起来：保存 -> 读出 -> 换取会话 -> 磁盘副本被清掉。
 func TestRememberEndpointFlow(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	s := New(&sessionApps{}, WithRemember(filepath.Join(dir, "remember.bin")))
 	sess := issueAdmin(t, s)
@@ -189,7 +189,7 @@ func TestRememberEndpointFlow(t *testing.T) {
 
 // 凭证失效时 exchange 返回 401，且顺手清掉没用的凭证。
 func TestRememberExchangeExpiredReturns401(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	s := New(&sessionApps{}, WithRemember(filepath.Join(dir, "remember.bin")))
 	u := &model.User{ID: 1, Username: "admin"}
@@ -210,7 +210,7 @@ func TestRememberExchangeExpiredReturns401(t *testing.T) {
 
 // save 端点必须校验会话与用户身份，否则任何人写进磁盘都是别人的凭证。
 func TestRememberSaveRequiresMatchingSession(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	s := New(&sessionApps{}, WithRemember(filepath.Join(dir, "remember.bin")))
 	sess := issueAdmin(t, s)
@@ -240,7 +240,7 @@ func readFileAt(p string) ([]byte, error) { return os.ReadFile(p) }
 // 表现为「勾了记住登录也没用」。磁盘上那份 DPAPI 密文才是凭证的唯一记录，
 // 启动时必须 restore 回内存表。
 func TestRememberSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 
 	// 第一次运行：登录并勾选记住
@@ -270,7 +270,7 @@ func TestRememberSurvivesRestart(t *testing.T) {
 
 // 回归：换出会话后不能删掉磁盘副本，否则「记住」只能用一次。
 func TestExchangeKeepsDiskCopy(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	u := &model.User{ID: 8, Username: "a", Role: string(auth.RoleAdmin), Status: 1}
 	s := New(&sessionApps{users: []model.User{*u}}, WithRemember(filepath.Join(dir, "remember.bin")))
@@ -290,7 +290,7 @@ func TestExchangeKeepsDiskCopy(t *testing.T) {
 
 // 硬上限必须跨重启保留：IssuedAt 持久化，不随进程重启重置。
 func TestRememberHardCapSurvivesRestart(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 
 	s1 := New(&sessionApps{}, WithRemember(filepath.Join(dir, "remember.bin")))
@@ -324,7 +324,7 @@ func TestRememberHardCapSurvivesRestart(t *testing.T) {
 // 若在那里挂载 remember 端点，任何能连到端口的人都能取走明文长期凭证，
 // 无需密码直接冒用该用户。remember 必须默认关闭、只在桌面形态显式开启。
 func TestRememberEndpointsDisabledWithoutWithRemember(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	u := &model.User{ID: 1, Username: "admin", Role: string(auth.RoleAdmin), Status: 1}
 
@@ -358,7 +358,7 @@ func TestRememberEndpointsDisabledWithoutWithRemember(t *testing.T) {
 // 凭证作废只在执行操作的那个进程里生效，MySQL 多人形态下别人机器上的
 // remember.bin 不会被清。若换会话时不回库判活，已停用用户点一下就能进来。
 func TestRememberExchangeRejectsDisabledAccount(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	u := &model.User{ID: 5, Username: "gone", Role: string(auth.RoleAdmin), Status: 1}
 	s := New(&sessionApps{users: []model.User{*u}}, WithRemember(filepath.Join(dir, "remember.bin")))
@@ -382,7 +382,7 @@ func TestRememberExchangeRejectsDisabledAccount(t *testing.T) {
 // 角色在数据库里改过之后，换会话必须用**新的**角色建会话。
 // 凭证里缓存的旧角色不能直接拿去发令牌，否则降权/升权都可能被旧值盖住。
 func TestRememberExchangeUsesCurrentRole(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv("AppData", dir)
 	u := &model.User{ID: 6, Username: "r", Role: string(auth.RoleAdmin), Status: 1}
 	s := New(&sessionApps{users: []model.User{*u}}, WithRemember(filepath.Join(dir, "remember.bin")))

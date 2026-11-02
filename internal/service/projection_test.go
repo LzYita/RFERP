@@ -16,7 +16,7 @@ import (
 // 桩能验证公式，验证不了"投影说够、完成却被拒"这类跨层漂移。
 func newProjectionFixture(t *testing.T) (*Service, repository.Store) {
 	t.Helper()
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "proj.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "proj.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

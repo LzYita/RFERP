@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -156,6 +157,59 @@ func newSetupHandler(base *config.Config, applied func()) http.Handler {
 			return
 		}
 		writeJSONStatus(w, 200, map[string]any{"ok": true})
+	})
+
+	// 连接局域网主机（客户端形态，FR-10）。
+	//
+	// 写完配置必须重启：mode 在启动时读取，热切换会留下"配置说客户端、
+	// 进程还连着本地库"的双形态，比直接重启糟得多。
+	mux.HandleFunc("POST /api/setup/connect-server", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			URL string `json:"url"`
+			// Probe 为真时只探测、不保存：界面上的「测试连接」与「保存」
+			// 共用一个端点，差一个 flag，避免两段几乎相同的代码各自漂移。
+			Probe bool `json:"probe"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeJSONStatus(w, 400, map[string]string{"error": "请求无效"})
+			return
+		}
+		u, err := normalizeServerURL(in.URL)
+		if err != nil {
+			writeJSONStatus(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		// 探测：能连上、能自报版本，才算"这台主机是 RFERP 服务端"。
+		probe := api.NewClient(u)
+		info, err := probe.Describe()
+		if err != nil {
+			writeJSONStatus(w, 400, map[string]string{
+				"error": fmt.Sprintf("连接 %s 失败：%v（请确认主机已启动 RFERP 服务、IP 正确、防火墙放行 %s）",
+					u, err, portOf(u)),
+			})
+			return
+		}
+		if in.Probe {
+			writeJSONStatus(w, 200, map[string]any{"ok": true, "serverUrl": u, "version": info.AppVersion})
+			return
+		}
+		if err := base.SetRunMode(config.ModeClient, u); err != nil {
+			writeJSONStatus(w, 500, map[string]string{"error": "保存配置失败：" + err.Error()})
+			return
+		}
+		// 数据目录也落一次：客户端仍需要它放日志、凭证与缓存。
+		if d := strings.TrimSpace(defaultDataDir(base)); d != "" {
+			base.DataDir = d
+			_ = base.Save()
+		}
+		writeJSONStatus(w, 200, map[string]any{
+			"ok": true, "serverUrl": u, "version": info.AppVersion,
+		})
+		// 界面看到 200 后再重启；先回响应，避免窗口被关掉时请求还没落地。
+		go func() {
+			time.Sleep(900 * time.Millisecond)
+			restartSelf()
+		}()
 	})
 
 	mux.HandleFunc("POST /api/setup/apply", func(w http.ResponseWriter, r *http.Request) {
@@ -660,6 +714,26 @@ func ensureWritableDir(dir string) (err error) {
 	return errors.Join(writeErr, probe.Close())
 }
 
+// restartSelf 重新拉起自己并退出当前进程。
+//
+// 与更新流程同一个做法：带 RFERP_UPDATE_RESTART=1 让新进程多等一会儿单实例锁，
+// 否则新进程会在老进程还没释放锁时立刻退出，用户看到的是"点完就没了"。
+func restartSelf() {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("restart: 取可执行路径失败: %v", err)
+		return
+	}
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Dir = filepath.Dir(exe)
+	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
+	if err := cmd.Start(); err != nil {
+		log.Printf("restart: 启动新进程失败: %v", err)
+		return
+	}
+	os.Exit(0)
+}
+
 func randomToken() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -882,6 +956,7 @@ border:1px solid var(--bd);color:var(--mu);font-size:12px;font-weight:500}
   <div class="tabs">
     <button class="tab on" data-t="sqlite">本机存储（SQLite）</button>
     <button class="tab" data-t="mysql">MySQL 数据库</button>
+    <button class="tab" data-t="lan">连接局域网主机</button>
   </div>
 
   <!-- SQLite：单机使用，默认且最省事 -->
@@ -909,6 +984,17 @@ border:1px solid var(--bd);color:var(--mu);font-size:12px;font-weight:500}
       <button class="sec" id="test">测试连接</button>
     </div>
     <p class="hint" id="testOut">数据库不存在时会自动创建。勾选上面一项后，程序会另建一个专用账号并把密码写进配置，root 密码不留在本机。</p>
+  </div>
+
+  <!-- 局域网客户端：这台机器只装界面，业务数据都在主机上 -->
+  <div id="p-lan" hidden>
+    <p class="hint2">这台电脑作为<b>客户端</b>使用：界面连到同一局域网内的主机，业务数据不保存在本机。</p>
+    <label for="srv">主机地址</label>
+    <input id="srv" placeholder="192.168.1.10 或 http://192.168.1.10:8080">
+    <div class="acts">
+      <button class="sec" id="probe">测试连接</button>
+    </div>
+    <p class="hint" id="lanOut">主机需要先安装 RFERP 服务端，并在防火墙放行 TCP 8080。保存后程序会自动重启。</p>
   </div>
 
   <div class="err" id="err"></div>
@@ -952,7 +1038,22 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
   mode=b.dataset.t;
   $('p-sqlite').hidden = mode!=='sqlite';
   $('p-mysql').hidden  = mode!=='mysql';
+  $('p-lan').hidden    = mode!=='lan';
+  $('go').textContent  = mode==='lan' ? '保存并重启' : '保存并继续';
 });
+
+$('probe').onclick=async()=>{
+  const u=$('srv').value.trim();
+  if(!u){$('lanOut').textContent='请先填写主机地址。';return;}
+  $('lanOut').textContent='正在测试连接…';
+  try{
+    const r=await fetch('/api/setup/connect-server',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u,probe:true})});
+    const j=await r.json();
+    // probe:true 只探测、不保存：这里复用同一端点，服务端按 flag 决定是否落盘。
+    $('lanOut').textContent = j.ok ? ('连接成功：主机版本 v'+(j.version||'?')) : ('连接失败：'+j.error);
+  }catch(e){ $('lanOut').textContent='连接失败：'+e.message; }
+};
 
 $('useLocal').onclick=()=>{
   $('host').value='127.0.0.1';
@@ -979,6 +1080,23 @@ $('test').onclick=async()=>{
 
 $('go').onclick=async()=>{
   $('err').style.display='none';
+  if(mode==='lan'){
+    const u=$('srv').value.trim();
+    if(!u){$('err').textContent='主机地址不能为空';$('err').style.display='block';return;}
+    $('go').disabled=true;$('go').textContent='正在保存…';
+    try{
+      const r=await fetch('/api/setup/connect-server',{method:'POST',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});
+      const j=await r.json();
+      if(!r.ok)throw new Error(j.error||'保存失败');
+      $('go').textContent='已保存，正在重启…';
+      return; // 服务端会在约 1 秒后重启本程序
+    }catch(e){
+      $('err').textContent=e.message;$('err').style.display='block';
+      $('go').disabled=false;$('go').textContent='保存并重启';
+      return;
+    }
+  }
   let body;
   if(mode==='sqlite'){
     const dir=$('dir').value.trim();

@@ -62,7 +62,20 @@ type backupEntry struct {
 //
 // 顺带做**预检**：每份备份能不能安全回滚（覆盖度）与能不能用（编码），
 // 在这里就告诉界面，而不是等用户输完确认口令、点完恢复才失败。
-func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
+	// 客户端形态：列表在主机上。列出本机目录会显示一份空列表，
+	// 用户会以为备份丢了（实际上它们一直在主机上）。
+	if l, ok := s.apps.(interface{ ListBackupsRemote() ([]backupEntry, error) }); ok {
+		list, err := l.ListBackupsRemote()
+		if err != nil {
+			if !writeUpstreamErr(w, err) {
+				writeErr(w, http.StatusBadGateway, "从主机读取备份列表失败："+err.Error())
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"files": list})
+		return
+	}
 	entries, err := backuplayout.List()
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"files": []backupEntry{}})
@@ -104,7 +117,30 @@ func (s *Server) handleListBackups(w http.ResponseWriter, _ *http.Request) {
 // 此前返回 {"path": "<服务器绝对路径>"}：浏览器拿不到内容（阶段 B/C 的"下载到本机"
 // 在能力矩阵里标的是可用，但代码里没有任何下载能力），同时把服务器目录布局泄了出去。
 // 现在直接回内容 + Content-Disposition，浏览器一次请求就完成下载。
-func (s *Server) handleBackupDatabase(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleBackupDatabase(w http.ResponseWriter, r *http.Request) {
+	// 客户端形态：备份在主机上生成、流式传回。走这条分支时本机不落任何文件，
+	// 界面拿到的是同一个下载流，与在主机上操作的表现一致。
+	if remote, ok := s.apps.(interface {
+		CreateBackupStream() (*http.Response, error)
+	}); ok {
+		resp, err := remote.CreateBackupStream()
+		if err != nil {
+			if !writeUpstreamErr(w, err) {
+				writeErr(w, http.StatusBadGateway, "主机备份失败："+err.Error())
+			}
+			return
+		}
+		defer resp.Body.Close()
+		for _, h := range []string{"Content-Disposition", "Content-Type", "Content-Length"} {
+			if v := resp.Header.Get(h); v != "" {
+				w.Header().Set(h, v)
+			}
+		}
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			log.Printf("api: 转发备份流中断: %v", err)
+		}
+		return
+	}
 	// 用户点「一键备份」= 手动备份，落 manual/ 目录。
 	// 它**永不自动删除**：用户主动留的东西不该被任何清理策略替用户决定。
 	// 自动备份由后台按周期生成，落 auto/ 并滚动保留，与手动严格分开。
@@ -115,12 +151,17 @@ func (s *Server) handleBackupDatabase(w http.ResponseWriter, _ *http.Request) {
 	}
 	path, err := s.apps.BackupDatabase(dir)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "备份失败，请检查数据目录是否可写")
+		// 必须落日志：早期这里只回一句"检查数据目录是否可写"，
+		// 而真实原因可能是库忙、磁盘满、权限不足——用户拿着这句话
+		// 什么也查不出来（备份失败是最不能含糊的一类故障）。
+		log.Printf("api: backup failed: %v", err)
+		writeErr(w, http.StatusInternalServerError, "备份失败："+err.Error())
 		return
 	}
 	// 备份落盘之后立刻回内容；文件本身保留在备份目录里（撤销备份是用户自己的事）。
 	f, err := os.Open(path)
 	if err != nil {
+		log.Printf("api: open backup %s: %v", path, err)
 		writeErr(w, http.StatusInternalServerError, "备份文件无法读取")
 		return
 	}
@@ -320,7 +361,21 @@ func (s *Server) handlePickDataDir(w http.ResponseWriter, _ *http.Request) {
 //
 // 只读操作，仓管也有权限（Backup.DataDir 是 read 档），所以**不**受本机闸门限制——
 // 仓管在备份屏要看得到备份/导出放在哪儿。
-func (s *Server) handleDataDir(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleDataDir(w http.ResponseWriter, r *http.Request) {
+	// 远程调用方只拿到"这是远程部署"，不拿服务器目录布局（R14 / FR-16）。
+	//
+	// 判据是同一次连接的对端是不是回环：主机上的 UI 走 127.0.0.1，
+	// 与主机同机同权；局域网里其它电脑没有理由知道 C:\... 的目录结构。
+	// 客户端模式：apps 是 api.Client，目录在主机上，本机这一层没有可展示的
+	// 路径。用接口断言而不是判断部署字符串，Client 自己回答"我是远程"。
+	if _, remote := s.apps.(interface{ RemoteDeployment() bool }); remote {
+		writeJSON(w, http.StatusOK, map[string]any{"remote": true})
+		return
+	}
+	if !isLoopbackRequest(r) {
+		writeJSON(w, http.StatusOK, map[string]any{"remote": true})
+		return
+	}
 	dir := s.apps.DataDir()
 	writeJSON(w, http.StatusOK, map[string]any{
 		// 目录本身是服务器端路径。但界面上必须显示它——否则用户不知道备份去哪了、

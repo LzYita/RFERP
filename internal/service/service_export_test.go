@@ -59,7 +59,7 @@ func assertExportCandidatesPreserved(t *testing.T, saveDir string, at time.Time,
 }
 
 func TestExportAllDataCSVExhaustionPreservesExistingDirectories(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	populateExportCandidates(t, dir, at, 99)
 	calls := 0
@@ -79,7 +79,7 @@ func TestExportAllDataCSVExhaustionPreservesExistingDirectories(t *testing.T) {
 }
 
 func TestExportAllDataCSVLastCandidateCleansOnlyNewDirectory(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	populateExportCandidates(t, dir, at, 98)
 	queryErr := errors.New("query failed after allocation")
@@ -102,7 +102,7 @@ func TestExportAllDataCSVLastCandidateCleansOnlyNewDirectory(t *testing.T) {
 }
 
 func TestExportAllDataCSVOccupiedFileIsPreserved(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	old := exportTestCandidate(dir, at, 1)
 	if err := os.WriteFile(old, []byte("existing file"), 0600); err != nil {
@@ -129,7 +129,7 @@ func TestExportAllDataCSVOccupiedFileIsPreserved(t *testing.T) {
 }
 
 func TestExportAllDataCSVAllocationErrorDoesNotQueryOrChangeFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "parent-file")
+	path := filepath.Join(testTempDir(t), "parent-file")
 	if err := os.WriteFile(path, []byte("keep parent"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestExportAllDataCSVAllocationErrorDoesNotQueryOrChangeFile(t *testing.T) {
 }
 
 func TestExportAllDataCSVConcurrentFailuresOwnSeparateDirectories(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	populateExportCandidates(t, dir, at, 1)
 	const n = 8
@@ -213,7 +213,7 @@ func TestExportAllDataCSVConcurrentFailuresOwnSeparateDirectories(t *testing.T) 
 }
 
 func TestExportAllDataCSVSuccessKeepsTimestampAndPriorExport(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "export.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "export.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestExportAllDataCSVSuccessKeepsTimestampAndPriorExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewWithSnapshot(store, nil, nil)
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	first, firstDir, err := svc.exportAllDataCSV(dir, at)
 	if err != nil || firstDir != exportTestCandidate(dir, at, 1) {
@@ -267,7 +267,7 @@ func TestExportAllDataCSVSuccessKeepsTimestampAndPriorExport(t *testing.T) {
 }
 
 func TestExportAllDataCSVFailurePreservesOtherActiveExport(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "export.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "export.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestExportAllDataCSVFailurePreservesOtherActiveExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := repository.NewSQLite(db)
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	populateExportCandidates(t, dir, at, 1)
 	queryErr := errors.New("first export fails")
@@ -363,7 +363,7 @@ func TestExportAllDataCSVFailurePreservesOtherActiveExport(t *testing.T) {
 
 func TestExportAllDataCSVReturnsQueryErrorAndRemovesIncompleteDirectory(t *testing.T) {
 	svc, mock := newMockService(t)
-	saveDir := t.TempDir()
+	saveDir := testTempDir(t)
 	queryErr := errors.New("products query failed")
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM products ORDER BY id")).
 		WillReturnError(queryErr)
@@ -389,7 +389,7 @@ func TestExportAllDataCSVReturnsQueryErrorAndRemovesIncompleteDirectory(t *testi
 
 func TestExportAllDataCSVQueriesBatchConsumptions(t *testing.T) {
 	svc, mock := newMockService(t)
-	saveDir := t.TempDir()
+	saveDir := testTempDir(t)
 	queryErr := errors.New("batch consumptions query failed")
 
 	emptyProducts := sqlmock.NewRows([]string{
@@ -442,7 +442,7 @@ func TestExportAuditLogCSVReturnsQueryError(t *testing.T) {
 	svc, mock := newMockService(t)
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC)
-	path := filepath.Join(t.TempDir(), "audit.csv")
+	path := filepath.Join(testTempDir(t), "audit.csv")
 	queryErr := errors.New("audit query failed")
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM audit_log WHERE created_at >= ? AND created_at < ? ORDER BY id DESC")).
 		WithArgs(start, end.Add(24*time.Hour)).
@@ -464,7 +464,7 @@ func TestExportAuditLogCSVReturnsFileCreationError(t *testing.T) {
 	svc, mock := newMockService(t)
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC)
-	path := t.TempDir()
+	path := testTempDir(t)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM audit_log WHERE created_at >= ? AND created_at < ? ORDER BY id DESC")).
 		WithArgs(start, end.Add(24*time.Hour)).
 		WillReturnRows(sqlmock.NewRows([]string{

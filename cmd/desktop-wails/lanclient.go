@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"app/internal/api"
 	"app/internal/config"
 	"app/internal/deviceid"
-	"app/internal/paths"
 	"app/internal/webassets"
 	"app/internal/winmsg"
 )
@@ -86,7 +84,6 @@ func switchServer(cli *api.Client, cfg *config.Config, raw string) (string, erro
 	}
 	probe := api.NewClient(u)
 	probe.SetDevice(deviceIdentity())
-	probe.SetToken(cli.Token())
 	info, err := probe.Describe()
 	if err != nil {
 		return "", fmt.Errorf("连接 %s 失败：%v（请确认主机已启动、IP 正确、防火墙放行 %s）",
@@ -97,11 +94,12 @@ func switchServer(cli *api.Client, cfg *config.Config, raw string) (string, erro
 	if api.VersionLess(version, info.MinClientVersion) {
 		return "", fmt.Errorf("主机要求客户端 %s 以上（当前 %s），请先升级客户端", info.MinClientVersion, version)
 	}
-	cli.SetServerURL(u)
+	previousMode, previousURL := cfg.Mode, cfg.ServerURL
 	if err := cfg.SetRunMode(config.ModeClient, u); err != nil {
-		// 落盘失败不影响本次使用，但下次启动会退回旧地址——必须写日志。
-		log.Printf("lan-client: 保存主机地址失败: %v", err)
+		cfg.Mode, cfg.ServerURL = previousMode, previousURL
+		return "", fmt.Errorf("保存主机地址失败: %w", err)
 	}
+	cli.SetServerURL(u)
 	log.Printf("lan-client: 已切换到 %s", u)
 	return u, nil
 }
@@ -124,7 +122,6 @@ func runHeadlessClient(cli *api.Client, cfg *config.Config, addr, updateURL stri
 	apiSrv := api.New(cli,
 		api.WithVersion(version),
 		api.WithStaticFS(webassets.FS(), webassets.Dir),
-		api.WithRemember(filepath.Join(paths.DataDir(), "remember.bin")),
 		api.WithUpdate(updateURL, version),
 		// 与窗口模式共用 switchServer：只归一化地址而不探测、不落盘，
 		// 会让"改地址"在无界面模式下变成一个假动作（用户以为连上了）。
@@ -159,13 +156,13 @@ func runHeadlessClient(cli *api.Client, cfg *config.Config, addr, updateURL stri
 // serveOnly（-serve）在这里同样有效：它只起内嵌 HTTP 服务，供前端开发与
 // 自动化验证。此时不弹任何对话框。
 func runLANClient(cfg *config.Config, updateURL string, serveOnly bool, serveAddr string) {
-	base := strings.TrimSpace(cfg.ServerURL)
-	if base == "" {
+	base, addressErr := normalizeServerURL(cfg.ServerURL)
+	if addressErr != nil {
 		// 配置里写了 mode=client 却没有地址：这不是"未配置"，而是配置损坏。
 		// 回到首启向导会让用户以为要重新配库，所以直接提示并退出。
-		log.Printf("lan-client: mode=client 但 serverUrl 为空，无法启动")
+		log.Printf("lan-client: 主机地址无效: %v", addressErr)
 		if !serveOnly {
-			showFatal("RFERP 需要主机地址", "配置里没有服务器地址。\n\n请重新运行安装程序，或在 config.json 的 serverUrl 里填写主机 IP。")
+			showFatal("RFERP 需要主机地址", addressErr.Error()+"\n\n请在 config.json 的 serverUrl 里填写主机 IP。")
 		}
 		return
 	}

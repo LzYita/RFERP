@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -138,35 +139,25 @@ func (s *Service) LoginCheck(in usecase.DeviceLogin) (usecase.DeviceLoginResult,
 			Message: "尚未导入授权：当前仅主机可登录"}, nil
 	}
 
-	// 已登记设备：放行（含超额时已登记的老设备，D-9）。
-	if rec != nil {
-		if _, err := s.repo.SaveDeviceSeen(&model.Device{
-			DeviceIDHash: in.DeviceID, Name: displayName(in.Name, rec),
-			Kind: model.DeviceKindClient, AppVersion: in.Version, OS: in.OS, LastIP: in.IP,
-		}); err != nil {
-			log.Printf("lan: 刷新设备在线状态失败: %v", err)
-		}
-		return usecase.DeviceLoginResult{Allowed: true}, nil
+	err = s.repo.RegisterClientDevice(&model.Device{
+		DeviceIDHash: in.DeviceID, Name: displayName(in.Name, rec), Kind: model.DeviceKindClient,
+		AppVersion: in.Version, OS: in.OS, LastIP: in.IP,
+	}, state.MaxClients)
+	if errors.Is(err, repository.ErrDeviceLimit) {
+		s.recordEvent("login_over_quota", in.Name, in.DeviceID, in.IP)
+		return usecase.DeviceLoginResult{Code: usecase.CodeDeviceLimit,
+			Message: "授权客户端数已满，请联系管理员删除闲置设备以释放名额"}, nil
 	}
-
-	// 新设备：额度决定去留。
-	// 额度按"已登记行数"统计，不看状态：撤销不释放名额（§7.4）。
-	used, err := s.repo.CountDevices(model.DeviceKindClient, "")
+	if errors.Is(err, repository.ErrDeviceRevoked) {
+		return usecase.DeviceLoginResult{Code: usecase.CodeDeviceRevoked,
+			Message: "该设备已被管理员撤销，请联系管理员"}, nil
+	}
 	if err != nil {
 		return usecase.DeviceLoginResult{}, err
 	}
-	if state.MaxClients >= 0 && used >= state.MaxClients {
-		s.recordEvent("login_over_quota", in.Name, in.DeviceID, in.IP)
-		return usecase.DeviceLoginResult{Code: usecase.CodeDeviceLimit,
-			Message: fmt.Sprintf("授权客户端数已满（%d/%d），请联系管理员撤销闲置设备", used, state.MaxClients)}, nil
+	if rec == nil {
+		s.recordEvent("device_register", in.Name, in.DeviceID, in.IP)
 	}
-	if _, err := s.repo.SaveDeviceSeen(&model.Device{
-		DeviceIDHash: in.DeviceID, Name: in.Name, Kind: model.DeviceKindClient,
-		AppVersion: in.Version, OS: in.OS, LastIP: in.IP,
-	}); err != nil {
-		return usecase.DeviceLoginResult{}, err
-	}
-	s.recordEvent("device_register", in.Name, in.DeviceID, in.IP)
 	// 新设备占用了名额：额度快照立刻失效，否则登录响应里的 used_clients
 	// 会停留在一个过时的数字上，管理员会以为没登记成功。
 	s.invalidateRuntime()
@@ -316,7 +307,11 @@ func (s *Service) RevokeDevice(deviceID, actor string) error {
 	}
 	// 主机不能撤销：它是授权锁死时唯一的救场设备（R7）。允许撤销等于给了
 	// 一条"把自己锁在门外"的路径，而且没有任何场景需要它——主机就一台。
-	if s.IsHostDevice(deviceID) {
+	protected, err := s.protectedHostDevice(deviceID)
+	if err != nil {
+		return err
+	}
+	if protected {
 		return fmt.Errorf("主机设备不能撤销")
 	}
 	if err := s.repo.RevokeDevice(deviceID, actor); err != nil {
@@ -341,7 +336,11 @@ func (s *Service) RevokeDevice(deviceID, actor string) error {
 func (s *Service) DeleteDevice(deviceID, actor string) error {
 	// 主机记录不允许删除：删了它，主机下一次启动会重新登记成 client，
 	// 白占一个授权名额（而且它本该豁免）。
-	if s.IsHostDevice(deviceID) {
+	protected, err := s.protectedHostDevice(deviceID)
+	if err != nil {
+		return err
+	}
+	if protected {
 		return fmt.Errorf("主机设备不能删除")
 	}
 	if err := s.repo.DeleteDevice(deviceID); err != nil {
@@ -357,6 +356,14 @@ func (s *Service) DeleteDevice(deviceID, actor string) error {
 
 	s.recordEvent("device_delete", actor, shortID(deviceID), "")
 	return nil
+}
+
+func (s *Service) protectedHostDevice(deviceID string) (bool, error) {
+	if s.IsHostDevice(deviceID) {
+		return true, nil
+	}
+	rec, err := s.repo.GetDeviceByHash(deviceID)
+	return rec != nil && rec.Kind == model.DeviceKindHost, err
 }
 
 // licenseState 读缓存，必要时从库加载并验签。

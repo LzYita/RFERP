@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,28 +51,86 @@ func InitWith(dir string, opt Options) error {
 	if n <= 0 {
 		n = keep
 	}
-	rotateN(path, size, n)
+	if err := rotateN(path, size, n); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
-	log.SetOutput(io.MultiWriter(f, os.Stderr))
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	writer := &rotatingWriter{file: f, path: path, maxSize: size, keep: n, size: info.Size()}
+	log.SetOutput(io.MultiWriter(writer, os.Stderr))
 	log.SetFlags(log.LstdFlags)
 	return nil
 }
 
-func rotate(path string) { rotateN(path, maxSize, keep) }
+type rotatingWriter struct {
+	mu      sync.Mutex
+	file    *os.File
+	path    string
+	maxSize int64
+	keep    int
+	size    int64
+}
 
-func rotateN(path string, size int64, keep int) {
+func (w *rotatingWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.size > 0 && w.size+int64(len(data)) > w.maxSize {
+		if err := w.file.Close(); err != nil {
+			return 0, err
+		}
+		rotateErr := rotateN(w.path, 0, w.keep)
+		file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return 0, err
+		}
+		w.file = file
+		info, err := file.Stat()
+		if err != nil {
+			return 0, err
+		}
+		w.size = info.Size()
+		if rotateErr != nil {
+			return 0, rotateErr
+		}
+	}
+	n, err := w.file.Write(data)
+	w.size += int64(n)
+	return n, err
+}
+
+func (w *rotatingWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.file.Close()
+}
+
+func rotateN(path string, size int64, keep int) error {
 	info, err := os.Stat(path)
-	if err != nil || info.Size() < size {
-		return
+	if os.IsNotExist(err) {
+		return nil
 	}
-	os.Remove(fmt.Sprintf("%s.%d", path, keep))
+	if err != nil {
+		return err
+	}
+	if info.Size() < size {
+		return nil
+	}
+	if err := os.Remove(fmt.Sprintf("%s.%d", path, keep)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	for i := keep - 1; i >= 1; i-- {
-		os.Rename(fmt.Sprintf("%s.%d", path, i), fmt.Sprintf("%s.%d", path, i+1))
+		if err := os.Rename(fmt.Sprintf("%s.%d", path, i), fmt.Sprintf("%s.%d", path, i+1)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
-	os.Rename(path, path+".1")
+	return os.Rename(path, path+".1")
 }
 
 // PruneOlderThan 删除 dir 下修改时间早于 age 的日志文件及其滚动副本。
@@ -94,6 +153,9 @@ func PruneOlderThan(dir string, age time.Duration) (int, error) {
 			continue
 		}
 		name := e.Name()
+		if name == "rferp.log" {
+			continue
+		}
 		if !strings.HasSuffix(name, ".log") && !strings.Contains(name, ".log.") {
 			continue
 		}

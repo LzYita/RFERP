@@ -45,6 +45,7 @@ export function ServerAddressBar() {
       const r = await lan.connect(draft)
       setServerUrl(r.serverUrl)
       setEditing(false)
+      window.location.reload()
     } catch (e) {
       setErr(lanErrorText(e))
     } finally {

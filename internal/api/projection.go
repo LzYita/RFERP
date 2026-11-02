@@ -38,7 +38,7 @@ func (s *Server) handleStockProjection(w http.ResponseWriter, r *http.Request) {
 
 	out, err := s.apps.StockProjection(in)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeAppErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)

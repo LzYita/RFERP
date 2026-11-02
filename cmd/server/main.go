@@ -157,6 +157,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	srv.StartSessionJanitor(ctx)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := logging.PruneOlderThan(logDir, logRetention); err != nil {
+					log.Printf("logging: 清理旧日志失败: %v", err)
+				}
+			}
+		}
+	}()
 
 	// 自动备份：服务端是常驻进程，必须靠定时器而不是"下次打开软件"。
 	if sched, ok := res.Apps.(usecase.AutoBackupScheduler); ok {

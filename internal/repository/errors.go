@@ -14,7 +14,9 @@ var (
 	// ErrOptimisticLock is returned when a versioned update matches zero rows.
 	ErrOptimisticLock = errors.New("并发版本冲突，请刷新后重试")
 	// ErrNotFound 表示按键定位的记录不存在（设备撤销/删除等按影响行数判断的操作）。
-	ErrNotFound = errors.New("记录不存在")
+	ErrNotFound      = errors.New("记录不存在")
+	ErrDeviceLimit   = errors.New("授权客户端数已满")
+	ErrDeviceRevoked = errors.New("设备已被撤销")
 )
 
 // uniqueConstraintMessage maps a table.column pair to a message a user can act

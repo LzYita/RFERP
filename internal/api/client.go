@@ -20,14 +20,15 @@ import (
 
 // Client 是远程用例适配（D1/D2）：UI 经 HTTP 访问主机上的同一 Service。
 type Client struct {
-	base      string
-	hc        *http.Client
-	tok       string
-	lastCount string
+	base       string
+	hc         *http.Client
+	tok        string
+	generation uint64
+	lastCount  string
 	// device 是局域网版要求的设备身份（方案 §7.1）。单机形态留空——
 	// 服务端没有设备门禁时这些头会被忽略，但也不能凭空编一个。
 	device DeviceIdentity
-	// mu 保护 base：界面允许在运行期切换主机地址（FR-17），而请求是并发的。
+	// mu 保护连接目标、凭据和设备身份，运行期切换与请求可能并发。
 	mu sync.RWMutex
 }
 
@@ -51,6 +52,8 @@ func (c *Client) ServerURL() string {
 func (c *Client) SetServerURL(u string) {
 	c.mu.Lock()
 	c.base = strings.TrimRight(strings.TrimSpace(u), "/")
+	c.tok = ""
+	c.generation++
 	c.mu.Unlock()
 }
 
@@ -64,7 +67,11 @@ type DeviceIdentity struct {
 
 // SetDevice 设置设备身份。必须在登录前调用：登录本身就要带设备头，
 // 服务端据此登记并计额度。
-func (c *Client) SetDevice(d DeviceIdentity) { c.device = d }
+func (c *Client) SetDevice(d DeviceIdentity) {
+	c.mu.Lock()
+	c.device = d
+	c.mu.Unlock()
+}
 
 // newRequest 统一构造请求并补上头。
 //
@@ -80,21 +87,24 @@ func (c *Client) newRequest(method, path string, in any) (*http.Request, error) 
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(context.Background(), method, c.ServerURL()+path, body)
+	c.mu.RLock()
+	base, token, device := c.base, c.tok, c.device
+	c.mu.RUnlock()
+	req, err := http.NewRequestWithContext(context.Background(), method, base+path, body)
 	if err != nil {
 		return nil, err
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.tok != "" {
-		req.Header.Set("Authorization", "Bearer "+c.tok)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if c.device.ID != "" {
-		req.Header.Set("X-RFERP-Device-ID", c.device.ID)
-		req.Header.Set("X-RFERP-Device-Name", c.device.Name)
-		req.Header.Set("X-RFERP-Client-Version", c.device.Version)
-		req.Header.Set("X-RFERP-Client-OS", c.device.OS)
+	if device.ID != "" {
+		req.Header.Set("X-RFERP-Device-ID", device.ID)
+		req.Header.Set("X-RFERP-Device-Name", device.Name)
+		req.Header.Set("X-RFERP-Client-Version", device.Version)
+		req.Header.Set("X-RFERP-Client-OS", device.OS)
 	}
 	return req, nil
 }
@@ -110,10 +120,29 @@ func NewClient(base string) *Client {
 }
 
 // SetToken 注入已记住的会话（D3）。
-func (c *Client) SetToken(tok string) { c.tok = tok }
+func (c *Client) SetToken(tok string) {
+	c.mu.Lock()
+	c.tok = tok
+	c.mu.Unlock()
+}
 
 // Token 返回当前会话。
-func (c *Client) Token() string { return c.tok }
+func (c *Client) Token() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tok
+}
+
+func (c *Client) CheckSession(userID int64) error {
+	var user model.User
+	if err := c.do(http.MethodGet, "/api/me", nil, &user); err != nil {
+		return err
+	}
+	if user.ID != userID {
+		return &APIError{Status: http.StatusUnauthorized, Message: "upstream session changed"}
+	}
+	return nil
+}
 
 func (c *Client) do(method, path string, in any, out any) error {
 	return c.doWithHeaders(method, path, in, out, nil)
@@ -141,18 +170,7 @@ func (c *Client) doWithHeaders(method, path string, in any, out any, extra map[s
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		var er struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(raw, &er)
-		if er.Error == "" {
-			er.Error = strings.TrimSpace(string(raw))
-		}
-		if er.Error == "" {
-			er.Error = http.StatusText(resp.StatusCode)
-		}
-		return &APIError{Status: resp.StatusCode, Code: er.Code, Message: er.Error}
+		return responseError(resp.StatusCode, raw)
 	}
 	if out == nil || len(raw) == 0 {
 		return nil
@@ -176,20 +194,24 @@ func (c *Client) doBytes(method, path string, in any) ([]byte, error) {
 	}
 	c.lastCount = resp.Header.Get("X-Count")
 	if resp.StatusCode >= 400 {
-		var er struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(raw, &er)
-		if er.Error == "" {
-			er.Error = strings.TrimSpace(string(raw))
-		}
-		if er.Error == "" {
-			er.Error = http.StatusText(resp.StatusCode)
-		}
-		return nil, &APIError{Status: resp.StatusCode, Code: er.Code, Message: er.Error}
+		return nil, responseError(resp.StatusCode, raw)
 	}
 	return raw, nil
+}
+
+func responseError(status int, raw []byte) *APIError {
+	var problem struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	_ = json.Unmarshal(raw, &problem)
+	if problem.Error == "" {
+		problem.Error = strings.TrimSpace(string(raw))
+	}
+	if problem.Error == "" {
+		problem.Error = http.StatusText(status)
+	}
+	return &APIError{Status: status, Code: problem.Code, Message: problem.Error}
 }
 
 // APIError 保留 HTTP 状态，便于 UI/上层判断。
@@ -223,14 +245,23 @@ func (c *Client) UserCount() (int, error) {
 
 func (c *Client) Login(username, password string) (*model.User, error) {
 	// Login 不依赖既有 token。
+	c.mu.Lock()
+	generation := c.generation
+	loginClient := &Client{base: c.base, hc: c.hc, device: c.device}
 	c.tok = ""
+	c.mu.Unlock()
 	var out struct {
 		Token string     `json:"token"`
 		User  model.User `json:"user"`
 	}
 	in := map[string]string{"username": username, "password": password}
-	if err := c.do(http.MethodPost, "/api/login", in, &out); err != nil {
+	if err := loginClient.do(http.MethodPost, "/api/login", in, &out); err != nil {
 		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation {
+		return nil, &APIError{Status: http.StatusUnauthorized, Message: "server changed during login"}
 	}
 	c.tok = out.Token
 	u := out.User

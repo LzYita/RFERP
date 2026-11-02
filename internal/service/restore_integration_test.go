@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 
@@ -39,7 +40,18 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 	}
 
 	backupDir := testTempDir(t)
-	apps := service.New(repository.New(db), dsn, mysqldump, nil)
+	store := repository.New(db)
+	apps := service.New(store, dsn, mysqldump, nil)
+	deviceID := strings.Repeat("a", 64)
+	if _, err := store.SaveDeviceSeen(&model.Device{DeviceIDHash: deviceID, Name: "before", Kind: model.DeviceKindClient}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLicense(&model.LicenseRecord{Payload: "before", Signature: "before", ImportedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendSecurityEvent(&model.SecurityEvent{EventType: "before"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// --- 备份时刻的数据 ---
 	if _, err := apps.CreateInitialAdmin("restoreadmin", "pass1234", "Restore Admin"); err != nil {
@@ -59,6 +71,15 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		t.Fatalf("backup file missing: %v", err)
+	}
+	if err := store.RevokeDevice(deviceID, "after"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLicense(&model.LicenseRecord{Payload: "after", Signature: "after", ImportedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendSecurityEvent(&model.SecurityEvent{EventType: "after"}); err != nil {
+		t.Fatal(err)
 	}
 
 	// --- 备份之后：删除一个零件、入库改数量、再新增一个零件 ---
@@ -91,6 +112,18 @@ func TestRestoreDatabaseFullRestoreIntegration(t *testing.T) {
 	}
 
 	after := tableCounts(t, db)
+	device, err := store.GetDeviceByHash(deviceID)
+	if err != nil || device == nil || device.Status != model.DeviceStatusRevoked || device.RevokedBy != "after" {
+		t.Fatalf("device state rolled back: %+v err=%v", device, err)
+	}
+	currentLicense, err := store.GetLicense()
+	if err != nil || currentLicense == nil || currentLicense.Payload != "after" {
+		t.Fatalf("license rolled back: %+v err=%v", currentLicense, err)
+	}
+	events, err := store.ListSecurityEvents(10)
+	if err != nil || len(events) != 2 || events[0].EventType != "after" || events[1].EventType != "before" {
+		t.Fatalf("security events changed: %+v err=%v", events, err)
+	}
 
 	// 1. 回到备份时刻：备份后新增的零件消失、删除的零件回来、库存回退
 	if after["parts"] != 2 {

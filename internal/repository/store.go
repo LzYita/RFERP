@@ -20,6 +20,7 @@ type SkipPartRow struct {
 // write transaction (single-writer).
 type TxOps interface {
 	Exec(query string, args ...any) (sql.Result, error)
+	RegisterClientDevice(device *model.Device, maxClients int) error
 
 	// CountRows 读取指定表的行数。表名来自代码内固定清单，不接受外部输入。
 	CountRows(table string, dest *int) error
@@ -172,6 +173,7 @@ type Store interface {
 	ListDevices() ([]model.Device, error)
 	// SaveDeviceSeen 登记新设备或刷新已知设备的最近在线事实。
 	SaveDeviceSeen(d *model.Device) (*model.Device, error)
+	RegisterClientDevice(device *model.Device, maxClients int) error
 	// RevokeDevice 撤销设备；不存在返回 ErrNotFound。
 	RevokeDevice(hash, by string) error
 	// DeleteDevice 删除设备记录以释放额度；不存在返回 ErrNotFound。

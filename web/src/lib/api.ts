@@ -45,12 +45,26 @@ export class ApiError extends Error {
    * 「被哪些产品用了」。只把文案交给界面，前端就只能去正则抠产品名。
    */
   readonly data?: unknown
-  constructor(status: number, message: string, state?: OperationState, data?: unknown) {
+  /**
+   * 服务端错误契约里的 code（局域网版 §7.3）。
+   *
+   * 同样是 403，"额度已满"和"设备被撤销"要引导用户做完全不同的事；
+   * 只靠文案匹配既脆又没法国际化。
+   */
+  readonly code?: string
+  constructor(
+    status: number,
+    message: string,
+    state?: OperationState,
+    data?: unknown,
+    code?: string,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.state = state
     this.data = data
+    this.code = code
   }
   /** 401 表示会话失效（过期、被登出、被强制下线），界面应回到登录页 */
   get isUnauthorized(): boolean {
@@ -113,11 +127,13 @@ async function throwApiError(resp: Response, token: string | null): Promise<neve
   let msg = resp.statusText
   let state: OperationState | undefined
   let data: unknown
+  let code: string | undefined
   try {
     const body = await resp.json()
     data = body
     if (body?.error) msg = body.error
     if (body?.state) state = body.state as OperationState
+    if (body?.code) code = body.code as string
   } catch {
     /* 响应不是 JSON，用状态文本 */
   }
@@ -126,7 +142,7 @@ async function throwApiError(resp: Response, token: string | null): Promise<neve
     // 只在携带凭据时广播：登录本身失败不是「会话过期」
     if (token) broadcastUnauthorized()
   }
-  throw new ApiError(resp.status, msg, state, data)
+  throw new ApiError(resp.status, msg, state, data, code)
 }
 
 /**
@@ -235,6 +251,7 @@ export interface LoginResult {
 
 interface RememberLoad {
   token: string | null
+  enabled?: boolean
   user_id?: number
   username?: string
 }
@@ -348,9 +365,15 @@ export const setup = {
     username: string,
     password: string,
     displayName: string,
+    bootstrapToken = '',
   ): Promise<Me> {
+    // 令牌只在这一个请求里带：局域网主机的空库首建有门禁（FR-41），
+    // 单机形态没有令牌，留空即可。客户端模式下本机会把它转发给主机。
+    const headers: Record<string, string> = {}
+    if (bootstrapToken.trim()) headers['X-Bootstrap-Token'] = bootstrapToken.trim()
     return request<Me>('/api/bootstrap-admin', {
       method: 'POST',
+      headers,
       body: JSON.stringify({
         username,
         password,

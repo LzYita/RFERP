@@ -69,7 +69,7 @@ func openRealSQLite(path string) (*sqlx.DB, error) {
 
 func tmpDBPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "rferp.db")
+	return filepath.Join(testTempDir(t), "rferp.db")
 }
 
 func ioErr() error   { return &fakeSQLError{code: 1546, msg: "disk I/O error"} }

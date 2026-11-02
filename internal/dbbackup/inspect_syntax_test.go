@@ -19,7 +19,7 @@ import (
 
 func writeRaw(t *testing.T, body string) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "backup_20260924_172919.sql")
+	p := filepath.Join(testTempDir(t), "backup_20260924_172919.sql")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

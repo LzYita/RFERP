@@ -9,8 +9,9 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// 说明：v12+ 步骤现有四条（v13 db_identity、v14 batch_temp_parts、v15 推导字段、
-// v16 part_inbounds、v17 批次剩余），新增步骤时需要在这里补上对应的期望。
+// 说明：v12+ 步骤目前八条（v13 db_identity、v14 batch_temp_parts、v15 推导字段、
+// v16 part_inbounds、v17 批次剩余、v18 投料分配、v19 devices、v20 授权与安全事件），
+// 新增步骤时需要在这里补上对应的期望。
 
 // expectMySQLV11WithPendingStep 登记"库停在 v11、v13~v17 待执行、库非空"的完整期望，
 // 并把 backupMarker 查询排在步骤之前，用于断言"备份先于步骤"。
@@ -20,7 +21,7 @@ func expectMySQLV11WithPendingStep(mock sqlmock.Sqlmock, businessTables int, bac
 	mock.ExpectQuery("SELECT MAX\\(version\\) FROM schema_migrations").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(11))
 	// pendingStepMigrations：v13~v17 均尚未记录
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM schema_migrations WHERE version").
 			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	}
@@ -34,7 +35,7 @@ func expectMySQLV11WithPendingStep(mock sqlmock.Sqlmock, businessTables int, bac
 			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(1))
 	}
 	// applyStepMigrations 再次查询待执行步骤（v13~v17）
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM schema_migrations WHERE version").
 			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	}
@@ -86,6 +87,18 @@ func expectMySQLV11WithPendingStep(mock sqlmock.Sqlmock, businessTables int, bac
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("INSERT IGNORE INTO schema_migrations").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// v19 本体：设备登记表 + 记录版本
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS devices").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT IGNORE INTO schema_migrations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	// v20 本体：授权单行表 + 安全事件表 + 记录版本
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS license").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS security_events").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT IGNORE INTO schema_migrations").
+		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
 // 非空库 + 仅剩 v12+ 步骤时，也必须先做升级前备份，而且备份要早于步骤。
@@ -110,7 +123,7 @@ func TestRunBacksUpBeforePendingStepsOnMySQL(t *testing.T) {
 		return filepath.Join(saveDir, "backup.sql"), nil
 	}
 
-	res, err := Run(db, Options{DSN: "u:p@tcp(127.0.0.1:3306)/t", BackupDir: t.TempDir(), Backup: backup})
+	res, err := Run(db, Options{DSN: "u:p@tcp(127.0.0.1:3306)/t", BackupDir: testTempDir(t), Backup: backup})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -120,9 +133,10 @@ func TestRunBacksUpBeforePendingStepsOnMySQL(t *testing.T) {
 	if res.BackupPath == "" {
 		t.Fatal("Result.BackupPath 为空")
 	}
-	if !containsVersion(res.Applied, 13) || !containsVersion(res.Applied, 14) ||
-		!containsVersion(res.Applied, 15) || !containsVersion(res.Applied, 16) || !containsVersion(res.Applied, 17) {
-		t.Fatalf("applied = %v，期望包含 13~17", res.Applied)
+	for v := 13; v <= 20; v++ {
+		if !containsVersion(res.Applied, v) {
+			t.Fatalf("applied = %v，期望包含 v%d", res.Applied, v)
+		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("数据库期望未满足: %v", err)
@@ -143,7 +157,7 @@ func TestRunAbortsWhenMySQLBackupFails(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT MAX\\(version\\) FROM schema_migrations").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(11))
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM schema_migrations WHERE version").
 			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	}
@@ -153,7 +167,7 @@ func TestRunAbortsWhenMySQLBackupFails(t *testing.T) {
 	backupErr := errors.New("mysqldump unavailable")
 	_, err = Run(db, Options{
 		DSN:       "u:p@tcp(127.0.0.1:3306)/t",
-		BackupDir: t.TempDir(),
+		BackupDir: testTempDir(t),
 		Backup:    func(string, string, string) (string, error) { return "", backupErr },
 	})
 	if !errors.Is(err, backupErr) {
@@ -177,7 +191,7 @@ func TestRunRefusesNonEmptyUpgradeWithoutBackupDir(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT MAX\\(version\\) FROM schema_migrations").
 		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(11))
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM schema_migrations WHERE version").
 			WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	}
@@ -204,13 +218,13 @@ func TestRunNoBackupWhenNothingPendingOnMySQL(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS schema_migrations").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT MAX\\(version\\) FROM schema_migrations").
-		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(18))
-	// cur 已是最新：v13~v18 的版本行都在，pendingStepMigrations 查完即空。
+		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(20))
+	// cur 已是最新：v13~v20 的版本行都在，pendingStepMigrations 查完即空。
 
 	backupCalled := false
 	res, err := Run(db, Options{
 		DSN:       "u:p@tcp(127.0.0.1:3306)/t",
-		BackupDir: t.TempDir(),
+		BackupDir: testTempDir(t),
 		Backup:    func(string, string, string) (string, error) { backupCalled = true; return "", nil },
 	})
 	if err != nil {
@@ -222,8 +236,8 @@ func TestRunNoBackupWhenNothingPendingOnMySQL(t *testing.T) {
 	if len(res.Applied) != 0 {
 		t.Fatalf("applied = %v，期望空", res.Applied)
 	}
-	if res.ToVersion != 18 {
-		t.Fatalf("ToVersion = %d，期望 18", res.ToVersion)
+	if res.ToVersion != 20 {
+		t.Fatalf("ToVersion = %d，期望 20", res.ToVersion)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("数据库期望未满足: %v", err)

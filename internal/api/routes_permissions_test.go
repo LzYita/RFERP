@@ -65,6 +65,12 @@ var routesWithoutAuth = map[string]string{
 	// 证据，被伪造的后果是回退副本被清掉，所以必须由启动凭据闸门挡住本机其它
 	// 进程（见 TestUIReadyEndpointRequiresStartupToken）。
 	"POST /api/startup/ui-ready": "首屏报到，受启动凭据闸门保护",
+	// 局域网版新增：
+	"GET /readyz":           "依赖探针（数据库），安装器与监控用；只回就绪状态",
+	"GET /api/setup/status": "客户端连接向导在登录前询问是否已初始化；只回布尔与额度",
+	"POST /api/lan/connect": "登录前改主机地址；仅客户端模式注册，受启动凭据闸门保护",
+	"GET /{$}":              "服务端根路径欢迎信息；无前端产物时才注册，不含业务数据",
+	"GET /api/lan/status":   "登录页要显示当前连接的主机地址；只回部署形态与额度，主机指纹仅对已登录用户返回",
 }
 
 // 权限表里已定义、但还没有路由消费的权限点。

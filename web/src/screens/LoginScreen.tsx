@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { api, ApiError, remember, type LoginResult } from '../lib/api'
 import { EyeIcon } from '../components/form'
 import { MarkBox } from '../components/MarkBox'
+import { BrandMode } from '../components/BrandMode'
+import { lanErrorText } from '../lib/lan'
 
 
 
@@ -73,6 +75,7 @@ export function LoginScreen({
   const [password, setPassword] = useState('')
 
   const [rememberMe, setRememberMe] = useState(false)
+  const [rememberAllowed, setRememberAllowed] = useState(true)
 
   const [showPwd, setShowPwd] = useState(false)
 
@@ -102,7 +105,11 @@ export function LoginScreen({
 
       .then((r) => {
 
-        if (!alive || !r.token || !r.username) return
+        if (!alive) return
+
+        setRememberAllowed(r.enabled !== false)
+
+        if (!r.token || !r.username || r.enabled === false) return
 
         setSaved({ token: r.token, username: r.username })
 
@@ -160,7 +167,7 @@ export function LoginScreen({
 
         // 勾选框会看起来生效了但磁盘上什么都没写。
 
-        remember: rememberMe,
+        remember: rememberAllowed && rememberMe,
 
       })
 
@@ -216,7 +223,7 @@ export function LoginScreen({
 
       } else if (err instanceof ApiError && err.isForbidden) {
 
-        setError({ kind: 'credentials', text: '账号已停用，请联系管理员' })
+        setError({ kind: 'credentials', text: lanErrorText(err) })
 
       } else {
 
@@ -272,7 +279,7 @@ export function LoginScreen({
 
           <p>版本 {version}</p>
 
-          <p className="mt-1">本机运行 · 数据不离开本机</p>
+          <BrandMode />
 
         </div>
 
@@ -434,6 +441,7 @@ export function LoginScreen({
 
 
 
+              {rememberAllowed ? (
               <label className="mb-5 flex items-center gap-1.5 text-[11.5px] text-[var(--color-fg-muted)]">
 
                 <input
@@ -449,6 +457,7 @@ export function LoginScreen({
                 记住登录（下次打开只需点登录）
 
               </label>
+              ) : null}
 
             </>
 

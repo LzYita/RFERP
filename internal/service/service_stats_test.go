@@ -14,7 +14,7 @@ import (
 )
 
 func TestGetStockStatsIncludesRecentSQLiteAuditLogs(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "stats.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "stats.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestGetStockStatsIncludesRecentSQLiteAuditLogs(t *testing.T) {
 // Issue #40：已完成又撤销的批次，其 STOCK_DEDUCT 与撤销回退 STOCK_ADJUST
 // 两端日志都不应计入汇总、每日趋势和排行；未撤销批次与无批次日志保留。
 func TestGetStockStatsExcludesRevokedBatchMovements(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "stats.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "stats.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -176,7 +176,7 @@ func (s failingBatchListStore) ListBatches() ([]model.ProductBatch, error) {
 }
 
 func TestGetStockStatsPropagatesBatchLookupError(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "stats.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "stats.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestGetStockStatsPropagatesBatchLookupError(t *testing.T) {
 }
 
 func TestGetStockStatsExcludesRevokedBatchWhenDeductionIsOutsideWindow(t *testing.T) {
-	db, err := repository.OpenSQLite(filepath.Join(t.TempDir(), "stats.db"))
+	db, err := repository.OpenSQLite(filepath.Join(testTempDir(t), "stats.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}

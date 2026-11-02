@@ -45,7 +45,7 @@ func TestBackupToPreservesExistingOutput(t *testing.T) {
 		{name: "pre_clear prefix, nonempty existing file", prefix: "pre_clear", old: "keep pre-clear dump"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testTempDir(t)
 			marker := filepath.Join(dir, "helper-called")
 			name := tc.prefix
 			if name == "" {
@@ -80,7 +80,7 @@ func TestBackupToPreservesExistingOutput(t *testing.T) {
 }
 
 func TestBackupToCreatesCompleteDump(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.Local)
 	marker := filepath.Join(dir, "helper-called")
 	t.Setenv(backupHelperModeEnv, "complete")
@@ -107,7 +107,7 @@ func TestBackupToCreatesCompleteDump(t *testing.T) {
 }
 
 func TestBackupToConcurrentCallsPreserveOneCompleteDump(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	t.Setenv(backupHelperModeEnv, "complete")
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.UTC)
 	errorsByCall := make(chan error, 8)
@@ -141,7 +141,7 @@ func TestBackupToCleansOnlyFailedOutput(t *testing.T) {
 	at := time.Date(2026, 10, 14, 12, 34, 56, 0, time.Local)
 	for _, mode := range []string{"fail", "truncated"} {
 		t.Run(mode, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testTempDir(t)
 			marker := filepath.Join(dir, "helper-called")
 			sibling := filepath.Join(dir, "backup_20261014_123455.sql")
 			if err := os.WriteFile(sibling, []byte("preserve sibling"), 0o600); err != nil {

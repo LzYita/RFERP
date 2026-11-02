@@ -10,6 +10,8 @@ import {
   type UpdateCheck,
 } from '../lib/help'
 import { UpdatePromptModal } from './updatePromptModal'
+import { LicenseTab } from './LicenseTab'
+import { lan, type LicenseStatus } from '../lib/lan'
 
 /**
  * 设置屏：使用指南 / 常见问题 / 更新说明。
@@ -21,9 +23,9 @@ import { UpdatePromptModal } from './updatePromptModal'
  * 内容来自 /api/help 一次取全——三份都是随程序内置的离线文档，
  * 没有哪一页是可选加载的。
  */
-type Tab = 'guide' | 'faq' | 'changelog'
+type Tab = 'guide' | 'faq' | 'changelog' | 'lan'
 
-const TABS: { key: Tab; label: string }[] = [
+const BASE_TABS: { key: Tab; label: string }[] = [
   { key: 'guide', label: '使用指南' },
   { key: 'faq', label: '常见问题' },
   { key: 'changelog', label: '更新说明' },
@@ -33,6 +35,7 @@ export function SettingsScreen() {
   const [data, setData] = useState<HelpPayload | null>(null)
   const [err, setErr] = useState<{ kind: 'forbidden' | 'server'; text: string } | null>(null)
   const [tab, setTab] = useState<Tab>('guide')
+  const [lanStatus, setLanStatus] = useState<LicenseStatus | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -49,6 +52,26 @@ export function SettingsScreen() {
     }
   }, [])
 
+  // 只有能读到授权状态时（服务器形态 + 管理员）才出现「授权与设备」页签：
+  // 单机桌面没有这些端点，普通用户会被 403 —— 两种情况都应"看不到入口"，
+  // 而不是给一个点进去报错的页签。
+  useEffect(() => {
+    let alive = true
+    lan
+      .license()
+      .then((st) => {
+        if (alive) setLanStatus(st)
+      })
+      .catch(() => {
+        /* 非服务器形态 / 非管理员：不显示页签 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const tabs = lanStatus ? [...BASE_TABS, { key: 'lan' as Tab, label: '授权与设备' }] : BASE_TABS
+
   if (err) return <ScreenError kind={err.kind} text={err.text} />
   if (!data) {
     return (
@@ -63,7 +86,7 @@ export function SettingsScreen() {
       <PageHeader title="设置" />
 
       <div role="tablist" aria-label="设置" className="flex gap-1">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.key}
             type="button"
@@ -82,7 +105,7 @@ export function SettingsScreen() {
         ))}
       </div>
 
-      <div role="tabpanel" aria-label={TABS.find((t) => t.key === tab)?.label}>
+      <div role="tabpanel" aria-label={tabs.find((t) => t.key === tab)?.label}>
         {tab === 'guide' ? <GuideTab data={data} /> : null}
         {tab === 'faq' ? (
           <Panel className="p-3">
@@ -90,6 +113,7 @@ export function SettingsScreen() {
           </Panel>
         ) : null}
         {tab === 'changelog' ? <ChangelogTab versions={data.versions} /> : null}
+        {tab === 'lan' && lanStatus ? <LicenseTab initial={lanStatus} onChanged={setLanStatus} /> : null}
       </div>
     </div>
   )

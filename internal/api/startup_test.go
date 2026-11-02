@@ -72,7 +72,7 @@ func TestNoStartupTokenMeansNoGate(t *testing.T) {
 // 根路径也受门保护：没有 Cookie 直接访问 "/" 不应拿到页面。
 func TestRootPathRequiresToken(t *testing.T) {
 	s := gatedServer(t, bootTok)
-	s.staticFS, s.staticDir = os.DirFS(t.TempDir()), "." // 空目录，静态资源必然缺失
+	s.staticFS, s.staticDir = os.DirFS(testTempDir(t)), "." // 空目录，静态资源必然缺失
 
 	if w := do(s, "/", ""); w.Code != http.StatusForbidden {
 		t.Errorf("无 token 访问根路径 = %d, want 403", w.Code)
@@ -82,7 +82,7 @@ func TestRootPathRequiresToken(t *testing.T) {
 // 静态资源与 API 受同一条门保护，避免「页面进不去但接口能打」。
 func TestStaticAssetsAlsoGated(t *testing.T) {
 	s := gatedServer(t, bootTok)
-	s.staticFS, s.staticDir = os.DirFS(t.TempDir()), "."
+	s.staticFS, s.staticDir = os.DirFS(testTempDir(t)), "."
 
 	for _, path := range []string{"/index.html", "/assets/app.js", "/api/parts", "/healthz"} {
 		if w := do(s, path, ""); w.Code != http.StatusForbidden {
@@ -93,7 +93,7 @@ func TestStaticAssetsAlsoGated(t *testing.T) {
 
 // 单页回退不得吞掉 /api/ 的 404：否则前端会把「接口不存在」渲染成空白页。
 func TestSPAFallbackDoesNotSwallowAPINotFound(t *testing.T) {
-	dir := t.TempDir()
+	dir := testTempDir(t)
 	if err := os.WriteFile(dir+"/index.html", []byte("<html>app</html>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestSPAFallbackDoesNotSwallowAPINotFound(t *testing.T) {
 
 // 前端资源未构建时给出可执行的指引，而不是裸 404。
 func TestMissingBuildGivesActionableHint(t *testing.T) {
-	s := New(&sessionApps{}, WithStaticFS(os.DirFS(t.TempDir()), "."))
+	s := New(&sessionApps{}, WithStaticFS(os.DirFS(testTempDir(t)), "."))
 
 	w := do(s, "/", "")
 	if w.Code != http.StatusNotFound {

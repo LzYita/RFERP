@@ -3,8 +3,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -133,7 +135,40 @@ type Server struct {
 	// bootstrapMu 串行化"首次建管理员"的计数+创建，
 	// 避免并发请求同时看到 0 用户而建出两个初始管理员。
 	bootstrapMu sync.Mutex
+
+	// readiness 是 /readyz 的探针：返回 nil 表示数据库可用。
+	// 为 nil 表示当前形态没有可探的依赖，端点回 200（不装死）。
+	readiness func() error
+
+	// deviceGuard 是局域网版的登录门禁（设备登记 / 授权额度 / 会话绑定）。
+	// 为 nil 表示未启用（单机桌面形态），所有设备头与授权检查一律跳过。
+	deviceGuard DeviceGuard
+
+	// bootstrapToken 非空时，POST /api/bootstrap-admin 必须带匹配的
+	// X-Bootstrap-Token。桌面单机形态不设，保持首启即用。
+	bootstrapToken string
+
+	// minClientVersion 是服务端要求的最低客户端版本（FR-15）。
+	// 空表示不设门禁：单机形态没有"客户端版本"这回事。
+	minClientVersion string
+
+	// lanConnect 只在「客户端模式」的桌面外壳注入：让用户在登录前
+	// 就能改主机地址（FR-17）。返回归一化后的地址。
+	lanConnect func(rawURL string) (string, error)
 }
+
+// DeviceGuard 是 LAN 形态的准入接口，由 internal/service 实现。
+//
+// 类型定义在 usecase：api 与 service 都要引用它，谁都不能 import 对方。
+// 这里只做别名，让 api 内部写法短一些。
+type DeviceGuard = usecase.DeviceGuard
+
+// DeviceLogin / DeviceLoginResult / DeviceRuntime 同为 usecase 的别名。
+type (
+	DeviceLogin       = usecase.DeviceLogin
+	DeviceLoginResult = usecase.DeviceLoginResult
+	DeviceRuntime     = usecase.DeviceRuntime
+)
 
 // DirectoryPicker 由宿主实现的原生目录选择框。
 //
@@ -167,6 +202,45 @@ type Option func(*Server)
 // WithVersion 让服务端在 /api/v1/serverinfo 里自报版本。
 func WithVersion(v string) Option {
 	return func(s *Server) { s.version = v }
+}
+
+// WithReadiness 注入 /readyz 的依赖探针（服务端传数据库 Ping）。
+//
+// 与 /healthz 分开的理由是它们回答不同的问题：healthz 回答"进程还在吗"，
+// readyz 回答"能不能干活"。数据库文件被占用、磁盘只读时进程照样活，
+// 而 Windows 服务包装器与安装器需要的是后一个答案。
+func WithReadiness(f func() error) Option {
+	return func(s *Server) { s.readiness = f }
+}
+
+// WithDeviceGuard 启用局域网版的设备与授权门禁。
+//
+// 只有「服务器形态」该传：单机桌面没有设备概念，硬加一层会让首启多出
+// 一个必然失败的检查。传 nil 与不传等价。
+func WithDeviceGuard(g DeviceGuard) Option {
+	return func(s *Server) { s.deviceGuard = g }
+}
+
+// WithMinClientVersion 设置客户端最低版本（服务端形态）。
+//
+// 低于它的客户端在登录与每个已认证请求上都会收到 426：版本不兼容时
+// 让新接口"用着用着报奇怪的错"，比直接拒绝升级要难查得多（R12）。
+func WithMinClientVersion(v string) Option {
+	return func(s *Server) { s.minClientVersion = strings.TrimSpace(v) }
+}
+
+// WithLANConnect 注入"切换局域网主机地址"的动作（仅客户端模式）。
+func WithLANConnect(f func(rawURL string) (string, error)) Option {
+	return func(s *Server) { s.lanConnect = f }
+}
+
+// WithBootstrapToken 要求首建管理员时携带 X-Bootstrap-Token。
+//
+// 空串表示不设门（单机桌面）。服务端必须在启动时生成并展示令牌：
+// 空库第一次启动的那几分钟是对整个局域网敞开的，没有令牌任何人都能
+// 抢先把管理员建掉（FR-41 / NFR-02）。
+func WithBootstrapToken(tok string) Option {
+	return func(s *Server) { s.bootstrapToken = tok }
 }
 
 // WithStaticFS 挂载前端构建产物。
@@ -264,6 +338,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if remote, ok := apps.(interface{ RemoteDeployment() bool }); ok && remote.RemoteDeployment() {
+		s.rememberEnabled = false
+	}
 	// WithRemember 才能决定凭证存哪，所以要在 opts 之后才建 store。
 	s.remember.file = s.rememberFile
 	if s.jobs == nil {
@@ -292,6 +369,9 @@ func New(apps usecase.Applications, opts ...Option) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// readyz 检查依赖（数据库）。healthz 只看进程，安装器与服务监控要看的是
+	// 「现在能不能干活」——两者混用会把"数据库被占用"误报成健康。
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	// 前端挂载成功后报到一次。更新后的回退判据是"界面能用"而不是"进程活着"，
 	// 而只有前端知道这件事 —— 资源坏掉时窗口照开、进程照活，用户只看到空白。
 	// 挂在启动凭据闸门内即可，不必登录：报到发生在首屏，那时还没有会话。
@@ -325,6 +405,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 空库首次部署：仅当无任何用户时可建初始管理员。
 	mux.HandleFunc("POST /api/bootstrap-admin", s.handleBootstrapAdmin)
+	// 首启状态：客户端连接向导在登录前先问一句"这台主机初始化了吗"。
+	mux.HandleFunc("GET /api/setup/status", s.handleSetupStatus)
 	// 未登录可读用户数，供首启判断（仅 count）。
 	mux.HandleFunc("GET /api/users/count", s.handleUserCount)
 	mux.HandleFunc("GET /api/me", s.auth(s.handleMe, ""))
@@ -347,6 +429,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/remember/load", s.handleLoadRemember)
 		mux.HandleFunc("POST /api/remember/forget", s.handleForgetRemember)
 		mux.HandleFunc("POST /api/remember/exchange", s.handleExchangeRemember)
+	} else if remote, ok := s.apps.(interface{ RemoteDeployment() bool }); ok && remote.RemoteDeployment() {
+		mux.HandleFunc("GET /api/remember/load", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{"token": nil, "enabled": false})
+		})
 	}
 	// 登出：作废服务端会话条目。缺这个端点时客户端只清本地 token，
 	// 旧 token 在服务端仍然有效。
@@ -423,18 +509,78 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/restore/exit", s.auth(s.handleExitAfterRestore, "Backup.RestoreDatabase"))
 	mux.HandleFunc("POST /api/clear", s.auth(s.handleClearDatabase, "Backup.ClearDatabase"))
 
+	// ---- 局域网版：授权 / 设备 / 状态 ----
+	//
+	// 只在挂了 deviceGuard（服务器形态）时注册：单机桌面没有设备与授权概念，
+	// 注册上去会让前端多出永远 404 的入口。状态条（lan/status）读的是
+	// "已连接/额度"这类部署事实，任何登录用户都该看到，所以用空权限点。
+	// 状态条对所有形态注册：单机/客户端/服务器各自回答自己的部署事实
+	//（本地 / 连哪台主机 / 额度与只读）。放进 deviceGuard 分支会让客户端
+	// 模式拿不到它——那正是要显示"当前主机地址"的形态。
+	//
+	// **不挂鉴权**：登录页就要显示"当前连的是哪台主机"，那时还没有会话。
+	// 它只回部署形态与额度，不含账号与业务数据；主机指纹仅对已登录用户返回。
+	mux.HandleFunc("GET /api/lan/status", s.handleLANStatus)
+	// 服务器形态（deviceGuard）与客户端形态（远程代理）都要挂：
+	// 管理员可能在客户端上撤销设备或导入授权（FR-37）。
+	//
+	// 单机桌面不算：那里 apps 虽然也是 *Service（实现了 LANAdmin），但没有
+	// 设备与授权的语义，挂上去只会让单机用户看到一个"尚未导入授权"的卡片。
+	_, remoteApps := s.apps.(interface{ RemoteDeployment() bool })
+	if s.deviceGuard != nil || remoteApps {
+		mux.HandleFunc("GET /api/license", s.auth(s.handleGetLicense, "Identity.LicenseRead"))
+		mux.HandleFunc("POST /api/license/import", s.auth(s.handleImportLicense, "Identity.LicenseImport"))
+		mux.HandleFunc("GET /api/devices", s.auth(s.handleListDevices, "Identity.DeviceList"))
+		mux.HandleFunc("POST /api/devices/revoke", s.auth(s.handleRevokeDevice, "Identity.DeviceRevoke"))
+		mux.HandleFunc("POST /api/devices/delete", s.auth(s.handleDeleteDevice, "Identity.DeviceRevoke"))
+	}
+	// 客户端模式：登录前改主机地址。它不挂 s.auth —— 地址错了根本登不进去，
+	// 而这条端点只存在于本机桌面外壳（有启动凭据闸门），不对外。
+	if s.lanConnect != nil {
+		mux.HandleFunc("POST /api/lan/connect", s.handleLANConnect)
+	}
+	// 备份下载：只有服务器形态（或任何通过 HTTP 访问的形态）需要。主机桌面
+	// 上文件就在本机，界面上给路径即可；但端点本身无害，统一注册省得前端
+	// 再判断部署形态。权限是管理员（Backup.DownloadBackup 写档）。
+	mux.HandleFunc("GET /api/backup/download", s.auth(s.handleDownloadBackup, "Backup.DownloadBackup"))
+
 	// 前端构建产物（阶段 A 内嵌服务）。放在 API 路由之后，
 	// /api/ 前缀不会被静态文件截走。
 	if s.staticFS != nil {
 		mux.Handle("/", serveStatic(s.staticFS, s.staticDir))
+	} else {
+		// 无前端产物时（cmd/server），根路径回一句欢迎 JSON。
+		// 用 /{$} 精确匹配，避免把 /api/... 之类未注册路径也吞掉。
+		mux.HandleFunc("GET /{$}", s.handleWelcome)
 	}
-	return s.withStartupGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.withStartupGate(drainRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.restoreRequiresRestart.Load() && strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/restore/exit" {
 			writeErr(w, http.StatusServiceUnavailable, "SQLite 恢复后必须退出并重新打开程序；请关闭当前窗口后重新启动")
 			return
 		}
 		mux.ServeHTTP(w, r)
-	}))
+	})))
+}
+
+// drainRequestBody 在处理器返回后排空未读的请求体。
+//
+// 为什么必须有：不少处理器会在读完 body 之前就返回——令牌不对的 bootstrap、
+// 远程形态直接 403 的 restore/clear、越权请求等。net/http 在处理器返回后
+// 若发现 body 没读完，会**直接关连接**；这时客户端往往还在发 body，Windows
+// 上会收到 RST（WSAECONNRESET），于是用户看到的是"网络错误"而不是
+// "初始化令牌不正确"这类真正该看到的答复。实测在本机约 5% 的请求会撞上。
+//
+// 排空上限 1MB：正常的 JSON 请求远小于它；超大 body 直接放弃（让连接关掉），
+// 避免为恶意请求无限读取。
+func drainRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if r.Body == nil || r.Body == http.NoBody {
+			return
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+		_ = r.Body.Close()
+	})
 }
 
 type apiUser struct {
@@ -465,8 +611,17 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 // writeServerErr 把内部错误记入日志，只向客户端返回通用信息，
 // 避免把 SQL 语句、表名等内部细节泄露出去。
 func writeServerErr(w http.ResponseWriter, err error) {
+	if writeUpstreamErr(w, err) {
+		return
+	}
 	log.Printf("api: internal error: %v", err)
 	writeErr(w, http.StatusInternalServerError, "internal error")
+}
+
+func writeAppErr(w http.ResponseWriter, status int, err error) {
+	if !writeUpstreamErr(w, err) {
+		writeErr(w, status, err.Error())
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -474,12 +629,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, r *http.Request) {
-	writeServerInfo(w, s.desc, s.version)
+	writeServerInfo(w, s.desc, s.version, s.minClientVersion)
 }
 
 // writeServerInfo 是 handleServerInfo 的可测核心：只依赖 ServerDescriptor，
 // 因此测试可以传入极小的假实现，不必构造整套 Applications。
-func writeServerInfo(w http.ResponseWriter, desc usecase.ServerDescriptor, version string) {
+func writeServerInfo(w http.ResponseWriter, desc usecase.ServerDescriptor, version, minClient string) {
 	if desc == nil {
 		writeErr(w, http.StatusServiceUnavailable, "server descriptor unavailable")
 		return
@@ -491,6 +646,10 @@ func writeServerInfo(w http.ResponseWriter, desc usecase.ServerDescriptor, versi
 	}
 	// 版本由进程自报；数据库事实由用例层回答（D-016）。
 	info.AppVersion = version
+	if minClient != "" {
+		// 以 api 注入的为准：service 的 cfg 在客户端形态下并不存在。
+		info.MinClientVersion = minClient
+	}
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -506,12 +665,48 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid login body")
 		return
 	}
+	dev := deviceHeaders(r)
+	// 版本门禁排在密码之前：版本不对时让用户看到"请升级客户端"，
+	// 而不是"密码错误"——后者会让他反复试密码（R12）。
+	if msg := s.rejectOldClient(dev.Version); msg != "" {
+		writeCodeErr(w, http.StatusUpgradeRequired, usecase.CodeVersionTooOld, msg)
+		return
+	}
+	// 先验密码，再验设备。
+	//
+	// 顺序不能反：设备门禁会登记新设备并占额度，如果排在密码之前，
+	// 任何人只要把客户端指向主机、随便输一个密码，就能把额度耗光。
 	u, err := s.apps.Login(body.Username, body.Password)
 	if err != nil || u == nil {
+		if s.deviceGuard != nil {
+			log.Printf("lan: 登录失败 user=%q device=%s ip=%s", body.Username, shortID(dev.DeviceID), dev.IP)
+		}
+		// 客户端形态：错误是主机返回的。把 device_limit / license_missing /
+		// device_revoked 原样带回给界面——压成一句"账号或密码错误"会让用户
+		// 永远不知道要去找管理员撤销设备（FR-14）。
+		if writeUpstreamErr(w, err) {
+			return
+		}
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	tok, err := s.issueSession(u)
+	if s.deviceGuard != nil {
+		if dev.DeviceID == "" {
+			writeCodeErr(w, http.StatusBadRequest, usecase.CodeDeviceMissing,
+				"缺少设备标识：请升级到局域网版客户端后重试")
+			return
+		}
+		res, err := s.deviceGuard.LoginCheck(dev)
+		if err != nil {
+			writeServerErr(w, err)
+			return
+		}
+		if !res.Allowed {
+			writeCodeErr(w, http.StatusForbidden, res.Code, res.Message)
+			return
+		}
+	}
+	tok, err := s.issueSession(u, dev.DeviceID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "session unavailable")
 		return
@@ -520,7 +715,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"token": tok,
 		"user":  toAPIUser(u),
 	}
-	if body.Remember {
+	if s.deviceGuard != nil {
+		rt := s.deviceGuard.Runtime()
+		out["runtime"] = rt
+	}
+	if body.Remember && s.rememberEnabled {
 		rt, err := s.remember.issue(u)
 		if err != nil {
 			// 记住登录失败不该挡住正常登录：用户照样能用，只是下次要输密码。
@@ -533,17 +732,37 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
+	got := strings.TrimSpace(r.Header.Get("X-Bootstrap-Token"))
 	s.bootstrapMu.Lock()
 	defer s.bootstrapMu.Unlock()
 
+	// 先判"是否已初始化"，再验令牌。
+	//
+	// 顺序反了会给出误导性的答案：库已经建过管理员时，没带令牌的请求会被
+	// 判成"令牌不正确"（403），用户于是去翻令牌文件——而真正该说的是
+	// "已经初始化，请直接登录"（409）。"是否已初始化"本身不是秘密，
+	// GET /api/setup/status 对匿名都回答这个问题。
 	n, err := s.apps.UserCount()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeAppErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	if n > 0 {
 		writeErr(w, http.StatusConflict, "already initialized")
 		return
+	}
+
+	// 局域网服务器的首建门禁：空库第一次启动的那几分钟对整个局域网敞开，
+	// 没有令牌任何人都能抢先建掉管理员（FR-41）。
+	//
+	// 客户端形态（s.bootstrapToken 为空）不在这里校验：令牌属于主机，
+	// 客户端拿到后必须原样转发过去（见 CreateInitialAdminWithToken）。
+	if s.bootstrapToken != "" {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.bootstrapToken)) != 1 {
+			writeCodeErr(w, http.StatusForbidden, usecase.CodeBootstrapToken,
+				"初始化令牌不正确，请查看主机安装目录下的初始化令牌文件")
+			return
+		}
 	}
 	var body struct {
 		Username    string `json:"username"`
@@ -554,9 +773,17 @@ func (s *Server) handleBootstrapAdmin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	u, err := s.apps.CreateInitialAdmin(body.Username, body.Password, body.DisplayName)
+	// 客户端形态需要把令牌转发给主机；服务器形态用自己签发的那个。
+	var u *model.User
+	if fwd, ok := s.apps.(interface {
+		CreateInitialAdminWithToken(username, password, displayName, token string) (*model.User, error)
+	}); ok {
+		u, err = fwd.CreateInitialAdminWithToken(body.Username, body.Password, body.DisplayName, got)
+	} else {
+		u, err = s.apps.CreateInitialAdmin(body.Username, body.Password, body.DisplayName)
+	}
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIUser(u))
@@ -570,12 +797,80 @@ func (s *Server) auth(next http.HandlerFunc, opName string) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
+		if remote, ok := s.apps.(interface{ CheckSession(int64) error }); ok {
+			if err := remote.CheckSession(u.ID); err != nil {
+				var upstream *APIError
+				if errors.As(err, &upstream) && upstream.Status == http.StatusUnauthorized {
+					s.revokeToken(bearerToken(r))
+				}
+				if !writeUpstreamErr(w, err) {
+					writeErr(w, http.StatusBadGateway, "无法连接主机")
+				}
+				return
+			}
+		}
+		if msg := s.rejectOldClient(deviceHeaders(r).Version); msg != "" {
+			writeCodeErr(w, http.StatusUpgradeRequired, usecase.CodeVersionTooOld, msg)
+			return
+		}
 		if opName != "" && !usecase.Allow(auth.RoleFromString(u.Role), opName) {
 			writeErr(w, http.StatusForbidden, "forbidden")
 			return
 		}
+		// 授权到期只读（D-10）：业务写操作一律拒绝，但**不**拦管理员与备份
+		// ——否则客户到期后连"导入新授权"和"导出数据"都做不了，只能打电话。
+		if s.deviceGuard != nil && opName != "" {
+			if rt := s.deviceGuard.Runtime(); rt.ReadOnly && isBusinessWrite(opName) {
+				writeCodeErr(w, http.StatusForbidden, usecase.CodeLicenseExpired,
+					rt.PolicyMessage)
+				return
+			}
+		}
 		next(w, r)
 	}
+}
+
+// rejectOldClient 返回非空字符串表示应当拒绝（426）。
+//
+// 只在局域网形态生效（deviceGuard 非 nil）：单机桌面根本没有"客户端版本"，
+// 服务端也没配置最低版本时不做任何判断。
+func (s *Server) rejectOldClient(clientVersion string) string {
+	if s.deviceGuard == nil || s.minClientVersion == "" {
+		return ""
+	}
+	// 不报版本 = 无法证明够新，按"过低"处理。
+	//
+	// 之前这里直接落到 VersionLess，而 VersionLess 对空串返回 false
+	// （"无法解析就不拦"），于是旧客户端只要不发这个头就能绕过门禁。
+	// 开发构建"dev"仍放行——那是我们自己人，且 version 无法比较。
+	if strings.TrimSpace(clientVersion) == "" {
+		return "客户端未上报版本号（要求 " + s.minClientVersion + " 以上），请升级客户端后再连接"
+	}
+	if !VersionLess(clientVersion, s.minClientVersion) {
+		return ""
+	}
+	got := strings.TrimSpace(clientVersion)
+	if got == "" {
+		got = "未知"
+	}
+	return "客户端版本过低（" + got + " < " + s.minClientVersion + "），请升级客户端后再连接"
+}
+
+// isBusinessWrite 判断一个权限点是否属于"业务写入"（只读模式要拦的那一类）。
+//
+// 按模块而不是按 HTTP 方法：POST /api/export/audit 也是 POST，但它是导出
+// 而不是改数据；反过来 GET 里也确实没有写操作。用权限表里的 Access 档 +
+// 模块白名单表达这条口径，与权限表本身保持单一来源。
+func isBusinessWrite(opName string) bool {
+	p, ok := usecase.PermissionFor(opName)
+	if !ok || p.Access != auth.AccessWrite {
+		return false
+	}
+	switch p.Module {
+	case auth.ModuleUsers, auth.ModuleBackup:
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -615,7 +910,7 @@ func (s *Server) handleStockIn(w http.ResponseWriter, r *http.Request) {
 		Operator: operatorName(u),
 	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// 批次号带回界面：入库完成的提示要能指认"这一笔记成了哪批"。
@@ -634,7 +929,7 @@ func (s *Server) handleListPartInbounds(w http.ResponseWriter, r *http.Request) 
 	}
 	rows, err := s.apps.ListPartInbounds(pid)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeAppErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, rows)
@@ -669,7 +964,7 @@ func (s *Server) handleAdjustInbounds(w http.ResponseWriter, r *http.Request) {
 		Items:    items,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -690,7 +985,7 @@ func (s *Server) handleAdjustStock(w http.ResponseWriter, r *http.Request) {
 		NewQty:   body.NewQty,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -720,7 +1015,7 @@ func (s *Server) handleUpdateBatchStatus(w http.ResponseWriter, r *http.Request)
 		Status:   body.Status,
 		Operator: operatorName(u),
 	}); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeAppErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

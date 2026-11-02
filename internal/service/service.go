@@ -27,6 +27,8 @@ type Service struct {
 	snapshots usecase.SnapshotPort
 	dsn       string
 	cfg       *config.Config
+	// lan 是局域网版的准入缓存（见 lan.go）。单机形态下也分配，只是不读。
+	lan *lanState
 }
 
 // 断言：满足全部用例接口，防止漂移。
@@ -47,6 +49,7 @@ func New(repo repository.Store, dsn string, backupTool string, cfg *config.Confi
 		snapshots: newMySQLSnapshotPort(dsn, backupTool),
 		dsn:       dsn,
 		cfg:       cfg,
+		lan:       newLANState(),
 	}
 }
 
@@ -56,6 +59,7 @@ func NewWithSnapshot(repo repository.Store, snapshots usecase.SnapshotPort, cfg 
 		repo:      repo,
 		snapshots: snapshots,
 		cfg:       cfg,
+		lan:       newLANState(),
 	}
 }
 

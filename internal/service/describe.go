@@ -21,14 +21,17 @@ func (s *Service) Describe() (usecase.ServerInfo, error) {
 		return usecase.ServerInfo{}, err
 	}
 	storage := config.StorageMySQL
+	minClient := ""
 	if s.cfg != nil {
 		storage = s.cfg.StorageKind()
+		minClient = s.cfg.MinClientVersion
 	}
 	return usecase.ServerInfo{
-		APIVersion:    usecase.APIVersion,
-		SchemaVersion: ver,
-		DatabaseID:    id,
-		Storage:       storage,
+		APIVersion:       usecase.APIVersion,
+		SchemaVersion:    ver,
+		DatabaseID:       id,
+		Storage:          storage,
+		MinClientVersion: minClient,
 	}, nil
 }
 

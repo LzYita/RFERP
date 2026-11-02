@@ -32,7 +32,7 @@ func TestUserMutationRevokesCredentials(t *testing.T) {
 				if failed {
 					apps.err = errors.New("mutation refused")
 				}
-				s := New(apps, WithRemember(filepath.Join(t.TempDir(), "remember.bin")))
+				s := New(apps, WithRemember(filepath.Join(testTempDir(t), "remember.bin")))
 				tok := issue(t, s, u)
 				admin := issueAdmin(t, s)
 				rt, err := s.remember.issue(u)

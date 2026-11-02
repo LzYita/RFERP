@@ -135,10 +135,26 @@ func StageOf(err error) Stage {
 // Build 不做重试、不弹窗、不退出进程；调用方拿到的 error 已经带有足够上下文，
 // 可以直接呈现给用户。
 func Build(cfg *config.Config, opts Options) (*Result, error) {
+	return build(cfg, opts, cfg.IsSQLite())
+}
+
+// BuildServer 是服务端（cmd/server）的装配入口。
+//
+// 与 Build 的唯一差别：存储通道只看 storage，不看 mode。
+//
+// 为什么必须分开：局域网主机上服务端与桌面端可能装在同一台机器，两份配置
+// 一旦被读成同一份（或用户把客户端配置错传给服务端），mode=client 会让
+// Build 判定"不是 SQLite"并转去连 MySQL——服务端于是连上了错误的库，或者
+// 干脆起不来。服务端选库与它是不是客户端毫无关系（D-003）。
+func BuildServer(cfg *config.Config, opts Options) (*Result, error) {
+	return build(cfg, opts, cfg.StorageIsSQLite())
+}
+
+func build(cfg *config.Config, opts Options, useSQLite bool) (*Result, error) {
 	// 旧布局迁移放在最前面：它只动备份目录里的文件，与数据库连接无关，
 	// 且**失败不得影响启动**——布局只是整理，备份照样能被列出与恢复。
 	migrateBackupLayout(opts)
-	if cfg.IsSQLite() {
+	if useSQLite {
 		return buildSQLite(cfg, opts)
 	}
 	return buildMySQL(cfg, opts)

@@ -57,6 +57,22 @@ var steps = []Step{
 		MySQL:   applyTraceAllocsMySQL,
 		SQLite:  applyTraceAllocsSQLite,
 	},
+	{
+		// 局域网版：设备登记（授权按客户端设备数计，主机豁免）。
+		Version: 19,
+		Name:    "devices",
+		MySQL:   applyDevicesMySQL,
+		SQLite:  applyDevicesSQLite,
+	},
+	{
+		// 局域网版：授权单行表 + 安全事件流水。两者同一版落地——
+		// 授权导入与设备登记都要往 security_events 写留痕，缺表会让
+		// 授权导入成功而审计失败，属于半成品状态。
+		Version: 20,
+		Name:    "license_and_security_events",
+		MySQL:   applyLicenseAndEventsMySQL,
+		SQLite:  applyLicenseAndEventsSQLite,
+	},
 }
 
 // nextVersion 是下一条应新增迁移的版本号。

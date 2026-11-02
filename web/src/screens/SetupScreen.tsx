@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ApiError, api, setup, type LoginResult, type Me } from '../lib/api'
+import { lan } from '../lib/lan'
 import { EyeIcon } from '../components/form'
 
 /**
@@ -33,11 +34,30 @@ export function SetupScreen({
   // 确认密码独立一个开关：两个框共用同一个状态的话，点确认框的眼睛会把
   // 上面那个也一起显出来，看起来像是"密码被显示了两次"。
   const [showPwd2, setShowPwd2] = useState(false)
+  // 局域网主机空库首建需要初始化令牌（FR-41）。单机形态下 tokenRequired 为
+  // false，这一栏不出现——不给单机用户多一个看不懂的输入框。
+  const [token, setToken] = useState('')
+  const [tokenRequired, setTokenRequired] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   // 确认密码不一致是最常见的低级失误，就地提示，不要等服务端拒绝。
   const mismatch = confirm.length > 0 && confirm !== password
+
+  useEffect(() => {
+    let alive = true
+    lan
+      .setupStatus()
+      .then((st) => {
+        if (alive) setTokenRequired(!!st.tokenRequired)
+      })
+      .catch(() => {
+        /* 服务端没起来时登录页也用不了，这里不额外提示 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -56,10 +76,14 @@ export function SetupScreen({
       setError('两次输入的密码不一致')
       return
     }
+    if (tokenRequired && !token.trim()) {
+      setError('请填写主机上的初始化令牌')
+      return
+    }
 
     setBusy(true)
     try {
-      await setup.createInitialAdmin(username.trim(), password, displayName.trim())
+      await setup.createInitialAdmin(username.trim(), password, displayName.trim(), token)
 
       // **必须再登录一次**才能拿到会话。
       //
@@ -116,6 +140,21 @@ export function SetupScreen({
                 className="h-[30px] w-full rounded-[8px] border border-[var(--color-border)] px-2.5 text-[13px] outline-none focus:border-[var(--color-primary)]"
               />
             </Field>
+
+            {tokenRequired ? (
+              <Field label="初始化令牌" required>
+                <input
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  autoComplete="off"
+                  placeholder="主机安装完成后打印的 8 位令牌"
+                  className="h-[30px] w-full rounded-[8px] border border-[var(--color-border)] px-2.5 text-[13px] tracking-widest outline-none focus:border-[var(--color-primary)]"
+                />
+                <span className="mt-1 block text-[11px] text-[var(--color-fg-muted)]">
+                  在主机数据目录的「初始化令牌.txt」里，创建管理员后即失效。
+                </span>
+              </Field>
+            ) : null}
 
             <Field label="密码" required>
               <div className="relative">

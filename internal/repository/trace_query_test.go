@@ -18,7 +18,7 @@ func TestTraceQueries(t *testing.T) {
 			var store Store
 			var err error
 			if engine == "sqlite" {
-				db, err = OpenSQLite(filepath.Join(t.TempDir(), "traces.db"))
+				db, err = OpenSQLite(filepath.Join(testTempDir(t), "traces.db"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -33,7 +33,7 @@ func TestTraceQueries(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = migrate.Run(db, migrate.Options{DSN: dsn, BackupDir: t.TempDir(), Backup: func(string, string, string) (string, error) { return "test-backup", nil }})
+				_, err = migrate.Run(db, migrate.Options{DSN: dsn, BackupDir: testTempDir(t), Backup: func(string, string, string) (string, error) { return "test-backup", nil }})
 				store = New(db)
 			}
 			t.Cleanup(func() { _ = db.Close() })

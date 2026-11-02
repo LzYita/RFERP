@@ -123,3 +123,44 @@ func TestSetStoragePersistsExplicitChoice(t *testing.T) {
 	}
 	// Data is not migrated by SetStorage — only config is written.
 }
+
+// 服务端配置：显式路径读取、server.addr 生效、mode 不影响存储判定（R10）。
+func TestLoadAtServerConfig(t *testing.T) {
+	t.Setenv("SRV_ADDR", "")
+	t.Setenv("RFERP_CONFIG", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.json")
+	body := `{"dataDir":` + quote(dir) + `,"storage":"sqlite","mode":"client","server":{"addr":":18080"}}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadAt(path)
+	if err != nil {
+		t.Fatalf("LoadAt: %v", err)
+	}
+	if cfg.Srv.Addr != ":18080" {
+		t.Fatalf("server.addr = %q，期望 :18080", cfg.Srv.Addr)
+	}
+	if !cfg.StorageIsSQLite() {
+		t.Fatal("服务端选库应只看 storage，不看 mode")
+	}
+	if cfg.IsSQLite() {
+		t.Fatal("桌面端判据仍应把 mode=client 当作非本地库")
+	}
+	if cfg.Path() != path {
+		t.Fatalf("Path() = %q", cfg.Path())
+	}
+}
+
+// 显式指定的配置读不到时必须失败，不能悄悄退化成"未配置"。
+func TestLoadAtMissingFileFails(t *testing.T) {
+	if _, err := LoadAt(filepath.Join(t.TempDir(), "nope.json")); err == nil {
+		t.Fatal("显式配置不存在时应返回错误")
+	}
+}
+
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

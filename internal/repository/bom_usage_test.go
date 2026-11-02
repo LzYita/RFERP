@@ -11,7 +11,7 @@ import (
 // 删除零件的守卫依赖这条查询：同一个零件被多个产品引用时必须全部列出来，
 // 顺序稳定（按产品编码），否则界面上的提示会随机顺序变化。
 func TestBOMProductsForPart(t *testing.T) {
-	db, err := OpenSQLite(filepath.Join(t.TempDir(), "bom-usage.db"))
+	db, err := OpenSQLite(filepath.Join(testTempDir(t), "bom-usage.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

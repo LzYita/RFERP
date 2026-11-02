@@ -90,6 +90,20 @@ var permissions = []UseCasePermission{
 	{Name: "Backup.ClearDatabase", Module: auth.ModuleBackup, Access: auth.AccessWrite},
 	{Name: "Backup.ExportAuditLogCSV", Module: auth.ModuleBackup, Access: auth.AccessRead},
 	{Name: "Backup.ExportAllDataCSV", Module: auth.ModuleBackup, Access: auth.AccessRead},
+	// 远程下载主机上的备份文件。挂 Write 档是因为 ModuleBackup 的写档只有
+	// 管理员：备份里是整库明文，仓管能"看"设置不等于能把它拷走（FR-34）。
+	{Name: "Backup.DownloadBackup", Module: auth.ModuleBackup, Access: auth.AccessWrite},
+
+	// 局域网版：授权与设备管理。
+	//
+	// 口径（FR-23/FR-37）：管理员可查看与导入授权、可撤销设备；普通用户连
+	// 入口都看不到。挂在 ModuleUsers 下而不是新开模块——权限表每加一个模块，
+	// 导航契约就要求多一页（nav_contract_test 会强制），而这两块本来就是
+	// 设置页里的两个卡片，不是独立页面。
+	{Name: "Identity.LicenseRead", Module: auth.ModuleUsers, Access: auth.AccessRead},
+	{Name: "Identity.LicenseImport", Module: auth.ModuleUsers, Access: auth.AccessWrite},
+	{Name: "Identity.DeviceList", Module: auth.ModuleUsers, Access: auth.AccessRead},
+	{Name: "Identity.DeviceRevoke", Module: auth.ModuleUsers, Access: auth.AccessWrite},
 
 	// Identity
 	//

@@ -41,7 +41,7 @@ func dumpFor(t *testing.T, tables ...string) []byte {
 
 func TestInspectBackupFileReportsMissingBusinessTables(t *testing.T) {
 	svc, _ := newRestoreMockService(t, &fakeSnapshotPort{kind: "mysql"})
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	// 缺 batch_consumptions —— D:\仓库数据 里 9 份备份有 7 份如此。
 	p := writeInspectFile(t, dir, "backup_20260922_123649.sql",
@@ -64,7 +64,7 @@ func TestInspectBackupFileReportsMissingBusinessTables(t *testing.T) {
 
 func TestInspectBackupFileFullCoverage(t *testing.T) {
 	svc, _ := newRestoreMockService(t, &fakeSnapshotPort{kind: "mysql"})
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	p := writeInspectFile(t, dir, "backup_20260924_170830.final.sql", dumpFor(t, businessTables...))
 	insp, err := svc.InspectBackupFile(p)
@@ -80,7 +80,7 @@ func TestInspectBackupFileFullCoverage(t *testing.T) {
 // 它必须被判为不可用，而且**不能**同时报缺表——否则用户会去查错的方向。
 func TestInspectBackupFileRejectsUTF16SafetyCopy(t *testing.T) {
 	svc, _ := newRestoreMockService(t, &fakeSnapshotPort{kind: "mysql"})
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	src := string(dumpFor(t, businessTables...))
 	u := utf16.Encode([]rune(src))
@@ -108,7 +108,7 @@ func TestInspectBackupFileRejectsUTF16SafetyCopy(t *testing.T) {
 // SQLite 整库快照是整文件替换，不存在表级覆盖度问题。
 func TestInspectBackupFileSQLiteSnapshotHasNoCoverage(t *testing.T) {
 	svc, _ := newRestoreMockService(t, &fakeSnapshotPort{kind: "sqlite"})
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	p := writeInspectFile(t, dir, "pre_restore_20260929_110000.db", []byte("SQLite format 3\x00"))
 	insp, err := svc.InspectBackupFile(p)
@@ -122,7 +122,7 @@ func TestInspectBackupFileSQLiteSnapshotHasNoCoverage(t *testing.T) {
 
 func TestInspectBackupDirKeysByName(t *testing.T) {
 	svc, _ := newRestoreMockService(t, &fakeSnapshotPort{kind: "mysql"})
-	dir := t.TempDir()
+	dir := testTempDir(t)
 
 	writeInspectFile(t, dir, "backup_20260924_170830.final.sql", dumpFor(t, businessTables...))
 	writeInspectFile(t, dir, "backup_20260922_123649.sql", dumpFor(t, "parts"))

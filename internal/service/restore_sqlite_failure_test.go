@@ -11,11 +11,11 @@ import (
 )
 
 func TestRestoreSQLiteReportsUnknownWhenFileReplacementFails(t *testing.T) {
-	t.Setenv("MES_DATA_DIR", t.TempDir())
+	t.Setenv("MES_DATA_DIR", testTempDir(t))
 	cause := errors.New("file replacement interrupted")
 	port := &fakeSnapshotPort{kind: "sqlite", restoreErr: cause}
 	svc := NewWithSnapshot(nil, port, nil)
-	path := filepath.Join(t.TempDir(), "backup_20260101_000000.db")
+	path := filepath.Join(testTempDir(t), "backup_20260101_000000.db")
 	seedRestoreSQLite(t, path)
 	res, err := svc.RestoreDatabase(path)
 	requireOperationState(t, err, usecase.OperationUnknown, cause)
@@ -41,7 +41,7 @@ func seedRestoreSQLite(t *testing.T, path string) {
 }
 
 func TestRestoreSQLiteRejectsCorruptFileBeforeClosing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "corrupt.db")
+	path := filepath.Join(testTempDir(t), "corrupt.db")
 	if err := os.WriteFile(path, []byte("SQLite format 3\x00broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}

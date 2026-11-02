@@ -22,7 +22,7 @@ var required = []string{"parts", "products", "bom_items", "batch_consumptions"}
 
 func write(t *testing.T, name string, data []byte) string {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), name)
+	p := filepath.Join(testTempDir(t), name)
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestInspectDumpAdmitsUncertainty(t *testing.T) {
 }
 
 func TestInspectDumpMissingFile(t *testing.T) {
-	cov := InspectDump(filepath.Join(t.TempDir(), "nope.sql"), required)
+	cov := InspectDump(filepath.Join(testTempDir(t), "nope.sql"), required)
 	if cov.Usable {
 		t.Error("读不到的文件必须不可用")
 	}

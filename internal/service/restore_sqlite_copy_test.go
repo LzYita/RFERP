@@ -12,7 +12,7 @@ import (
 )
 
 func TestRestoreSQLiteSafetyCopyIsAUsableSnapshot(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := testTempDir(t)
 	t.Setenv("MES_DATA_DIR", dataDir)
 	path := filepath.Join(dataDir, "live.db")
 	db, err := repository.OpenSQLite(path)

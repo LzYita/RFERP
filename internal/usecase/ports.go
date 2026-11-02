@@ -124,6 +124,9 @@ type ServerInfo struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	DatabaseID    string `json:"databaseId"`
 	Storage       string `json:"storage"`
+	// MinClientVersion 是客户端最低版本（FR-15）。空表示不设门禁——
+	// 单机形态与未配置的服务端都不该因为一个版本号把用户挡在门外。
+	MinClientVersion string `json:"minClientVersion,omitempty"`
 }
 
 // ServerDescriptor 让「我当前绑定的数据库」可被自描述。

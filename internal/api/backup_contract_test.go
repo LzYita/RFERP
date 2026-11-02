@@ -91,6 +91,10 @@ func TestBackupFilenameContract(t *testing.T) {
 		{"backup_20260924_170830.upgraded.sql", true},
 		{"pre_restore_20260924_172919.sql", true},
 		{"pre_clear_20260924_105500.sql", true},
+		// 同一秒内第二次备份：本程序用 .2 / .3 后缀避让，时间戳不变，
+		// 恢复口令仍能算出来。这两种名字必须两端都认。
+		{"backup_20260924_170830.2.sql", true},
+		{"backup_20260924_170830.3.db", true},
 
 		// —— 反例：结尾不是 .sql/.db ——
 		{"backup_20260925_101530.sql.bak", false},

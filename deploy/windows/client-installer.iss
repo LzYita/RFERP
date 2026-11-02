@@ -119,7 +119,7 @@ begin
   SetArrayLength(Lines, 1);
   Lines[0] := '{"mode":"client","serverUrl":' + JsonString(Server) +
               ',"dataDir":' + JsonString(ExpandConstant('{localappdata}\RFERP\client')) + '}';
-  TemporaryPath := GetTempFileName(Dir);
+  TemporaryPath := GenerateUniqueName(Dir, '.tmp');
   try
     if not SaveStringsToUTF8File(TemporaryPath, Lines, False) then
       RaiseException('Cannot write RFERP client configuration.');

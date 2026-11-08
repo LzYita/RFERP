@@ -9,20 +9,23 @@
 //   - 启动打印全部 LAN IPv4：客户现场没有远程支持，日志是唯一线索（R29）；
 //   - /readyz：安装器与服务监控要判断"能不能干活"，而不只是"进程在不在"；
 //   - 首建管理员令牌：空库那几分钟整个局域网都能连上来（FR-41）。
+//
+// 进程生命周期交给 internal/svcrun：同一个入口既能被 SCM 当服务启动，也能
+// 在命令行里当控制台程序跑，交付包因此不需要 WinSW 这类第三方服务包装器。
 package main
 
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"app/internal/api"
@@ -33,6 +36,7 @@ import (
 	"app/internal/paths"
 	"app/internal/service"
 	"app/internal/singleinstance"
+	"app/internal/svcrun"
 	"app/internal/usecase"
 )
 
@@ -40,6 +44,12 @@ var version = "dev"
 
 // logRetention 是服务端日志的保留期（D-25）。
 const logRetention = 180 * 24 * time.Hour
+
+// serviceName 必须与安装脚本注册的服务名一致。
+//
+// 两处都依赖它：svc.Run 用它与 SCM 里的注册名匹配（不一致会报 1083
+// "可执行程序未实现该服务"），事件日志也以它作为来源名。
+const serviceName = "RFERPServer"
 
 func main() {
 	configPath := flag.String("config", "", "配置文件路径；留空依次查 RFERP_CONFIG、exe 目录、当前目录、用户配置目录")
@@ -78,20 +88,45 @@ func main() {
 		os.Exit(runHealthcheck(*addr, cfg))
 	}
 
-	// 单实例：同一个 SQLite 文件被两个进程打开会互相拆 WAL/SHM（R11）。
-	// 只对常驻服务启用；CLI 动作（import/license/devices）走短路径，不抢锁。
-	if !isCLIAction(*licenseFile, *devicesCmd) {
-		if ok, err := singleinstance.Acquire("RFERP.Server.SingleInstance", 0); err == nil && !ok {
-			log.Fatal("已有一个 RFERP-server 在运行（单实例锁被占用），本次启动已退出")
+	// CLI 动作是一次性运维命令（导入授权、查/撤设备），只在控制台里有意义。
+	// 必须在服务判定之前分流：它们不该被 SCM 当服务主体启动。
+	if isCLIAction(*licenseFile, *devicesCmd) {
+		if err := runCLIAction(cfg, *licenseFile, *devicesCmd); err != nil {
+			log.Fatalf("%v", err)
 		}
+		return
 	}
 
+	// 单实例：同一个 SQLite 文件被两个进程打开会互相拆 WAL/SHM（R11）。
+	if ok, err := singleinstance.Acquire("RFERP.Server.SingleInstance", 0); err == nil && !ok {
+		log.Fatal("已有一个 RFERP-server 在运行（单实例锁被占用），本次启动已退出")
+	}
+
+	listen := *addr
+	if listen == "" {
+		listen = cfg.Srv.Addr
+	}
+
+	// 启动主体可能很慢（连库、迁移、升级前备份），所以它必须在服务已向 SCM
+	// 报到之后才执行——见 internal/svcrun 包注释里的 1053 说明。
+	if err := svcrun.Run(serviceName, func(ctx context.Context, markReady func()) error {
+		return serve(ctx, markReady, cfg, listen, logDir, *bootstrapToken)
+	}); err != nil {
+		log.Fatalf("RFERP-server 退出：%v", err)
+	}
+}
+
+// serve 是装配 + 监听的完整主体，控制台模式与服务模式共用。
+//
+// markReady 必须在**端口真正绑定成功之后**调用：/readyz 回答的是"能不能干活"，
+// 端口没绑上就报就绪，会让安装脚本在服务还接不了请求时就继续往下走。
+func serve(ctx context.Context, markReady func(), cfg *config.Config, listen, logDir, explicitToken string) error {
 	res, err := bootstrap.BuildServer(cfg, bootstrap.Options{Logf: log.Printf})
 	if err != nil {
 		if bootstrap.IsNotConfigured(err) {
-			log.Fatalf("server 尚未配置数据库：%v", err)
+			return fmt.Errorf("server 尚未配置数据库：%w", err)
 		}
-		log.Fatalf("bootstrap failed: %v", err)
+		return fmt.Errorf("bootstrap failed: %w", err)
 	}
 	defer func() {
 		if cerr := res.Close(); cerr != nil {
@@ -100,29 +135,6 @@ func main() {
 	}()
 
 	svc, _ := res.Apps.(*service.Service)
-	lanAdmin, _ := res.Apps.(usecase.LANAdmin)
-
-	// CLI 动作：借用已经装配好的库，做完即退出。
-	if *licenseFile != "" {
-		if lanAdmin == nil {
-			log.Fatal("当前装配不支持授权管理")
-		}
-		raw, err := os.ReadFile(*licenseFile)
-		if err != nil {
-			log.Fatalf("读取授权文件 %s: %v", *licenseFile, err)
-		}
-		st, err := lanAdmin.ImportLicense(raw, "cli")
-		if err != nil {
-			log.Fatalf("导入授权失败：%v", err)
-		}
-		log.Printf("授权已导入：客户=%s 类型=%s 客户端数=%d",
-			st.Runtime.Customer, st.Runtime.Kind, st.Runtime.MaxClients)
-		return
-	}
-	if *devicesCmd != "" {
-		runDevicesCLI(lanAdmin, *devicesCmd)
-		return
-	}
 
 	// 主机登记：不占授权额度，且是唯一能在授权锁死时救场的设备（R7）。
 	hostID := ""
@@ -134,16 +146,11 @@ func main() {
 		hostID = id
 	}
 
-	tok := bootstrapTokenForStartup(*bootstrapToken, res.Apps)
+	tok := bootstrapTokenForStartup(explicitToken, res.Apps)
 
 	srv := api.New(res.Apps, api.WithVersion(version), api.WithReadiness(readiness(res)),
 		api.WithDeviceGuard(deviceGuardOf(res.Apps)), api.WithBootstrapToken(tok),
 		api.WithMinClientVersion(cfg.MinClientVersion))
-
-	listen := *addr
-	if listen == "" {
-		listen = cfg.Srv.Addr
-	}
 
 	httpSrv := &http.Server{
 		Addr:              listen,
@@ -154,23 +161,8 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	srv.StartSessionJanitor(ctx)
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if _, err := logging.PruneOlderThan(logDir, logRetention); err != nil {
-					log.Printf("logging: 清理旧日志失败: %v", err)
-				}
-			}
-		}
-	}()
+	go pruneLogsLoop(ctx, logDir)
 
 	// 自动备份：服务端是常驻进程，必须靠定时器而不是"下次打开软件"。
 	if sched, ok := res.Apps.(usecase.AutoBackupScheduler); ok {
@@ -181,28 +173,98 @@ func main() {
 		version, listen, res.Kind, res.Target, cfg.Path())
 	logStartupAddresses(listen, hostID)
 
+	// 自己 Listen 而不是用 ListenAndServe：只有 bind 成功才谈得上"就绪"。
+	// 端口被占用是局域网版最常见的启动失败原因，这里要能明确报出来。
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return fmt.Errorf("监听 %s 失败（端口可能被占用）：%w", listen, err)
+	}
+
+	markReady()
+
+	serveErr := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
+		err := httpSrv.Serve(ln)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		serveErr <- err
+	}()
+
+	select {
+	case <-ctx.Done():
 		log.Println("shutting down...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("graceful shutdown: %v", err)
 		}
-	}()
-
-	err = httpSrv.ListenAndServe()
-	// log.Fatal 走 os.Exit，defer 不执行；这里显式关一次库，
-	// 让 SQLite 的 WAL/SHM 在异常退出路径上也尽快落盘。
-	if cerr := res.Close(); cerr != nil {
-		log.Printf("close database: %v", cerr)
+		return nil
+	case err := <-serveErr:
+		return err
 	}
-	log.Fatal(err)
+}
+
+// pruneLogsLoop 每天清理一次过期日志，直到 ctx 结束。
+func pruneLogsLoop(ctx context.Context, logDir string) {
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := logging.PruneOlderThan(logDir, logRetention); err != nil {
+				log.Printf("logging: 清理旧日志失败: %v", err)
+			}
+		}
+	}
 }
 
 // isCLIAction 判断本次启动是否只是一次性运维动作。
 func isCLIAction(licenseFile, devices string) bool {
 	return licenseFile != "" || devices != ""
+}
+
+// runCLIAction 借用已装配好的库完成一次运维动作，然后返回。
+func runCLIAction(cfg *config.Config, licenseFile, devices string) error {
+	res, err := bootstrap.BuildServer(cfg, bootstrap.Options{Logf: log.Printf})
+	if err != nil {
+		if bootstrap.IsNotConfigured(err) {
+			return fmt.Errorf("server 尚未配置数据库：%w", err)
+		}
+		return fmt.Errorf("bootstrap failed: %w", err)
+	}
+	defer func() {
+		if cerr := res.Close(); cerr != nil {
+			log.Printf("close database: %v", cerr)
+		}
+	}()
+
+	lanAdmin, _ := res.Apps.(usecase.LANAdmin)
+
+	if licenseFile != "" {
+		if lanAdmin == nil {
+			return errors.New("当前装配不支持授权管理")
+		}
+		raw, err := os.ReadFile(licenseFile)
+		if err != nil {
+			return fmt.Errorf("读取授权文件 %s: %w", licenseFile, err)
+		}
+		st, err := lanAdmin.ImportLicense(raw, "cli")
+		if err != nil {
+			return fmt.Errorf("导入授权失败：%w", err)
+		}
+		log.Printf("授权已导入：客户=%s 类型=%s 客户端数=%d",
+			st.Runtime.Customer, st.Runtime.Kind, st.Runtime.MaxClients)
+		return nil
+	}
+
+	if lanAdmin == nil {
+		return errors.New("当前装配不支持设备管理")
+	}
+	runDevicesCLI(lanAdmin, devices)
+	return nil
 }
 
 // deviceGuardOf 只在 Service 实现了准入时才启用门禁。

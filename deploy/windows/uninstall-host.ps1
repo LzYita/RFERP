@@ -21,18 +21,34 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     exit 1
 }
 
-$svcExe = Join-Path $InstallDir "RFERP-server-service.exe"
-if (Test-Path $svcExe) {
-    Push-Location $InstallDir
-    try {
-        & $svcExe stop 2>$null | Out-Null
-        & $svcExe uninstall 2>$null | Out-Null
-    } finally {
-        Pop-Location
+$svcName = "RFERPServer"
+$svc = Get-CimInstance Win32_Service -Filter "Name='$svcName'" -ErrorAction SilentlyContinue
+if ($svc) {
+    & sc.exe stop $svcName | Out-Null
+    Start-Sleep -Seconds 2
+    & sc.exe delete $svcName | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "服务已卸载：$svcName"
+    } else {
+        Write-Host "服务删除失败（sc.exe 返回 $LASTEXITCODE），请到 services.msc 手工删除。" -ForegroundColor Yellow
     }
-    Write-Host "服务已卸载。"
 } else {
-    Write-Host "未找到服务包装器，跳过服务卸载。"
+    Write-Host "未找到服务 $svcName，跳过服务卸载。"
+}
+
+# 兼容 1.0.0 用 WinSW 安装的旧部署：如果还留着包装器，一并清掉，
+# 否则升级到原生服务后旧包装器会继续占着服务名，新注册会失败。
+$legacyWrapper = Join-Path $InstallDir "RFERP-server-service.exe"
+if (Test-Path $legacyWrapper) {
+    $legacy = Get-CimInstance Win32_Service -Filter "Name='$svcName'" -ErrorAction SilentlyContinue
+    if ($legacy) {
+        & sc.exe stop $svcName | Out-Null
+        Start-Sleep -Seconds 2
+        & sc.exe delete $svcName | Out-Null
+    }
+    Remove-Item $legacyWrapper -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $InstallDir "RFERP-server-service.xml") -Force -ErrorAction SilentlyContinue
+    Write-Host "已移除旧版 WinSW 包装器。"
 }
 
 $ruleName = "RFERP 局域网 $Port"

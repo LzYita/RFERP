@@ -205,3 +205,54 @@ python deploy/windows/smoke-lan.py --phase restart  --base ... --password ... --
 | 5 台版 | 只改 `maxClients`（D26），代码无需改动 | 按 D27 待 3 台试点通过后签发 |
 | 窄屏 / 深色主题逐屏复核 | 视觉复核只覆盖了桌面宽度下的登录页、授权页、备份页 | 再跑一轮窄屏与主题切换截图 |
 | Windows 10 / 家庭版实机 | 本机是 Win11；服务、防火墙在家庭版的能力差异未实测 | 一台 Win10 机器 |
+
+## 6. 变更记录
+
+### 6.1 去掉 WinSW，改用 SCM 原生服务（2026-11-06）
+
+**动机**：1.0.0 的交付包里除 `RFERP-server.exe` 外还有一个第三方二进制
+`WinSW.exe`（约 18MB，构建时从 `ghfast.top` 下载，只校验 `MZ` 头与大小）。
+它是包里唯一的未签名第三方 exe，也是唯一的供应链导入点；而它提供的四个能力
+在 Windows 上都有系统级替代，其中"日志轮转"还与 `internal/logging` 重复。
+
+**改动**：
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| 服务包装 | `WinSW.exe` + `RFERP-server-service.xml` | `cmd/server` 直接实现 `svc.Handler` |
+| 启动注册 | `WinSW.exe install` | `Win32_Service.Create`（`install-host.ps1`） |
+| 失败重启 | `<onfailure action="restart" delay="10 sec"/>` | `sc.exe failure … restart/10000` |
+| 服务账号 | `<serviceaccount>LocalService` | `StartName=NT AUTHORITY\LocalService` |
+| 日志轮转 | `WinSW <log mode="roll-by-size">` | 已有 `internal/logging`（20MB × 20 + 180 天） |
+| 服务进程输出 | WinSW 收进 `程序目录\logs\` | 事件日志（来源 `RFERPServer`）+ `<数据目录>\日志\` |
+| 包体 | 约 22MB | **5.3MB** |
+
+**新增包**：`internal/svcrun`
+- `Run(name, main)`：由 SCM 启动就走服务分支，否则走控制台分支（Ctrl+C/SIGTERM）；
+- 服务分支先报 `StartPending`（`WaitHint` 300 秒）再跑主体，**监听成功后才报 `Running`**。
+  这一点是必须的：bootstrap 里包含迁移与升级前 `mysqldump`，慢的时候超过 SCM 的
+  30 秒启动窗口，若在 `svc.Run` 之前做，SCM 会以 1053 中止启动而日志里毫无异常。
+- 启动失败/运行异常/优雅关闭超时都返回服务特定退出码，并写事件日志——
+  原生服务没有控制台，stdout 会被丢弃，这是 WinSW 时代"logs 目录"的替代物。
+
+**`cmd/server` 重构**：`main` 只保留 flag/配置/日志/健康检查/CLI 分流/单实例，
+装配与监听下沉为 `serve(ctx, markReady, …)`；`log.Fatal` 全部改为返回 error，
+否则服务模式下进程会静默消失而 SCM 只看到"服务意外终止"。
+
+**兼容**：`uninstall-host.ps1` 会顺带清理 1.0.0 遗留的
+`RFERP-server-service.exe` / `.xml`，避免旧包装器占着服务名。
+
+**验证**（本机，无管理员权限）：
+- 控制台模式实跑：迁移 v1–v20、主机登记、令牌生成、监听 `:18099`、`/readyz` 200；
+- `-healthcheck` 退出码 0；第二个实例被单实例锁挡下（退出码 1）；
+- CLI `-devices list` 在服务运行时可执行（不抢单实例锁）；
+- 强杀后重启：`applied=[]`（无重复迁移），`/readyz` 再次 200；
+- `go build ./...` / `go vet ./...` Windows + `GOOS=linux` 全通过；
+- `internal/svcrun`、`internal/api`、`internal/service`、`internal/logging` 测试全绿；
+- `build-server-package.ps1` 出包，zip 只有 5 个文件（无第三方 exe）。
+
+**未验证**（需要管理员权限的机器）：
+- SCM 实际握手（`sc start` → StartPending → Running）、`sc stop` 优雅关闭；
+- 事件日志是否真的能写入（依赖安装脚本注册的事件源）；
+- 失败重启策略是否按 10 秒 ×3 生效；
+- 开机自启（需重启机器）。

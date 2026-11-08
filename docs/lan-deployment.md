@@ -8,7 +8,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| `RFERP-server-<ver>-win64.zip` | `RFERP-server.exe`、`WinSW.exe`、`install-host.ps1`、`uninstall-host.ps1`、`client.config.json` |
+| `RFERP-server-<ver>-win64.zip` | `RFERP-server.exe`、`install-host.ps1`、`uninstall-host.ps1`、`client.config.json`、`first-run-blocked.md`、`SHA256SUMS.txt` |
 | `RFERP-<ver>-setup.exe` | 客户端安装包（Wails） |
 | `rferp-license.exe` | 内部签发工具，**不交付客户** |
 | `license.rferplic` | 每客户一份签名授权 |
@@ -46,7 +46,24 @@ ping 192.168.1.10
 Test-NetConnection 192.168.1.10 -Port 8080
 ```
 
-### 2.3 安装
+### 2.3 杀毒软件信任区（装之前做）
+
+本软件未购买商业代码签名证书，杀毒软件会把"没见过的程序"提示出来——这是提示，不是病毒确认。
+把下面**两个目录**提前加入信任区，可以避免安装与日常运行时的弹窗，也能避免杀毒软件扫描数据库文件时短暂锁库：
+
+1. **安装目录**（默认 `C:\Program Files\RFERP`）；
+2. **数据目录**（安装时选的，默认 `D:\RFERP数据`）。
+
+| 杀毒软件 | 入口 |
+|---|---|
+| Windows Defender（Windows 安全中心） | 病毒和威胁防护设置 → 排除项 → 添加文件夹 |
+| 卡巴斯基 | 设置 → 安全 → 排除项 → 指定可信文件夹 |
+| 360 / 火绒 / 腾讯管家 | 设置 → 信任区 / 白名单 → 添加目录 |
+
+被拦截时的具体处置（SmartScreen、解除锁定、PowerShell 执行策略、核对哈希）见交付包里的
+`first-run-blocked.md`，客户可以直接照做。
+
+### 2.4 安装
 
 1. 解压 `RFERP-server-<ver>-win64.zip`。
 2. 右键 PowerShell → **以管理员身份运行**，进入解压目录：
@@ -56,7 +73,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 .\install-host.ps1 -Port 8080
 ```
 
-脚本按顺序做：权限检查 → 系统/硬件提示 → 端口检查 → 建数据目录与 ACL → 复制程序 → 写 `server.json` → 注册 WinSW 服务 → 加防火墙规则（仅 `LocalSubnet`）→ 等 `/readyz` → 打印客户端地址与初始化令牌。
+脚本按顺序做：权限检查 → 系统/硬件提示 → 端口检查 → 建数据目录与 ACL → 复制程序 → 写 `server.json` → 注册 Windows 服务（SCM 原生）→ 加防火墙规则（仅 `LocalSubnet`）→ 等 `/readyz` → 打印客户端地址与初始化令牌。
 
 默认路径：
 
@@ -65,7 +82,7 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 
 **数据目录禁止放在网络共享、U 盘、OneDrive 等同步盘**——SQLite 的锁与 WAL 在这些位置上不可靠。
 
-### 2.4 验证主机
+### 2.5 验证主机
 
 ```powershell
 curl http://127.0.0.1:8080/healthz     # 进程活着
@@ -193,7 +210,8 @@ SQLite 整库恢复会**连授权与设备记录一起回到快照时刻**：恢
 |---|---|
 | 客户端连不上 | ① 两机同网段？② `Test-NetConnection 主机IP -Port 8080`；③ 路由器 AP 隔离/访客网络；④ 主机防火墙规则是否只有 `LocalSubnet` |
 | 主机 IP 变了 | 客户端登录页改地址；建议路由器做 DHCP 保留 |
-| 服务起不来 | `Get-Service RFERPServer`；看 `程序目录\logs\*.log` 与 `<数据目录>\日志\rferp.log`；端口被占看安装日志 |
+| 服务起不来 | `Get-Service RFERPServer`；看 `<数据目录>\日志
+ferp.log`；再看「事件查看器 → Windows 日志 → 应用程序」里来源 `RFERPServer` 的记录（原生服务没有控制台，启动失败原因写在这里）；端口被占看安装日志 |
 | 第 3 台设备被拒 | 额度已满。撤销闲置设备（不释放名额）→ 删除设备（释放名额） |
 | 设备被拒说"已撤销" | 管理员在设备页恢复：删除该记录后重新登录即可重新登记 |
 | 全部提示"缺少设备标识" | 客户端版本过旧（未带 `X-RFERP-Device-ID`），升级客户端 |
@@ -203,20 +221,24 @@ SQLite 整库恢复会**连授权与设备记录一起回到快照时刻**：恢
 
 服务端状态一律以 `/readyz` 为准；`/healthz` 只说明进程在。
 
+服务由 SCM 直接启动 `RFERP-server.exe`（**没有** WinSW 之类的包装器）。因此日志只有两处：
+`<数据目录>\日志\`（应用日志）与事件查看器（启动/停止/异常）。失败重启策略由 SCM 提供，
+`sc.exe qfailure RFERPServer` 可查。
+
 ---
 
 ## 8. 构建与打包
 
 ### 8.1 服务端
 
-一条命令出包（自动下载并校验 WinSW、注入版本与公钥、打 zip）：
+一条命令出包（注入版本与公钥、打 zip）：
 
 ```powershell
 pwsh deploy/windows/build-server-package.ps1 -Version 1.0.0 -PublicKeyFile C:\keys\public.key
 # 产出 dist\RFERP-server-1.0.0-win64.zip
 ```
 
-包内含：`RFERP-server.exe`、`WinSW.exe`、`install-host.ps1`、`uninstall-host.ps1`、
+包内含：`RFERP-server.exe`、`install-host.ps1`、`uninstall-host.ps1`、
 `client.config.json`、`license-public.key`、`README.txt`。
 
 手工构建（仅排障用）：

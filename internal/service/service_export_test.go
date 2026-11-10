@@ -412,7 +412,9 @@ func TestExportAllDataCSVQueriesBatchConsumptions(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM products ORDER BY id")).WillReturnRows(emptyProducts)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM parts ORDER BY id")).WillReturnRows(emptyParts)
 	mock.ExpectQuery(regexp.QuoteMeta(`
-		SELECT b.*, p.name AS product_name, p.code AS product_code
+		SELECT b.id, b.batch_no, b.product_id, b.plan_qty, b.produced_qty, b.status, b.version,
+		       b.created_at, b.updated_at, b.operator, b.customer, b.consumption_recorded,
+		       p.name AS product_name, p.code AS product_code
 		FROM product_batches b
 		JOIN products p ON p.id = b.product_id
 		ORDER BY b.id DESC`)).

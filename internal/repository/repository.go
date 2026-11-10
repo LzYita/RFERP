@@ -419,9 +419,17 @@ func (r *Repository) CreateBatch(b *model.ProductBatch) (int64, error) {
 	return res.LastInsertId()
 }
 
+// batchColumns 是 product_batches 的显式列清单。
+//
+// 不要改回 SELECT *：库结构是增量演进的（更高版本会加列），而 sqlx 的严格
+// 映射遇到结果里多出的列会报 "missing destination name"，让旧版本程序读新库
+// 时整页报错。显式列让旧程序忽略不认识的列，只读自己需要的（2026-11-10：
+// 公共线 exe 在产占用/统计/追溯三页就是这样被 sales_order_id 等新列打挂的）。
+const batchColumns = "id, batch_no, product_id, plan_qty, produced_qty, status, version, created_at, updated_at, operator, customer, consumption_recorded"
+
 func (r *Repository) GetBatch(id int64) (*model.ProductBatch, error) {
 	var b model.ProductBatch
-	err := r.db.Get(&b, `SELECT * FROM product_batches WHERE id=?`, id)
+	err := r.db.Get(&b, `SELECT `+batchColumns+` FROM product_batches WHERE id=?`, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -434,7 +442,9 @@ func (r *Repository) GetBatch(id int64) (*model.ProductBatch, error) {
 func (r *Repository) ListBatches() ([]model.ProductBatch, error) {
 	var list []model.ProductBatch
 	err := r.db.Select(&list, `
-		SELECT b.*, p.name AS product_name, p.code AS product_code
+		SELECT b.id, b.batch_no, b.product_id, b.plan_qty, b.produced_qty, b.status, b.version,
+		       b.created_at, b.updated_at, b.operator, b.customer, b.consumption_recorded,
+		       p.name AS product_name, p.code AS product_code
 		FROM product_batches b
 		JOIN products p ON p.id = b.product_id
 		ORDER BY b.id DESC`)
@@ -472,7 +482,7 @@ func (r *Repository) UpdateBatchStatus(id int64, status int, operator string) (i
 
 func (t *Tx) GetBatchForUpdate(id int64) (*model.ProductBatch, error) {
 	var b model.ProductBatch
-	err := t.tx.Get(&b, `SELECT * FROM product_batches WHERE id=? FOR UPDATE`, id)
+	err := t.tx.Get(&b, `SELECT `+batchColumns+` FROM product_batches WHERE id=? FOR UPDATE`, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

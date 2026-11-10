@@ -81,15 +81,15 @@ func PickFile(title, defExt string) (string, bool) {
 	owner, _, _ := procGetForegroundWindow.Call()
 
 	ofn := openFileNameW{
-		lStructSize: uint32(unsafe.Sizeof(openFileNameW{})),
-		hwndOwner:   owner,
-		lpstrFilter: &filter[0],
+		lStructSize:  uint32(unsafe.Sizeof(openFileNameW{})),
+		hwndOwner:    owner,
+		lpstrFilter:  &filter[0],
 		nFilterIndex: 1,
-		lpstrFile:   &buf[0],
-		nMaxFile:    uint32(len(buf)),
-		lpstrTitle:  titlePtr,
-		lpstrDefExt: extPtr,
-		flags:       ofnExplorer | ofnFileMustExist | ofnPathMustExist | ofnNoChangeDir,
+		lpstrFile:    &buf[0],
+		nMaxFile:     uint32(len(buf)),
+		lpstrTitle:   titlePtr,
+		lpstrDefExt:  extPtr,
+		flags:        ofnExplorer | ofnFileMustExist | ofnPathMustExist | ofnNoChangeDir,
 	}
 	ok, _, _ := procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
 	if ok == 0 {

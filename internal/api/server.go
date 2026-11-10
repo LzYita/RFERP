@@ -89,6 +89,13 @@ type Server struct {
 	// 测试绝不能走真实路径。
 	applyUpdate func(zipPath string) error
 
+	// preflightUpdate 在替换 exe **之前**检查升级前提（典型：本机能否跑
+	// mysqldump 做升级前备份）。nil 表示不检查。
+	//
+	// 为什么要在替换前：2026-11-10 的事故里，exe 已经被换成 2.1.0，新版
+	// 才在迁移前的备份门禁上失败——用户能用的旧版本已经不在原位了。
+	preflightUpdate func() error
+
 	// exitProcess 是 apply 成功之后退出旧进程的动作，默认 exitProcessNow。
 	//
 	// 可注入的理由同上，且更直白：真实实现会把**跑测试的进程**直接杀掉。
@@ -307,6 +314,13 @@ func WithFolderOpener(f func(dir string) error) Option {
 // 真实实现会替换正在运行的进程，跑测试时用它会把自己的测试二进制换掉。
 func WithUpdateApplier(f func(zipPath string) error) Option {
 	return func(s *Server) { s.applyUpdate = f }
+}
+
+// WithUpdatePreflight 注入「替换 exe 之前」的前置检查（如本机 mysqldump 是否可用）。
+//
+// 不传就是不检查——cmd/server 与测试保持原行为；桌面入口只在单机形态装配。
+func WithUpdatePreflight(f func() error) Option {
+	return func(s *Server) { s.preflightUpdate = f }
 }
 
 // WithProcessExit 替换「apply 成功之后退出旧进程」的动作。**仅供测试**：

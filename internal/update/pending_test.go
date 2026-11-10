@@ -1,8 +1,10 @@
 package update
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,7 +79,7 @@ func TestPrepareStartKeepsRollbackAndOffersWhilePending(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	d := PrepareStart()
+	d := PrepareStart(false)
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("有未确认标记时 .old 被删了 —— 新版本若起不来就没有回退副本了")
@@ -87,6 +89,37 @@ func TestPrepareStartKeepsRollbackAndOffersWhilePending(t *testing.T) {
 	}
 	if !d.OfferRollback {
 		t.Error("上一轮始终没走到界面可用，这次启动就该问用户要不要回退")
+	}
+}
+
+// 正常更新后的第一次启动：磁盘上必然是「.old + 标记」，那是刚换完新版本的
+// 样子，不是失败证据。这里如果先弹回退框，用户点默认的「是」就永远升不上去
+// （2026-11-10 的现场截图就是这一步）。
+func TestPrepareStartDoesNotOfferOnUpdaterFirstStart(t *testing.T) {
+	_, exe := withExeDir(t)
+	if err := os.WriteFile(exe+oldSuffix, []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(exe); err != nil {
+		t.Fatal(err)
+	}
+
+	d := PrepareStart(true)
+	if d.OfferRollback {
+		t.Fatal("更新后第一次启动就弹回退 —— 用户点默认的「是」会把刚装好的版本退掉")
+	}
+	if !d.Copy || !d.Unconfirmed {
+		t.Errorf("第一次启动仍应保留副本并标记未确认，实际 %+v", d)
+	}
+	if _, err := os.Stat(exe + oldSuffix); err != nil {
+		t.Fatal("更新后第一次启动把 .old 删了")
+	}
+
+	// 同一份磁盘状态，下一次普通启动（没有更新器环境变量）才说明上一次
+	// 始终没走到界面可用，这时才该问。
+	d = PrepareStart(false)
+	if !d.OfferRollback {
+		t.Error("第二次启动仍不问，回退入口就丢了")
 	}
 }
 
@@ -101,7 +134,7 @@ func TestPrepareStartAdoptsMarkerFromLegacyUpgrade(t *testing.T) {
 	}
 	// 刻意不写标记 —— 这正是 1.3.0 升上来时的样子。
 
-	d := PrepareStart()
+	d := PrepareStart(false)
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("补记之后 .old 必须保留")
@@ -146,7 +179,7 @@ func TestPrepareStartAfterHealthyConfirmIsQuiet(t *testing.T) {
 	}
 	ConfirmHealthy()
 
-	d := PrepareStart()
+	d := PrepareStart(false)
 
 	if d.OfferRollback || d.Unconfirmed || d.Copy {
 		t.Errorf("确认健康之后不该有任何残留动作，实际 %+v", d)
@@ -160,15 +193,15 @@ func TestPrepareStartAfterHealthyConfirmIsQuiet(t *testing.T) {
 func TestPrepareStartWithoutCopyDoesNothing(t *testing.T) {
 	withExeDir(t)
 
-	d := PrepareStart()
+	d := PrepareStart(false)
 
 	if d.Copy || d.Unconfirmed || d.OfferRollback {
 		t.Errorf("没有回退副本时不该报告任何待办，实际 %+v", d)
 	}
 }
 
-// .failed 不归 PrepareStart 管：它是回退时的诊断材料，确认健康之前不该删，
-// 否则「留作排查」这句话就是假的（演练时真踩到了：回退后重启的进程把它清了）。
+// .failed 不归 PrepareStart 管，也不该被健康确认删掉：它是回退弹窗明确承诺
+// "保留以便排查"的坏版本。真实演练踩到过——回退后重启的进程一挂载界面就把它清了。
 func TestPrepareStartKeepsFailedForDiagnosis(t *testing.T) {
 	_, exe := withExeDir(t)
 	failedPath := exe + failedSuffix
@@ -176,16 +209,17 @@ func TestPrepareStartKeepsFailedForDiagnosis(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	PrepareStart()
+	PrepareStart(false)
 
 	if _, err := os.Stat(failedPath); err != nil {
 		t.Fatal("PrepareStart 删掉了 .failed —— 回退之后就没有坏版本可排查了")
 	}
 
-	// 真正该清它的是健康确认：一个能跑的版本已经在运行。
+	// 健康确认只清 .old；.failed 留着，下一次回退时才被覆盖。
 	ConfirmHealthy()
-	if _, err := os.Stat(failedPath); !os.IsNotExist(err) {
-		t.Errorf("健康确认之后 %s 应当被清理，实际 err=%v", filepath.Base(failedPath), err)
+	if _, err := os.Stat(failedPath); err != nil {
+		t.Errorf("健康确认删掉了 %s：弹窗承诺的排查材料必须留着，实际 err=%v",
+			filepath.Base(failedPath), err)
 	}
 }
 
@@ -209,7 +243,7 @@ func TestPrepareStartKeepsRollbackOnCorruptMarker(t *testing.T) {
 		t.Error("损坏时也应当返回非 nil，表示「有标记但内容不可读」")
 	}
 
-	d := PrepareStart()
+	d := PrepareStart(false)
 
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("标记损坏时删掉了 .old —— 这正是最需要保守的情况")
@@ -309,5 +343,49 @@ func TestPendingUsesUTC(t *testing.T) {
 	}
 	if p.At.Location() != time.UTC {
 		t.Errorf("标记时间不是 UTC: %v", p.At.Location())
+	}
+}
+
+// 失败原因必须在标记里留到下一次启动：第二次弹窗只有固定文案的话，
+// 「为什么没起来」就永久丢了（2026-11-10 的备份失败事故）。
+func TestRecordFailureSurfacesOnNextStart(t *testing.T) {
+	_, exe := withExeDir(t)
+	if err := os.WriteFile(exe+oldSuffix, []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePending(exe); err != nil {
+		t.Fatal(err)
+	}
+
+	RecordFailure(errors.New("升级前备份失败: 未找到 mysqldump"))
+
+	d := PrepareStart(false)
+	if !d.OfferRollback {
+		t.Fatal("有标记、有 .old 时应当提供回退")
+	}
+	if !strings.Contains(d.LastError, "mysqldump") {
+		t.Fatalf("LastError = %q，期望包含真实失败原因", d.LastError)
+	}
+	p, err := ReadPending()
+	if err != nil || p == nil || !strings.Contains(p.LastError, "mysqldump") {
+		t.Fatalf("标记里没留下失败原因: p=%+v err=%v", p, err)
+	}
+}
+
+// 没有更新标记时（故障与更新无关）不得凭空创建一个。
+func TestRecordFailureWithoutPendingLeavesNoFile(t *testing.T) {
+	_, exe := withExeDir(t)
+
+	RecordFailure(errors.New("数据库连不上"))
+
+	if _, err := os.Stat(pendingPath(exe)); !os.IsNotExist(err) {
+		t.Fatalf("没有更新标记时不该创建: err=%v", err)
+	}
+}
+
+// 原因过长时截断，避免把整段 SQL/DSN 写进标记。
+func TestRecordFailureTruncatesLongReason(t *testing.T) {
+	if got := truncateReason(strings.Repeat("x", 2000)); len([]rune(got)) > 1001 {
+		t.Fatalf("截断后仍有 %d 个字符", len([]rune(got)))
 	}
 }

@@ -37,8 +37,9 @@ func backupTo(dsn, mysqldumpPath, saveDir, prefix string, at time.Time) (string,
 	if err != nil {
 		return "", fmt.Errorf("parse DSN: %w", err)
 	}
-	if mysqldumpPath == "" {
-		mysqldumpPath = "mysqldump"
+	dumpPath, err := resolveDumpPath(mysqldumpPath)
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(saveDir, 0755); err != nil {
 		return "", fmt.Errorf("create backup dir: %w", err)
@@ -52,7 +53,7 @@ func backupTo(dsn, mysqldumpPath, saveDir, prefix string, at time.Time) (string,
 	now := at.Format("20060102_150405")
 	filePath := filepath.Join(saveDir, fmt.Sprintf("%s_%s.sql", prefix, now))
 
-	cmd := exec.Command(mysqldumpPath, "--defaults-extra-file="+cfgFile, mc.DBName)
+	cmd := exec.Command(dumpPath, dumpArgs(cfgFile, mc.DBName)...)
 	// mysqldump 是控制台子系统程序，而宿主是 GUI 程序（-H windowsgui）；
 	// 不加这个标志 Windows 会给它新分配一个控制台并弹出黑框。
 	noconsole.Hide(cmd)
@@ -61,13 +62,17 @@ func backupTo(dsn, mysqldumpPath, saveDir, prefix string, at time.Time) (string,
 		return "", fmt.Errorf("create backup file: %w", err)
 	}
 	// shortcut: pathname cleanup assumes no replacement; use private staging for hostile local writers.
+	//
+	// stderr 同时留在内存里：GUI 形态下 os.Stderr 没人看得到，而权限/磁盘/
+	// 版本这些真实原因全在 stderr 里（见 dumpFailure）。
+	var stderr bytes.Buffer
 	cmd.Stdout = outFile
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	runErr := cmd.Run()
 	closeErr := outFile.Close()
 	if runErr != nil {
 		os.Remove(filePath)
-		return "", fmt.Errorf("mysqldump failed: %w", runErr)
+		return "", dumpFailure(runErr, stderr.String())
 	}
 	if closeErr != nil {
 		os.Remove(filePath)

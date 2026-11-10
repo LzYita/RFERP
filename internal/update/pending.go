@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -41,14 +42,20 @@ const (
 	pendingFile = "RFERP.update-pending"
 	// oldSuffix 是回退副本的后缀（与 ApplyAndRestart 保持一致）。
 	oldSuffix = ".old"
-	// failedSuffix 是回退时被换下来的坏 exe，留着供排查，下次成功启动时清理。
+	// failedSuffix 是回退时被换下来的坏 exe，留着供排查。
+	// 它不再随「健康确认」删除（见 ConfirmHealthy）；下一次回退时覆盖它。
 	failedSuffix = ".failed"
 )
 
 // Pending 是标记文件的内容。只记时间：够用来写日志与判断"是否上一轮留下的"，
 // 不记版本号是为了让 ApplyAndRestart 不必知道版本（它拿不到，调用方才拿得到）。
+//
+// LastError 是新版本启动失败时补记的原因。没有它，第二次启动只能显示固定文案
+// 「上一个版本的程序始终没有把界面显示出来」——2026-11-10 的 mysqldump 事故里，
+// 真实错误（升级前备份失败）就是这样丢掉的。
 type Pending struct {
-	At time.Time `json:"at"`
+	At        time.Time `json:"at"`
+	LastError string    `json:"lastError,omitempty"`
 }
 
 // exePath 返回当前 exe 的真实路径（解析符号链接，与 ApplyAndRestart 一致）。
@@ -103,6 +110,43 @@ func ReadPending() (*Pending, error) {
 	return &p, nil
 }
 
+// RecordFailure 把这次启动失败的原因写进更新标记，供下一次启动的回退询问显示。
+//
+// 没有标记时什么也不做：故障与更新无关（例如数据库没开）时，不该留下更新状态。
+// 写失败只记日志——它不能让原本要呈现的错误消失。
+func RecordFailure(reason error) {
+	if reason == nil {
+		return
+	}
+	exe, err := exePath()
+	if err != nil {
+		return
+	}
+	p, err := ReadPending()
+	if err != nil || p == nil {
+		return
+	}
+	p.LastError = truncateReason(reason.Error())
+	data, err := json.Marshal(p)
+	if err != nil {
+		return
+	}
+	if err := os.WriteFile(pendingPath(exe), data, 0o644); err != nil {
+		log.Printf("update: 记录失败原因失败: %v", err)
+	}
+}
+
+// truncateReason 限制写进标记的长度：错误信息可能带整段 SQL/DSN 上下文，
+// 而标记文件只是给下一次启动的对话框用。
+func truncateReason(s string) string {
+	s = strings.TrimSpace(s)
+	const max = 1000
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
+}
+
 // ClearPending 删除标记。只删标记，不动 .old —— 什么时候删 .old 由下一次启动决定。
 func ClearPending() error {
 	exe, err := exePath()
@@ -115,13 +159,16 @@ func ClearPending() error {
 	return nil
 }
 
-// ConfirmHealthy 表示"新版本确实把界面显示出来了"：清标记，清回退副本，
-// 清回退时留下的坏版本。
+// ConfirmHealthy 表示"新版本确实把界面显示出来了"：清标记、清回退副本。
 //
 // **确认就删 .old**，而不是"留到下一次启动再删"。理由是标记已清零之后 .old 就没有
 // 任何用途了：offerUpdateRollback 要先读到标记才会问，标记没了就永远问不到它 ——
 // 那份 18 MB 只是一块谁也不会再被指到的死文件。删掉它同时让"补记标记"这件事
 // 天然只发生一次：没有 .old 就没有可补记的东西。
+//
+// **不删 .failed**：它是回退弹窗明确承诺"保留以便排查"的坏版本，而健康确认恰恰
+// 发生在回退后重启的旧版本上——弹窗刚说完保留，几秒后就被删掉，实际发生过。
+// 它在下一次回退时被覆盖，因此最多只占一个 exe 的空间。
 func ConfirmHealthy() {
 	if err := ClearPending(); err != nil {
 		log.Printf("update: 清除更新标记失败: %v", err)
@@ -130,12 +177,11 @@ func ConfirmHealthy() {
 	if err != nil {
 		return
 	}
-	for _, p := range []string{exe + oldSuffix, exe + failedSuffix} {
-		if rmErr := os.Remove(p); rmErr == nil {
-			log.Printf("update: 已清理 %s", filepath.Base(p))
-		} else if !os.IsNotExist(rmErr) {
-			log.Printf("update: 清理 %s 失败: %v", filepath.Base(p), rmErr)
-		}
+	p := exe + oldSuffix
+	if rmErr := os.Remove(p); rmErr == nil {
+		log.Printf("update: 已清理 %s", filepath.Base(p))
+	} else if !os.IsNotExist(rmErr) {
+		log.Printf("update: 清理 %s 失败: %v", filepath.Base(p), rmErr)
 	}
 }
 
@@ -151,9 +197,23 @@ type StartDecision struct {
 	// （标记是这次补记的）**不算**——那还没有任何失败证据，此时问等于
 	// 每次跨架构升级都先吓用户一跳。
 	OfferRollback bool
+	// LastError 是上一轮启动失败时记下的原因；空表示当时没记下（旧版本、
+	// 进程被强杀、或失败发生在写标记之前）。入口用它替代固定文案。
+	LastError string
 }
 
 // PrepareStart 在启动早期处理上一轮更新的残留，并给出这次该怎么办。
+//
+// launchedByUpdater 表示本进程是 ApplyAndRestart/RestartApp 拉起的第一次启动
+// （环境变量 RFERP_UPDATE_RESTART=1）。**这一次绝不能主动问回退**：正常更新
+// 换完 exe 后，磁盘上必然是「.old + 标记」——那正是刚换完新版本的样子，不是
+// 失败证据。2026-10-19 引入这段逻辑时漏了这个区分，导致每次自动更新后的第一次
+// 启动都会弹「新版本启动失败：上一个版本的程序始终没有把界面显示出来」，用户点
+// 默认的「是」就直接回退，表现为"永远升不上去"（2026-11-10 现场截图即此）。
+//
+// 首次启动只保留 .old 与标记；真失败时下面的 bootstrap 失败路径会用真实错误
+// 询问回退。只有**之后**再启动（环境变量已不在）仍看到标记，才说明上一次启动
+// 始终没走到界面可用，这时才该问。
 //
 // 三种情况：
 //  1. 没有 .old → 没有可回退的东西，什么也不做（残留的标记是空壳：没有副本
@@ -163,7 +223,7 @@ type StartDecision struct {
 //
 // 标记读不出来时保留 .old 但不主动问：不知道上一轮到底有没有真的启动过，
 // 贸然问会打扰用得好好的用户；真起不来时，失败路径自己会问。
-func PrepareStart() StartDecision {
+func PrepareStart(launchedByUpdater bool) StartDecision {
 	exe, err := exePath()
 	if err != nil {
 		log.Printf("update: 无法定位 exe，保留回退副本: %v", err)
@@ -181,6 +241,12 @@ func PrepareStart() StartDecision {
 		return d
 	}
 	if p != nil {
+		d.LastError = p.LastError
+		if launchedByUpdater {
+			log.Printf("update: 更新后首次启动（%s），保留回退副本，等界面报到后再确认",
+				p.At.Format(time.RFC3339))
+			return d
+		}
 		log.Printf("update: 上次更新自 %s 起始终未被确认，保留回退副本", p.At.Format(time.RFC3339))
 		d.OfferRollback = true
 		return d

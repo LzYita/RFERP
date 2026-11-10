@@ -329,7 +329,7 @@ func (t *SQLiteTx) DeleteBOMItem(id int64) error {
 
 func (t *SQLiteTx) GetBatchForUpdate(id int64) (*model.ProductBatch, error) {
 	var b model.ProductBatch
-	err := t.q.Get(&b, `SELECT * FROM product_batches WHERE id=?`, id)
+	err := t.q.Get(&b, `SELECT `+batchColumns+` FROM product_batches WHERE id=?`, id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -531,7 +531,9 @@ func (s *SQLiteStore) GetBOMByProduct(productID int64) ([]model.BOMItem, error) 
 func (s *SQLiteStore) ListBatches() ([]model.ProductBatch, error) {
 	var list []model.ProductBatch
 	err := s.db.Select(&list, `
-		SELECT b.*, p.name AS product_name, p.code AS product_code
+		SELECT b.id, b.batch_no, b.product_id, b.plan_qty, b.produced_qty, b.status, b.version,
+		       b.created_at, b.updated_at, b.operator, b.customer, b.consumption_recorded,
+		       p.name AS product_name, p.code AS product_code
 		FROM product_batches b
 		JOIN products p ON p.id = b.product_id
 		ORDER BY b.id DESC`)

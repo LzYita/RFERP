@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	batchSelectForUpdate = regexp.QuoteMeta("SELECT * FROM product_batches WHERE id=? FOR UPDATE")
+	batchSelectForUpdate = regexp.QuoteMeta("SELECT id, batch_no, product_id, plan_qty, produced_qty, status, version, created_at, updated_at, operator, customer, consumption_recorded FROM product_batches WHERE id=? FOR UPDATE")
 	partSelectForUpdate  = regexp.QuoteMeta("SELECT * FROM parts WHERE id=? FOR UPDATE")
 	auditInsert          = regexp.QuoteMeta("INSERT INTO audit_log (table_name,record_id,action,old_data,new_data,operator) VALUES (?,?,?,?,?,?)")
 	statusUpdate         = regexp.QuoteMeta("UPDATE product_batches SET status=?, operator=?, version=version+1, updated_at=NOW() WHERE id=? AND status=?")

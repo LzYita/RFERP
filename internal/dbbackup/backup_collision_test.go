@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 		case "fail":
 			_, _ = io.WriteString(os.Stdout, "partial dump\n")
 			os.Exit(1)
+		case "fail-stderr":
+			_, _ = io.WriteString(os.Stderr, "mysqldump: Got error: 1044: Access denied for user 'app'@'localhost' to database 'appliancedb'\n")
+			os.Exit(1)
 		case "truncated":
 			_, _ = io.WriteString(os.Stdout, "partial dump without completion marker\n")
 			os.Exit(0)

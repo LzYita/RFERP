@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -473,6 +474,18 @@ func (s *Server) handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 前置检查必须在**替换 exe 之前**：升级后第一次启动可能需要的备份工具
+	// （本机 mysqldump）如果不可用，先换 exe 就等于把用户能用的旧版本撤走，
+	// 新版本却起不来。检查失败不动磁盘、不清待办，用户修好后可直接重试。
+	if s.preflightUpdate != nil {
+		if err := s.preflightUpdate(); err != nil {
+			log.Printf("update: 升级前置检查未通过: %v", err)
+			writeErr(w, http.StatusConflict, "升级前置检查未通过: "+err.Error())
+			return
+		}
+	}
+
+	log.Printf("update: 应用更新包 %s（sha256=%s）", filepath.Base(zipPath), gotSHA)
 	if err := s.applyUpdate(zipPath); err != nil {
 		// 失败**不清**待办：文件还在，用户可以直接重试，不必重新下载。
 		writeErr(w, http.StatusInternalServerError, "更新失败: "+err.Error())

@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -39,8 +40,10 @@ import (
 	"app/internal/api"
 	"app/internal/bootstrap"
 	"app/internal/config"
+	"app/internal/dbbackup"
 	"app/internal/logging"
 	"app/internal/mysqlfind"
+	"app/internal/nativefiledialog"
 	"app/internal/paths"
 	"app/internal/singleinstance"
 	"app/internal/update"
@@ -100,8 +103,14 @@ func main() {
 	}
 
 	// 更新后重启时旧进程可能仍在退出，稍等它释放单实例锁。
+	//
+	// 这个环境变量同时是"本进程由更新器拉起"的唯一信号：PrepareStart 靠它
+	// 区分"刚换完版本的第一次启动"与"之后又启动了一次"。没有它，正常更新
+	// 后的第一次启动会把磁盘上的 .old+标记误判成上次失败，先弹一个
+	// "新版本启动失败"的回退框（2026-11-10 现场即此）。
+	launchedByUpdater := os.Getenv("RFERP_UPDATE_RESTART") == "1"
 	var lockWait time.Duration
-	if os.Getenv("RFERP_UPDATE_RESTART") == "1" {
+	if launchedByUpdater {
 		lockWait = 20 * time.Second
 	}
 	// 单实例锁只对窗口模式有意义。
@@ -145,12 +154,17 @@ func main() {
 	//
 	// 注意它**不受 updateURL 是否为空影响**：关掉自动更新只是不再去检查更新，
 	// 不该让"上一轮更新没确认"这件事失去回退机会。
-	startDecision := update.PrepareStart()
+	startDecision := update.PrepareStart(launchedByUpdater)
 	// 无头模式不弹任何对话框：它可能在 CI 或无人值守的脚本里运行，
 	// 一个模态框会把整个进程挂死（演练时真的这样挂过一次）。无头模式也
 	// 不会确认健康（没有界面），因此这里跳过询问、只保留磁盘状态。
 	if startDecision.OfferRollback && !*serveOnly {
 		reason := errors.New("上一个版本的程序始终没有把界面显示出来")
+		// 上一轮失败时记下了真实原因就用它：固定文案只能说明"没起来"，
+		// 说不出"为什么"（2026-11-10 的备份失败就是这样丢的）。
+		if startDecision.LastError != "" {
+			reason = errors.New(startDecision.LastError)
+		}
 		if offerUpdateRollback(reason) {
 			return
 		}
@@ -165,14 +179,38 @@ func main() {
 		return
 	}
 
-	res, err := bootstrap.Build(cfg, bootstrap.Options{
+	buildOpts := bootstrap.Options{
 		Logf: log.Printf,
 		// 本机 MySQL 没在跑时先尝试拉起服务；需要管理员权限时只把
 		// 「启动服务」这一个动作提权（UAC），不把整个应用提权。
 		// 1.3.0 一直有这一步，Wails 入口起初漏了 —— 表现为从 1.3.0 升级后
 		// 首次启动报"连不上库"，而库只是服务没起来。
 		EnsureMySQL: mysqlfind.EnsureRunning,
-	})
+	}
+	res, err := bootstrap.Build(cfg, buildOpts)
+	if err != nil && !bootstrap.IsNotConfigured(err) {
+		// 窗口模式原先只把 bootstrap 错误交给弹窗、不写日志：用户点掉之后
+		// 日志里只剩 `bootstrap: storage=mysql`，最需要的错误反而没了。
+		// 2026-11-10 的 mysqldump 事故就卡在这里。
+		log.Printf("bootstrap failed: %v", err)
+	}
+	// 缺少 mysqldump 是升级后最常见的一种"新版本起不来"：迁移前的强制备份
+	// 需要它。装配阶段已经自动找过一轮；仍找不到时给用户一次选择的机会，
+	// 选中的路径写回 config.json，随后原地重试。
+	if err != nil && !*serveOnly && errors.Is(err, dbbackup.ErrDumpToolNotFound) {
+		if picked := pickMysqldump(); picked != "" {
+			cfg.MysqldumpPath = picked
+			if saveErr := cfg.Save(); saveErr != nil {
+				log.Printf("config: 保存 mysqldumpPath 失败（本次仍使用所选路径）: %v", saveErr)
+			} else {
+				log.Printf("config: 已保存 mysqldumpPath=%s", picked)
+			}
+			res, err = bootstrap.Build(cfg, buildOpts)
+			if err != nil {
+				log.Printf("bootstrap failed after picking mysqldump: %v", err)
+			}
+		}
+	}
 
 	// 全新安装：没有任何配置。此时业务服务一个都起不来（not configured），
 	// 但用户需要的不是一条错误，而是「数据怎么连」这个问题的答案。
@@ -227,7 +265,9 @@ func main() {
 	stopAutoBackup := startAutoBackup(res.Apps)
 	defer stopAutoBackup()
 
-	emb, stop, err := serveOnWithPicker(res.Apps, "127.0.0.1:0", updateURL, dirPicker)
+	emb, stop, err := serveOnWithPickerPreflight(res.Apps, "127.0.0.1:0", updateURL, dirPicker, func() error {
+		return bootstrap.CheckUpgradePrerequisites(cfg)
+	})
 	if err != nil {
 		// 同上：更新后的首次启动失败，给一次回退机会。
 		if offerUpdateRollback(err) {
@@ -432,7 +472,14 @@ func serveOn(apps usecase.Applications, addr, updateURL string) (*embeddedServer
 // serveOnWithPicker 同 serveOn，但可注入宿主的原生目录选择框。
 // picker 为 nil 时那条端点回"无法弹框，请手填"——缺省安全，且测试无需 Wails 窗口。
 func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker) (*embeddedServer, func(), error) {
-	return serveEmbedded(apps, addr, updateURL, picker, false, nil)
+	return serveEmbedded(apps, addr, updateURL, picker, false, nil, nil)
+}
+
+// serveOnWithPickerPreflight 在 serveOnWithPicker 之上注入「替换 exe 之前」的
+// 前置检查。只有单机桌面形态需要：升级前备份依赖本机工具，客户端模式不跑迁移。
+func serveOnWithPickerPreflight(apps usecase.Applications, addr, updateURL string,
+	picker api.DirectoryPicker, preflight func() error) (*embeddedServer, func(), error) {
+	return serveEmbedded(apps, addr, updateURL, picker, false, nil, preflight)
 }
 
 // serveOnClient 是「客户端模式」的内嵌服务：它把请求转发到局域网主机。
@@ -443,11 +490,11 @@ func serveOnWithPicker(apps usecase.Applications, addr, updateURL string, picker
 //   - 允许在登录前改主机地址（onConnect）。
 func serveOnClient(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker,
 	onConnect func(string) (string, error)) (*embeddedServer, func(), error) {
-	return serveEmbedded(apps, addr, updateURL, picker, true, onConnect)
+	return serveEmbedded(apps, addr, updateURL, picker, true, onConnect, nil)
 }
 
 func serveEmbedded(apps usecase.Applications, addr, updateURL string, picker api.DirectoryPicker,
-	remote bool, onConnect func(string) (string, error)) (*embeddedServer, func(), error) {
+	remote bool, onConnect func(string) (string, error), preflight func() error) (*embeddedServer, func(), error) {
 	tok, err := newStartupToken()
 	if err != nil {
 		return nil, nil, fmt.Errorf("生成启动 token: %w", err)
@@ -490,6 +537,9 @@ func serveEmbedded(apps usecase.Applications, addr, updateURL string, picker api
 			// 无头 -serve 与测试走的是 nil 那条路。
 			api.WithDirectoryPicker(picker),
 		)
+		if preflight != nil {
+			opts = append(opts, api.WithUpdatePreflight(preflight))
+		}
 	}
 
 	apiSrv := api.New(apps, opts...)
@@ -726,6 +776,10 @@ func rollbackUnrelatedHint(reason error) string {
 // 还会把这一版当成"界面正常"确认掉（ConfirmHealthy），把刚恢复的状态又搅乱。
 // 重启失败时用户已经拿到了手工恢复的说明，这时退出才是对的。
 func offerUpdateRollback(reason error) bool {
+	// 失败原因必须落盘：用户点「否」或直接结束进程后，下一次启动只能看到
+	// 固定文案「上一个版本始终没有把界面显示出来」，真实原因就永久丢了。
+	// 没有更新标记时 RecordFailure 什么也不做。
+	update.RecordFailure(reason)
 	pending, err := update.ReadPending()
 	if err != nil {
 		log.Printf("update: 读取更新标记失败，不提供回退: %v", err)
@@ -758,6 +812,20 @@ func offerUpdateRollback(reason error) bool {
 			err.Error()+"\n\n已经回退完成，但无法自动重新启动。\n请手工运行安装目录下的 RFERP.exe。")
 	}
 	return true
+}
+
+// pickMysqldump 在自动定位失败后让用户手动指定 mysqldump.exe。
+//
+// 这个对话框出现在启动失败路径上，用户很可能是第一次见：标题里直接说清
+// "升级前备份需要它"，比只写一个文件名更能让人知道该去哪个目录找。
+func pickMysqldump() string {
+	path, ok := nativefiledialog.PickFile(
+		"未找到 mysqldump.exe：升级前需要用 MySQL 客户端备份数据库，请选择 MySQL 安装目录下 bin\\mysqldump.exe",
+		"exe")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(path)
 }
 
 // newStartupToken 生成 24 字节随机 token（192 位），同机其它进程猜不到。

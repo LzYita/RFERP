@@ -12,8 +12,10 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	// 两个存储通道的驱动都在本包注册：Build 是唯一发起连接的地方，
 	// 入口只调用 Build，不该再各自 blank import。
@@ -24,6 +26,7 @@ import (
 	"app/internal/config"
 	"app/internal/dbbackup"
 	"app/internal/migrate"
+	"app/internal/mysqlfind"
 	"app/internal/paths"
 	"app/internal/repository"
 	"app/internal/service"
@@ -258,6 +261,25 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 	}
 	closeDB := func() error { return db.Close() }
 
+	// 升级前备份需要一个能跑的 mysqldump。旧配置里常常没有 mysqldumpPath
+	// （首启向导之前建的配置、手工写的 config.json），而 GUI 进程继承的 PATH
+	// 又未必含 MySQL 的 bin 目录。2026-11-10 的升级事故正是这条链：
+	// 备份失败 → 迁移中止 → 新版本在窗口起来之前退出。
+	//
+	// 只在不写/写坏时才去扫描，避免每次启动都多起一个 --version 子进程。
+	// 扫描不到也继续装配：迁移会按 fail-closed 中止，错误里带可操作提示，
+	// 入口再据此弹「选择 mysqldump.exe」。
+	if needsDumpLookup(cfg.MysqldumpPath) {
+		if dump, tried := mysqlfind.FindMysqldump(cfg.MysqldumpPath, cfg.MySQLService); dump != "" {
+			if dump != cfg.MysqldumpPath {
+				opts.logf("bootstrap: mysqldump 自动定位到 %s", dump)
+				cfg.MysqldumpPath = dump
+			}
+		} else {
+			opts.logf("bootstrap: 未找到 mysqldump（已尝试：%s）", strings.Join(tried, "、"))
+		}
+	}
+
 	res, err := migrate.Run(db, migrate.Options{
 		DSN:           cfg.DB.DSN,
 		MysqldumpPath: cfg.MysqldumpPath,
@@ -303,4 +325,37 @@ func buildMySQL(cfg *config.Config, opts Options) (*Result, error) {
 		Applied: res.Applied,
 		Close:   closeDB,
 	}, nil
+}
+
+// needsDumpLookup 报告配置里的 mysqldump 是否需要用自动发现补位。
+//
+// 空值、写成了不存在的路径（MySQL 升级后目录变了）、写的是目录，都要重找。
+func needsDumpLookup(configured string) bool {
+	if strings.TrimSpace(configured) == "" {
+		return true
+	}
+	st, err := os.Stat(configured)
+	return err != nil || st.IsDir()
+}
+
+// CheckUpgradePrerequisites 在替换 exe 之前检查升级前提。
+//
+// 目前唯一的硬前提是「本机 MySQL 库需要能跑一次 mysqldump」：升级前备份是
+// fail-closed 的第一道门，缺工具时先把 exe 换掉，只会把用户送进
+// 「新版本起不来、只能回退」的局面（2026-11-10 的事故）。
+//
+// 旧版本无法知道新版本是否带迁移，因此这里按保守口径要求工具可用：
+// 拦住的是一次更新，而不是让用户丢掉一个能用的程序。SQLite 不需要外部工具。
+func CheckUpgradePrerequisites(cfg *config.Config) error {
+	if cfg == nil || cfg.StorageIsSQLite() {
+		return nil
+	}
+	if dump, _ := mysqlfind.FindMysqldump(cfg.MysqldumpPath, cfg.MySQLService); dump != "" {
+		cfg.MysqldumpPath = dump
+		return nil
+	}
+	return fmt.Errorf("%w：升级前会先备份数据库，但本机没有可用的 mysqldump。"+
+		"请安装 MySQL 客户端，或把 MySQL 的 bin 目录加入 PATH；"+
+		"也可以在 config.json 的 mysqldumpPath 指定 mysqldump.exe 的完整路径，然后重新检查更新",
+		dbbackup.ErrDumpToolNotFound)
 }

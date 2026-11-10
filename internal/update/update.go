@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -402,6 +403,8 @@ func ApplyAndRestart(zipPath string) error {
 		os.Rename(oldPath, target)
 		return err
 	}
+	log.Printf("update: 已用 %s 替换 %s（旧版本保留为 %s）",
+		filepath.Base(newPath), filepath.Base(target), filepath.Base(oldPath))
 	cmd := exec.Command(target)
 	cmd.Env = append(os.Environ(), "RFERP_UPDATE_RESTART=1")
 	// 必须脱离当前的作业对象：否则老进程一退出，作业关闭就把这个新进程一起杀掉。
@@ -432,6 +435,13 @@ func RestartApp() error {
 	return cmd.Start()
 }
 
+// updateExeName 是更新包里唯一可接受的程序名。
+//
+// 以前取的是 zip 里**第一个** .exe：发布包一旦混入 server.exe 之类的其它
+// 二进制，更新就会把错误的程序装成"新版本"——进程能起来、窗口永远不出来，
+// 而且版本号、日志都指向同一版。按名字取，找不到就拒绝更新。
+const updateExeName = "RFERP.exe"
+
 func extractExe(zipPath, dest string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -439,7 +449,11 @@ func extractExe(zipPath, dest string) error {
 	}
 	defer r.Close()
 	for _, f := range r.File {
-		if f.FileInfo().IsDir() || !strings.HasSuffix(strings.ToLower(f.Name), ".exe") {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		// zip 内路径可能带目录（历史包是平铺的），只比最后一段。
+		if !strings.EqualFold(filepath.Base(filepath.ToSlash(f.Name)), updateExeName) {
 			continue
 		}
 		rc, err := f.Open()
@@ -455,5 +469,5 @@ func extractExe(zipPath, dest string) error {
 		out.Close()
 		return err
 	}
-	return errors.New("更新包中未找到可执行文件")
+	return fmt.Errorf("更新包中未找到 %s", updateExeName)
 }
